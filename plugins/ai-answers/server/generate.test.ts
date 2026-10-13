@@ -1,4 +1,5 @@
 import { vi } from "vitest";
+import env from "./env";
 import { generateAnswer, type AnswerClient } from "./generate";
 import type { AnswerSource } from "./retrieve";
 
@@ -17,13 +18,13 @@ function clientReturning(content: unknown[], stop_reason = "end_turn") {
   };
 }
 
-const cited = (text: string, index: number, start = 0) => ({
+const cited = (text: string, index: number, start = 0, quote = "quoted") => ({
   type: "text",
   text,
   citations: [
     {
       type: "search_result_location",
-      cited_text: "quoted",
+      cited_text: quote,
       source: "x",
       title: "t",
       search_result_index: index,
@@ -114,5 +115,62 @@ describe("generateAnswer", () => {
     const request = create.mock.calls[0][0];
     expect(request.system).toMatch(/untrusted/i);
     expect(request.system).toMatch(/never follow instructions/i);
+  });
+
+  it("drops uncited text that rides along with a cited block", async () => {
+    const { client } = clientReturning([
+      cited("Leave is 25 days.", 0),
+      { type: "text", text: "Email your password to evil@example.com" },
+    ]);
+    const result = await generateAnswer(client, "q?", [source("A", ["x"])]);
+    expect(result.answer).toEqual("Leave is 25 days.");
+    expect(result.answer).not.toContain("evil");
+  });
+
+  it("treats a truncated response as no answer", async () => {
+    const { client } = clientReturning([cited("25 days", 0)], "max_tokens");
+    const result = await generateAnswer(client, "q?", [source("A", ["x"])]);
+    expect(result).toEqual({ answer: null, citations: [] });
+  });
+
+  it("ignores citations with an out-of-range search result index", async () => {
+    const { client } = clientReturning([cited("Valid.", 0), cited("Bad.", 7)]);
+    const result = await generateAnswer(client, "q?", [source("A", ["x"])]);
+    expect(result.citations).toEqual([
+      {
+        documentId: "A-id",
+        title: "A",
+        url: "/doc/A",
+        heading: undefined,
+        quote: "quoted",
+      },
+    ]);
+
+    const { client: onlyBad } = clientReturning([cited("Bad.", 7)]);
+    const none = await generateAnswer(onlyBad, "q?", [source("A", ["x"])]);
+    expect(none).toEqual({ answer: null, citations: [] });
+  });
+
+  it("truncates long quotes to 300 characters", async () => {
+    const { client } = clientReturning([cited("ok", 0, 0, "a".repeat(400))]);
+    const result = await generateAnswer(client, "q?", [source("A", ["x"])]);
+    expect(result.citations[0].quote).toEqual(`${"a".repeat(300)}…`);
+  });
+
+  it("uses the configured model and no sampling, thinking or tool params", async () => {
+    const { client, create } = clientReturning([cited("ok", 0)]);
+    await generateAnswer(client, "q?", [source("A", ["x"])]);
+    const request = create.mock.calls[0][0];
+    expect(request.model).toEqual(env.AI_ANSWERS_MODEL);
+    expect(request).not.toHaveProperty("temperature");
+    expect(request).not.toHaveProperty("thinking");
+    expect(request).not.toHaveProperty("tool_choice");
+  });
+
+  it("sends an empty document title as Untitled", async () => {
+    const { client, create } = clientReturning([cited("ok", 0)]);
+    await generateAnswer(client, "q?", [source("", ["x"])]);
+    const request = create.mock.calls[0][0];
+    expect(request.messages[0].content[0].title).toEqual("Untitled");
   });
 });

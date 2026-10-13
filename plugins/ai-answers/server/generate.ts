@@ -34,6 +34,8 @@ const SYSTEM_PROMPT = [
 
 const NO_RESULT: AnswerResult = { answer: null, citations: [] };
 
+const MAX_QUOTE = 300;
+
 /**
  * Asks Claude to answer a question from the given sources.
  * The answer is returned only when at least one citation backs it.
@@ -63,7 +65,7 @@ export async function generateAnswer(
           ...sources.map((s) => ({
             type: "search_result" as const,
             source: s.document.url,
-            title: s.document.title,
+            title: s.document.title || "Untitled",
             content: s.sections.map((text) => ({
               type: "text" as const,
               text,
@@ -76,17 +78,20 @@ export async function generateAnswer(
     ],
   });
 
-  if (response.stop_reason === "refusal") {
+  // Anything but a clean finish (refusal, max_tokens, pause_turn, tool_use) may be partial.
+  if (response.stop_reason !== "end_turn") {
     return NO_RESULT;
   }
 
-  let answer = "";
+  // Only cited text is kept: a document could inject an uncited payload
+  // next to one legitimate cited sentence.
+  const parts: string[] = [];
   const citations = new Map<string, AnswerCitation>();
   for (const block of response.content) {
     if (block.type !== "text") {
       continue;
     }
-    answer += block.text;
+    let backed = false;
     for (const citation of block.citations ?? []) {
       if (citation.type !== "search_result_location") {
         continue;
@@ -103,12 +108,19 @@ export async function generateAnswer(
         title: source.document.title,
         url: source.document.url,
         heading,
-        quote: citation.cited_text,
+        quote:
+          citation.cited_text.length > MAX_QUOTE
+            ? `${citation.cited_text.slice(0, MAX_QUOTE)}…`
+            : citation.cited_text,
       });
+      backed = true;
+    }
+    if (backed) {
+      parts.push(block.text.trim());
     }
   }
 
-  answer = answer.trim();
+  const answer = parts.join(" ").trim();
   if (!answer || answer.includes(NO_ANSWER) || citations.size === 0) {
     return NO_RESULT;
   }
