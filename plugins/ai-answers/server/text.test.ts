@@ -97,9 +97,29 @@ describe("selectSections", () => {
     expect(out).toEqual(["# B\nholiday policy"]);
   });
 
-  it("returns document order when several fit", () => {
+  it("returns matching sections in document order when several fit", () => {
     const out = selectSections(sections, ["holiday"], 1000);
+    expect(out).toEqual([sections[1], sections[2]]);
+  });
+
+  it("omits sections that match no keyword when another section matches", () => {
+    const out = selectSections(
+      ["# A\nnothing here", "# B\nholiday policy", "# C\nunrelated"],
+      ["holiday"],
+      1000
+    );
+    expect(out).toEqual(["# B\nholiday policy"]);
+  });
+
+  it("falls back to document order within the budget when nothing matches", () => {
+    const out = selectSections(sections, ["zzz"], 1000);
     expect(out).toEqual(sections);
+
+    // "# A\nnothing here" is 16 chars and "# B\nholiday policy" is 18.
+    expect(selectSections(sections, ["zzz"], 34)).toEqual([
+      sections[0],
+      sections[1],
+    ]);
   });
 
   it("never exceeds the budget", () => {

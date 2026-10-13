@@ -59,6 +59,52 @@ describe("retrieveSources", () => {
     expect(sources).toEqual([]);
   });
 
+  describe("unreadable scope filters", () => {
+    async function setupPrivate() {
+      const team = await buildTeam();
+      const owner = await buildUser({ teamId: team.id });
+      const outsider = await buildUser({ teamId: team.id });
+      const secret = await buildCollection({
+        teamId: team.id,
+        userId: owner.id,
+        permission: null,
+      });
+      const document = await buildDocument({
+        teamId: team.id,
+        userId: owner.id,
+        collectionId: secret.id,
+        text: "# Pay\nThe secret salary figure is nine hundred thousand.",
+      });
+      return { outsider, secret, document };
+    }
+
+    it("rejects a documentId the user cannot read", async () => {
+      const { outsider, document } = await setupPrivate();
+      const result = retrieveSources(outsider, {
+        query: "salary figure",
+        documentId: document.id,
+      });
+      await expect(result).rejects.toThrow();
+      await expect(result).rejects.toMatchObject({
+        status: 403,
+        id: "authorization_error",
+      });
+    });
+
+    it("rejects a collectionId the user cannot read", async () => {
+      const { outsider, secret } = await setupPrivate();
+      const result = retrieveSources(outsider, {
+        query: "salary figure",
+        collectionId: secret.id,
+      });
+      await expect(result).rejects.toThrow();
+      await expect(result).rejects.toMatchObject({
+        status: 403,
+        id: "authorization_error",
+      });
+    });
+  });
+
   it("returns nothing when the question has no keywords", async () => {
     const user = await buildUser();
     expect(await retrieveSources(user, { query: "what is the?" })).toEqual([]);

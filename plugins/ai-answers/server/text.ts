@@ -143,6 +143,8 @@ function splitOversized(section: string, maxChars: number): string[] {
 
 /**
  * Picks the sections most relevant to the keywords that fit a character budget.
+ * When at least one section matches a keyword only matching sections are
+ * considered; when none match, sections are taken in document order.
  *
  * @param sections the sections of one document, in document order.
  * @param keywords the keywords from `toKeywords`.
@@ -159,11 +161,13 @@ export function selectSections(
     const score = keywords.filter((keyword) => lower.includes(keyword)).length;
     return { text, index, score };
   });
-  scored.sort((a, b) => b.score - a.score || a.index - b.index);
+  const matching = scored.filter((item) => item.score > 0);
+  const candidates = matching.length > 0 ? matching : scored;
+  candidates.sort((a, b) => b.score - a.score || a.index - b.index);
 
   const chosen: typeof scored = [];
   let used = 0;
-  for (const item of scored) {
+  for (const item of candidates) {
     if (used + item.text.length > budgetChars) {
       continue;
     }

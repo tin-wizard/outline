@@ -134,6 +134,7 @@ describe("#documents.answerQuestion", () => {
       });
       const body = await res.json();
 
+      expect(create).toHaveBeenCalledTimes(1);
       expect(res.status).toEqual(200);
       expect(body.search.answer).toBeNull();
       expect(body.citations).toEqual([]);
@@ -152,7 +153,7 @@ describe("#documents.answerQuestion", () => {
         userId: owner.id,
         permission: null,
       });
-      await buildDocument({
+      const secretDocument = await buildDocument({
         teamId: user.teamId,
         userId: owner.id,
         collectionId: secret.id,
@@ -160,13 +161,20 @@ describe("#documents.answerQuestion", () => {
       });
       create.mockResolvedValue({ stop_reason: "end_turn", content: [] });
 
-      await server.post("/api/documents.answerQuestion", user, {
-        body: { query: "secret salary figure" },
+      const res = await server.post("/api/documents.answerQuestion", user, {
+        body: { query: "holiday salary figure" },
       });
+      const body = await res.json();
 
-      for (const call of create.mock.calls) {
-        expect(JSON.stringify(call[0])).not.toContain("nine hundred thousand");
-      }
+      // The asker's own document matches, so the model is called with it.
+      expect(res.status).toEqual(200);
+      expect(create).toHaveBeenCalledTimes(1);
+      const sent = JSON.stringify(create.mock.calls[0][0]);
+      expect(sent).toContain("twenty five days");
+      expect(sent).not.toContain("nine hundred thousand");
+      expect(body.documents.map((d: { id: string }) => d.id)).not.toContain(
+        secretDocument.id
+      );
     });
   });
 });
