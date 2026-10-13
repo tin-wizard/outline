@@ -35,6 +35,7 @@ import type { PaginationParams, SearchResult } from "~/types";
 import { preventDefault } from "~/utils/events";
 import { searchPath } from "~/utils/routeHelpers";
 import { decodeURIComponentSafe, isTruthyQueryValue } from "~/utils/urls";
+import { AnswerCard } from "./components/AnswerCard";
 import CollectionFilter from "./components/CollectionFilter";
 import DateFilter from "./components/DateFilter";
 import { DocumentFilter } from "./components/DocumentFilter";
@@ -396,6 +397,13 @@ function Search() {
             {isMobile ? null : sortInput}
           </Filters>
         </form>
+        {query && !titleFilter ? (
+          <AnswerCard
+            query={query}
+            collectionId={collectionId || undefined}
+            documentId={documentId}
+          />
+        ) : null}
         {isSearchable ? (
           <>
             {error ? (

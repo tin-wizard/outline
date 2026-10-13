@@ -31,6 +31,15 @@ function Features() {
     [team, t]
   );
 
+  const handleAIAnswersChange = React.useCallback(
+    async (checked: boolean) => {
+      team.setPreference(TeamPreference.AIAnswers, checked);
+      await team.save();
+      toast.success(t("Settings saved"));
+    },
+    [team, t]
+  );
+
   const handleGuidanceMCPChange = React.useCallback(
     async (ev: React.ChangeEvent<HTMLTextAreaElement>) => {
       team.guidanceMCP = ev.target.value || null;
@@ -140,14 +149,19 @@ function Features() {
       )}
 
       <SettingRow
-        name="answers"
+        name={TeamPreference.AIAnswers}
         label={t("AI answers")}
         description={t(
-          "Use AI to get direct answers to questions in search. This feature requires a paid license."
+          "Use AI to get direct answers to questions in search. Relevant text from documents a member can read is sent to the AI provider to write each answer."
         )}
         border={false}
       >
-        <Switch disabled />
+        <Switch
+          id={TeamPreference.AIAnswers}
+          name={TeamPreference.AIAnswers}
+          checked={team.getPreference(TeamPreference.AIAnswers)}
+          onChange={handleAIAnswersChange}
+        />
       </SettingRow>
     </Scene>
   );
