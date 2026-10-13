@@ -92,14 +92,15 @@ describe("selectSections", () => {
   const sections = ["# A\nnothing here", "# B\nholiday policy", "# C\nholiday"];
 
   it("prefers sections matching more keywords, in document order", () => {
-    // "# B\nholiday policy" is 18 chars, "# C\nholiday" is 11: only one fits.
-    const out = selectSections(sections, ["holiday", "policy"], 18);
-    expect(out).toEqual(["# B\nholiday policy"]);
+    // The opening section "# A\nnothing here" (16 chars) is pinned, then
+    // "# B\nholiday policy" (18) fits but "# C\nholiday" (11) does not.
+    const out = selectSections(sections, ["holiday", "policy"], 34);
+    expect(out).toEqual([sections[0], sections[1]]);
   });
 
   it("returns matching sections in document order when several fit", () => {
     const out = selectSections(sections, ["holiday"], 1000);
-    expect(out).toEqual([sections[1], sections[2]]);
+    expect(out).toEqual([sections[0], sections[1], sections[2]]);
   });
 
   it("omits sections that match no keyword when another section matches", () => {
@@ -108,7 +109,7 @@ describe("selectSections", () => {
       ["holiday"],
       1000
     );
-    expect(out).toEqual(["# B\nholiday policy"]);
+    expect(out).toEqual(["# A\nnothing here", "# B\nholiday policy"]);
   });
 
   it("falls back to document order within the budget when nothing matches", () => {
@@ -125,6 +126,75 @@ describe("selectSections", () => {
   it("never exceeds the budget", () => {
     const out = selectSections(sections, ["holiday"], 20);
     expect(out.join("").length).toBeLessThanOrEqual(20);
+  });
+
+  describe("pinned opening section", () => {
+    const doc = [
+      "# Intro\nThe Stack is the register of tools.",
+      "# Pricing\nCosts per seat.",
+      "# Stack table\nstack product rows",
+    ];
+    const keywords = ["stack", "product"];
+
+    it("returns the intro first and keeps document order", () => {
+      expect(selectSections(doc, keywords, 10000)).toEqual([doc[0], doc[2]]);
+    });
+
+    it("keeps the intro and the best other section under a tight budget", () => {
+      const budget = doc[0].length + doc[2].length;
+      expect(selectSections(doc, keywords, budget)).toEqual([doc[0], doc[2]]);
+    });
+
+    it("returns an intro with no keyword match alongside a match", () => {
+      const out = selectSections(
+        ["# Overview\nGeneral words.", "# Other\nnothing", "# Stack\nstack"],
+        ["stack"],
+        10000
+      );
+      expect(out).toEqual(["# Overview\nGeneral words.", "# Stack\nstack"]);
+    });
+
+    it("skips an opening section larger than the budget", () => {
+      const big = `# Intro\n${"x".repeat(100)}`;
+      const out = selectSections([big, "# Stack\nstack"], ["stack"], 50);
+      expect(out).toEqual(["# Stack\nstack"]);
+    });
+
+    it("never duplicates a section or exceeds the budget", () => {
+      const out = selectSections(doc, keywords, 70);
+      expect(new Set(out).size).toEqual(out.length);
+      expect(out.join("").length).toBeLessThanOrEqual(70);
+      expect(out[0]).toEqual(doc[0]);
+    });
+  });
+
+  describe("heading weighting", () => {
+    // Scores for keywords ["billing", "invoice"], excluding the pinned intro:
+    // headed: 1 (text) + 2 (heading) = 3; body: 2 (text, none in heading) = 2.
+    const intro = "# Intro\nWelcome.";
+    const body = "# Notes\nbilling and invoice details";
+    const headed = "# Billing\nsee finance";
+
+    it("ranks a heading match above a larger body-only match", () => {
+      const budget = intro.length + headed.length;
+      const out = selectSections(
+        [intro, body, headed],
+        ["billing", "invoice"],
+        budget
+      );
+      expect(out).toEqual([intro, headed]);
+    });
+
+    it("breaks ties by document order", () => {
+      const a = "# One\nbilling";
+      const b = "# Two\nbilling";
+      const out = selectSections(
+        [intro, a, b],
+        ["billing"],
+        intro.length + a.length
+      );
+      expect(out).toEqual([intro, a]);
+    });
   });
 });
 
