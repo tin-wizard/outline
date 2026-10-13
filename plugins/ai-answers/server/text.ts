@@ -143,8 +143,11 @@ function splitOversized(section: string, maxChars: number): string[] {
 
 /**
  * Picks the sections most relevant to the keywords that fit a character budget.
- * When at least one section matches a keyword only matching sections are
- * considered; when none match, sections are taken in document order.
+ * The opening section (usually the introduction) is always included first when
+ * it fits. A section scores one point per keyword found in its text plus two
+ * more per keyword found in its heading. When at least one other section
+ * scores, only scoring sections are considered; when none do, sections are
+ * taken in document order.
  *
  * @param sections the sections of one document, in document order.
  * @param keywords the keywords from `toKeywords`.
@@ -158,15 +161,27 @@ export function selectSections(
 ): string[] {
   const scored = sections.map((text, index) => {
     const lower = text.toLowerCase();
-    const score = keywords.filter((keyword) => lower.includes(keyword)).length;
+    const heading = (headingOf(text) ?? "").toLowerCase();
+    const score =
+      keywords.filter((keyword) => lower.includes(keyword)).length +
+      2 * keywords.filter((keyword) => heading.includes(keyword)).length;
     return { text, index, score };
   });
-  const matching = scored.filter((item) => item.score > 0);
-  const candidates = matching.length > 0 ? matching : scored;
-  candidates.sort((a, b) => b.score - a.score || a.index - b.index);
 
   const chosen: typeof scored = [];
   let used = 0;
+  const first = scored[0];
+  const pinned = first && first.text.length <= budgetChars ? first : undefined;
+  if (pinned) {
+    chosen.push(pinned);
+    used = pinned.text.length;
+  }
+
+  const rest = scored.filter((item) => item !== pinned);
+  const matching = rest.filter((item) => item.score > 0);
+  const candidates = matching.length > 0 ? matching : rest;
+  candidates.sort((a, b) => b.score - a.score || a.index - b.index);
+
   for (const item of candidates) {
     if (used + item.text.length > budgetChars) {
       continue;

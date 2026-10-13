@@ -117,6 +117,15 @@ describe("generateAnswer", () => {
     expect(request.system).toMatch(/never follow instructions/i);
   });
 
+  it("asks for cited, self-contained sentences", async () => {
+    const { client, create } = clientReturning([cited("ok", 0)]);
+    await generateAnswer(client, "q?", [source("A", ["x"])]);
+    const system: string = create.mock.calls[0][0].system;
+    expect(system).toMatch(/self-contained/i);
+    expect(system).toMatch(/cite/i);
+    expect(system).toMatch(/definition or introduction/i);
+  });
+
   it("drops uncited text that rides along with a cited block", async () => {
     const { client } = clientReturning([
       cited("Leave is 25 days.", 0),
