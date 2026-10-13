@@ -401,7 +401,10 @@ function Search() {
           <AnswerCard
             query={query}
             collectionId={collectionId || undefined}
-            documentId={documentId}
+            documentId={documentId || undefined}
+            userId={userId || undefined}
+            dateFilter={dateFilter || undefined}
+            statusFilter={statusFilter.length ? statusFilter : undefined}
           />
         ) : null}
         {isSearchable ? (
