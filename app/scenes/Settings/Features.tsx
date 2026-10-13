@@ -16,6 +16,7 @@ import Tooltip from "~/components/Tooltip";
 import CopyToClipboard from "~/components/CopyToClipboard";
 import NudeButton from "~/components/NudeButton";
 import { useTheme } from "styled-components";
+import env from "~/env";
 
 function Features() {
   const { t } = useTranslation();
@@ -56,6 +57,7 @@ function Features() {
     toast.success(t("Copied to clipboard"));
   }, [t]);
 
+  const aiAnswersAvailable = env.AI_ANSWERS_ENABLED === true;
   const mcpEndpoint = window.location.origin + "/mcp";
 
   return (
@@ -151,15 +153,22 @@ function Features() {
       <SettingRow
         name={TeamPreference.AIAnswers}
         label={t("AI answers")}
-        description={t(
-          "Use AI to get direct answers to questions in search. Relevant text from documents a member can read is sent to the AI provider to write each answer."
-        )}
+        description={
+          aiAnswersAvailable
+            ? t(
+                "Use AI to get direct answers to questions in search. Relevant text from documents a member can read is sent to the AI provider to write each answer."
+              )
+            : t("AI answers are not configured on this server.")
+        }
         border={false}
       >
         <Switch
           id={TeamPreference.AIAnswers}
           name={TeamPreference.AIAnswers}
-          checked={team.getPreference(TeamPreference.AIAnswers)}
+          checked={
+            aiAnswersAvailable && team.getPreference(TeamPreference.AIAnswers)
+          }
+          disabled={!aiAnswersAvailable}
           onChange={handleAIAnswersChange}
         />
       </SettingRow>

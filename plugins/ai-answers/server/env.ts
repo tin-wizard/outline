@@ -1,5 +1,6 @@
-import { IsOptional, IsString } from "class-validator";
+import { IsBoolean, IsOptional, IsString } from "class-validator";
 import { Environment } from "@server/env";
+import { Public } from "@server/utils/decorators/Public";
 import environment from "@server/utils/environment";
 
 class AIAnswersPluginEnvironment extends Environment {
@@ -10,6 +11,14 @@ class AIAnswersPluginEnvironment extends Environment {
   public ANTHROPIC_API_KEY = this.toOptionalString(
     environment.ANTHROPIC_API_KEY
   );
+
+  /**
+   * Whether AI answers are available on this server. Derived from the API key
+   * so the client can know without the key itself being exposed.
+   */
+  @Public
+  @IsBoolean()
+  public AI_ANSWERS_ENABLED = Boolean(this.ANTHROPIC_API_KEY);
 
   /**
    * The model used to write answers.

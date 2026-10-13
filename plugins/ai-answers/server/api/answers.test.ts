@@ -42,6 +42,35 @@ describe("#documents.answerQuestion", () => {
     expect(res.status).toEqual(400);
   });
 
+  describe("when the workspace preference is off", () => {
+    beforeEach(() => {
+      create.mockReset();
+      mswServer.use(
+        http.post("https://api.anthropic.com/v1/messages", async () =>
+          HttpResponse.json(await create())
+        )
+      );
+    });
+
+    it("validates the body before checking the preference (400, not 403)", async () => {
+      const user = await buildUser();
+      const res = await server.post("/api/documents.answerQuestion", user, {
+        body: { query: "   " },
+      });
+      expect(res.status).toEqual(400);
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it("never calls the model and returns 403 for a valid query", async () => {
+      const user = await buildUser();
+      const res = await server.post("/api/documents.answerQuestion", user, {
+        body: { query: "How many days of holiday?" },
+      });
+      expect(res.status).toEqual(403);
+      expect(create).not.toHaveBeenCalled();
+    });
+  });
+
   describe("when enabled", () => {
     async function setup() {
       const user = await buildUser();

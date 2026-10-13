@@ -75,6 +75,8 @@ export const TeamsUpdateSchema = BaseSchema.extend({
         [TeamPreference.PreventDocumentEmbedding]: z.boolean(),
         /** Whether external MCP clients can connect to the workspace. */
         [TeamPreference.MCP]: z.boolean(),
+        /** Whether AI answers are shown in search. */
+        [TeamPreference.AIAnswers]: z.boolean(),
         /** List of disabled embed provider titles. */
         [TeamPreference.DisabledEmbeds]: z.array(z.string()),
       })
