@@ -75,6 +75,8 @@ class SearchQuery extends Model<
               userId: userId ?? null,
               shareId: shareId ?? null,
               source,
+              // Rows holding an answer are never rewritten by a later search.
+              answer: null,
               createdAt: {
                 [Op.gte]: new Date(Date.now() - SearchQuery.recencyWindow),
               },
@@ -141,7 +143,7 @@ class SearchQuery extends Model<
    * The generated answer to the query, if any.
    */
   @Column(DataType.STRING)
-  answer: string;
+  answer: string | null;
 
   /**
    * The query string, automatically truncated to 255 characters.
