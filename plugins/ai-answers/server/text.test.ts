@@ -23,9 +23,27 @@ describe("toKeywords", () => {
   });
 
   it("deduplicates and caps at eight", () => {
-    const q = "alpha alpha beta gamma delta epsilon zeta eta theta iota kappa";
-    expect(toKeywords(q)).toHaveLength(8);
-    expect(toKeywords(q)[0]).toEqual("alpha");
+    expect(
+      toKeywords("alpha alpha beta gamma delta epsilon zeta eta theta iota")
+    ).toEqual([
+      "alpha",
+      "beta",
+      "gamma",
+      "delta",
+      "epsilon",
+      "zeta",
+      "eta",
+      "theta",
+    ]);
+  });
+
+  it("keeps accented and decomposed letters", () => {
+    expect(toKeywords("café Müller")).toEqual(["café", "müller"]);
+    expect(toKeywords("Müller")).toEqual(["müller"]);
+  });
+
+  it("keeps two-character CJK words", () => {
+    expect(toKeywords("休暇 ポリシー")).toEqual(["休暇", "ポリシー"]);
   });
 
   it("keeps non-English words", () => {

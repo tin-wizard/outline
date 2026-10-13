@@ -49,6 +49,9 @@ const STOP_WORDS = new Set([
 
 const MAX_KEYWORDS = 8;
 
+const CJK_PATTERN =
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+
 /**
  * Extracts the significant words of a natural-language question.
  *
@@ -56,11 +59,18 @@ const MAX_KEYWORDS = 8;
  * @returns up to eight lowercase, deduplicated keywords, in order of first use.
  */
 export function toKeywords(question: string): string[] {
+  // shortcut: space-less CJK text becomes one long keyword; use real word
+  // segmentation if CJK workspaces matter.
   const words = question
+    .normalize("NFC")
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/[^\p{L}\p{N}\p{M}\s]/gu, " ")
     .split(/\s+/)
-    .filter((word) => word.length > 2 && !STOP_WORDS.has(word));
+    .filter(
+      (word) =>
+        ([...word].length > 2 || CJK_PATTERN.test(word)) &&
+        !STOP_WORDS.has(word)
+    );
 
   return [...new Set(words)].slice(0, MAX_KEYWORDS);
 }
