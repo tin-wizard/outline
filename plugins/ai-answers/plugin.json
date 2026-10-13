@@ -1,0 +1,6 @@
+{
+  "id": "ai-answers",
+  "name": "AI answers",
+  "priority": 0,
+  "description": "Cited answers to questions, generated from documents the asker can read."
+}

@@ -504,6 +504,8 @@ export enum TeamPreference {
   EmailDisplay = "emailDisplay",
   /** Whether external MCP clients can connect to the workspace. */
   MCP = "mcp",
+  /** Whether members can ask questions and receive AI generated answers. */
+  AIAnswers = "aiAnswers",
   /** List of disabled embed provider titles. */
   DisabledEmbeds = "disabledEmbeds",
 }
@@ -522,6 +524,7 @@ export type TeamPreferences = {
   [TeamPreference.PreventDocumentEmbedding]?: boolean;
   [TeamPreference.EmailDisplay]?: EmailDisplay;
   [TeamPreference.MCP]?: boolean;
+  [TeamPreference.AIAnswers]?: boolean;
   [TeamPreference.DisabledEmbeds]?: string[];
 };
 

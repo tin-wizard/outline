@@ -130,6 +130,36 @@ describe("SearchQuery.record", () => {
     expect(await SearchQuery.count({ where: { teamId: team.id } })).toEqual(2);
   });
 
+  it("does not collapse into a record that holds an answer", async () => {
+    const user = await buildUser();
+    const teamId = user.teamId;
+
+    const answered = await SearchQuery.create({
+      userId: user.id,
+      teamId,
+      source: SearchQuerySource.App,
+      query: "conf",
+      answer: "An answer.",
+      results: 1,
+      duration: 5,
+    });
+
+    const next = await SearchQuery.record({
+      userId: user.id,
+      teamId,
+      source: SearchQuerySource.App,
+      query: "conflue",
+      results: 2,
+      duration: 6,
+    });
+
+    expect(next.id).not.toEqual(answered.id);
+    await answered.reload();
+    expect(answered.query).toEqual("conf");
+    expect(answered.answer).toEqual("An answer.");
+    expect(await SearchQuery.count({ where: { teamId } })).toEqual(2);
+  });
+
   it("creates a new record once the recency window has passed", async () => {
     const user = await buildUser();
     const teamId = user.teamId;

@@ -1,4 +1,5 @@
 import { faker } from "@faker-js/faker";
+import { TeamPreference } from "@shared/types";
 import { TeamDomain } from "@server/models";
 import {
   buildAdmin,
@@ -65,6 +66,22 @@ describe("#team.update", () => {
     const body = await res.json();
     expect(res.status).toEqual(200);
     expect(body.data.preferences.publicBranding).toBe(true);
+  });
+
+  it("should update the AI answers team preference", async () => {
+    const admin = await buildAdmin();
+    const res = await server.post("/api/teams.update", admin, {
+      body: {
+        preferences: {
+          [TeamPreference.AIAnswers]: true,
+        },
+      },
+    });
+    const body = await res.json();
+    expect(res.status).toEqual(200);
+    expect(body.data.preferences[TeamPreference.AIAnswers]).toBe(true);
+    await admin.team.reload();
+    expect(admin.team.getPreference(TeamPreference.AIAnswers)).toBe(true);
   });
 
   it("should fail upon sending unknown team preference", async () => {

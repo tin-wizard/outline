@@ -126,7 +126,7 @@ const router = new Router();
  * @returns the filter with documentId leaves expanded, or the original filter
  * if none are present.
  */
-async function expandDocumentIdLeaves(
+export async function expandDocumentIdLeaves(
   filter: Filter,
   context: { user: User } | { teamId: string }
 ): Promise<Filter> {
