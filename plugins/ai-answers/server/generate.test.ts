@@ -136,6 +136,74 @@ describe("generateAnswer", () => {
     expect(result.answer).not.toContain("evil");
   });
 
+  describe("uncited text copied from sources", () => {
+    const intro1 =
+      "This is the central list of every product that has come up in our discussions.";
+    const intro2 =
+      "It exists so that anything raised in a meeting gets recorded once.";
+    const src = () => source("Stack", [`# Product Stack\n${intro1} ${intro2}`]);
+
+    it("keeps a grounded uncited block, in order, with its citation", async () => {
+      const { client } = clientReturning([
+        { type: "text", text: intro1 },
+        cited(` ${intro2}`, 0),
+      ]);
+      const result = await generateAnswer(client, "q?", [src()]);
+      expect(result.answer).toEqual(`${intro1} ${intro2}`);
+      expect(result.citations).toHaveLength(1);
+      expect(result.citations[0]).toMatchObject({
+        documentId: "Stack-id",
+        heading: "Product Stack",
+      });
+    });
+
+    it("drops a short uncited connective", async () => {
+      const { client } = clientReturning([
+        { type: "text", text: "However," },
+        cited(intro2, 0),
+      ]);
+      const result = await generateAnswer(client, "q?", [
+        source("Stack", [`However, ${intro2}`]),
+      ]);
+      expect(result.answer).toEqual(intro2);
+    });
+
+    it("matches ignoring case and markdown", async () => {
+      const { client } = clientReturning([
+        {
+          type: "text",
+          text: "**This is the central list of every product that has come up**",
+        },
+        cited("Cited.", 0),
+      ]);
+      const result = await generateAnswer(client, "q?", [
+        source("Stack", [
+          "this is the central list of every product that has come up",
+        ]),
+      ]);
+      expect(result.answer).toEqual(
+        "**This is the central list of every product that has come up** Cited."
+      );
+    });
+
+    it("discards an answer made only of grounded uncited text", async () => {
+      const { client } = clientReturning([{ type: "text", text: intro1 }]);
+      const result = await generateAnswer(client, "q?", [src()]);
+      expect(result).toEqual({ answer: null, citations: [] });
+    });
+
+    it("preserves order when cited and grounded blocks alternate", async () => {
+      const { client } = clientReturning([
+        cited("First.", 0),
+        { type: "text", text: intro1 },
+        cited("Third.", 0),
+        { type: "text", text: intro2 },
+      ]);
+      const result = await generateAnswer(client, "q?", [src()]);
+      expect(result.answer).toEqual(`First. ${intro1} Third. ${intro2}`);
+    });
+  });
+
   it("treats a truncated response as no answer", async () => {
     const { client } = clientReturning([cited("25 days", 0)], "max_tokens");
     const result = await generateAnswer(client, "q?", [source("A", ["x"])]);

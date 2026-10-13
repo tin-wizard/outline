@@ -39,6 +39,22 @@ const NO_RESULT: AnswerResult = { answer: null, citations: [] };
 
 const MAX_QUOTE = 300;
 
+/** Shortest uncited text that can be trusted as a verbatim copy of a source. */
+const MIN_GROUNDED_LENGTH = 25;
+
+function truncate(text: string): string {
+  return text.length > MAX_QUOTE ? `${text.slice(0, MAX_QUOTE)}…` : text;
+}
+
+/** Lowercases and strips markdown markers and extra whitespace for comparison. */
+function normalise(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[*_`#>]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /**
  * Asks Claude to answer a question from the given sources.
  * The answer is returned only when at least one citation backs it.
@@ -86,10 +102,19 @@ export async function generateAnswer(
     return NO_RESULT;
   }
 
-  // Only cited text is kept: a document could inject an uncited payload
-  // next to one legitimate cited sentence.
+  // Cited text is kept. Uncited text is only trusted when it is copied
+  // verbatim from one retrieved section; model-invented uncited text is
+  // dropped, as a document could inject a payload next to a cited sentence.
+  const normalisedSections = sources.flatMap((source) =>
+    source.sections.map((section) => ({
+      source,
+      section,
+      text: normalise(section),
+    }))
+  );
   const parts: string[] = [];
   const citations = new Map<string, AnswerCitation>();
+  let hasModelCitation = false;
   for (const block of response.content) {
     if (block.type !== "text") {
       continue;
@@ -111,20 +136,41 @@ export async function generateAnswer(
         title: source.document.title,
         url: source.document.url,
         heading,
-        quote:
-          citation.cited_text.length > MAX_QUOTE
-            ? `${citation.cited_text.slice(0, MAX_QUOTE)}…`
-            : citation.cited_text,
+        quote: truncate(citation.cited_text),
       });
       backed = true;
+      hasModelCitation = true;
     }
     if (backed) {
       parts.push(block.text.trim());
+      continue;
     }
+
+    const text = block.text.trim();
+    const needle = normalise(text);
+    if (needle.length < MIN_GROUNDED_LENGTH) {
+      continue;
+    }
+    const match = normalisedSections.find((s) => s.text.includes(needle));
+    if (!match) {
+      continue;
+    }
+    const heading = headingOf(match.section);
+    const key = `${match.source.document.id}:${heading ?? ""}`;
+    if (!citations.has(key)) {
+      citations.set(key, {
+        documentId: match.source.document.id,
+        title: match.source.document.title,
+        url: match.source.document.url,
+        heading,
+        quote: truncate(text),
+      });
+    }
+    parts.push(text);
   }
 
   const answer = parts.join(" ").trim();
-  if (!answer || answer.includes(NO_ANSWER) || citations.size === 0) {
+  if (!answer || answer.includes(NO_ANSWER) || !hasModelCitation) {
     return NO_RESULT;
   }
   return { answer, citations: [...citations.values()] };
