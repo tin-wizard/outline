@@ -17,6 +17,12 @@ import { TooManyDocumentsError, renderPages } from "./renderPages";
 // pass the 5 s default.
 vi.setConfig({ testTimeout: 60_000 });
 
+// Newer prosemirror-view releases add an empty `<img class="ProseMirror-
+// separator" alt="">` to exported paragraphs that end in an image. It has no
+// `src`, so it makes no request; what must never survive in a published page
+// is an image that has one.
+const IMG_WITH_SRC = /<img\b[^>]*\ssrc\s*=/i;
+
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
   "base64"
@@ -262,7 +268,7 @@ describe("renderPages images and attachments", () => {
       sources: [{ type: "document", document }],
     });
     const html = pages[0].html;
-    expect(html).not.toContain("<img");
+    expect(html).not.toMatch(IMG_WITH_SRC);
     expect(html).not.toContain("attachments.redirect");
     expect(html).not.toContain("data:image/png");
     for (const alt of ["foreign alt", "pdf alt", "huge alt", "missing alt"]) {
@@ -359,7 +365,7 @@ describe("renderPages images and attachments", () => {
       "https://app-host.com../x.png",
     ])("removes %s", async (src) => {
       const { pages, warnings } = await render(src);
-      expect(pages[0].html).not.toMatch(/<img/i);
+      expect(pages[0].html).not.toMatch(IMG_WITH_SRC);
       expect(pages[0].html).toContain("pic alt");
       expect(warnings).toHaveLength(1);
     });
@@ -373,7 +379,7 @@ describe("renderPages images and attachments", () => {
       "https://cdn.evil.com/x.png?u=https://app-host.com/x.png",
     ])("keeps %s", async (src) => {
       const { pages, warnings } = await render(src);
-      expect(pages[0].html).toMatch(/<img/i);
+      expect(pages[0].html).toMatch(IMG_WITH_SRC);
       expect(warnings).toEqual([]);
     });
 
@@ -382,15 +388,15 @@ describe("renderPages images and attachments", () => {
         (key: string) => `https://bucket.s3.amazonaws.com/${key}`
       );
       const removed = await render("//BUCKET.s3.amazonaws.com/uploads/a.png");
-      expect(removed.pages[0].html).not.toMatch(/<img/i);
+      expect(removed.pages[0].html).not.toMatch(IMG_WITH_SRC);
       const kept = await render(
         "https://bucket.s3.amazonaws.com.evil.com/x.png"
       );
-      expect(kept.pages[0].html).toMatch(/<img/i);
+      expect(kept.pages[0].html).toMatch(IMG_WITH_SRC);
       const dotted = await render(
         "https://bucket.s3.amazonaws.com./uploads/a.png"
       );
-      expect(dotted.pages[0].html).not.toMatch(/<img/i);
+      expect(dotted.pages[0].html).not.toMatch(IMG_WITH_SRC);
     });
   });
 
