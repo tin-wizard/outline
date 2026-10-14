@@ -44,6 +44,16 @@ export { default as OAuthAuthorizationCode } from "./oauth/OAuthAuthorizationCod
 
 export { default as OAuthClient } from "./oauth/OAuthClient";
 
+export { default as PagesDomain } from "./PagesDomain";
+
+export { default as PagesInsight } from "./PagesInsight";
+
+export { default as PagesPublication } from "./PagesPublication";
+
+export { default as PagesSite } from "./PagesSite";
+
+export { default as PagesViewEvent } from "./PagesViewEvent";
+
 export { default as Pin } from "./Pin";
 
 export { default as Reaction } from "./Reaction";
