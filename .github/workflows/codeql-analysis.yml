@@ -1,10 +1,8 @@
 name: "CodeQL"
 
 on:
-  push:
-    branches: [main]
+  # Scans pull requests and weekly; not on every merge to main.
   pull_request:
-    # The branches below must be a subset of the branches above
     branches: [main]
   schedule:
     - cron: "28 15 * * 2"

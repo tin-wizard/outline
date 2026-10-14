@@ -1,8 +1,8 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
+  # Runs on pull requests before merge and on demand. It deliberately does not
+  # run again on every merge to main: the image build is a separate workflow.
   pull_request:
   workflow_dispatch:
 
