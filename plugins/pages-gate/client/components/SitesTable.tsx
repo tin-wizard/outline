@@ -10,6 +10,7 @@ import { OverflowMenuButton } from "~/components/Menu/OverflowMenuButton";
 import Text from "~/components/Text";
 import Time from "~/components/Time";
 import { useMenuAction } from "~/hooks/useMenuAction";
+import { PagesGateType } from "../../shared/accessCode";
 import type { PagesSiteData } from "../types";
 
 interface Props {
@@ -37,6 +38,7 @@ export function SitesTable({ sites, ...handlers }: Props) {
           <th scope="col">{t("Title")}</th>
           <th scope="col">{t("Address")}</th>
           <th scope="col">{t("Status")}</th>
+          <th scope="col">{t("Access")}</th>
           <th scope="col">{t("Measurement")}</th>
           <th scope="col">{t("Last updated")}</th>
           <th scope="col">
@@ -52,6 +54,11 @@ export function SitesTable({ sites, ...handlers }: Props) {
               <Text monospace selectable>{`/sites/${site.slug}/`}</Text>
             </td>
             <td>{statusLabels[site.status] ?? site.status}</td>
+            <td>
+              {site.gateType === PagesGateType.None
+                ? t("Public")
+                : t("Protected")}
+            </td>
             <td>{site.measurementEnabled ? t("On") : t("Off")}</td>
             <td>
               <Time dateTime={site.updatedAt} addSuffix shorten />
@@ -76,6 +83,7 @@ function SiteMenu({
 }: Omit<Props, "sites"> & { site: PagesSiteData }) {
   const { t } = useTranslation();
   const isPublished = site.status === "published";
+  const isProtected = site.gateType !== PagesGateType.None;
   const { publishedUrl } = site;
 
   const actions = useMemo(
@@ -90,7 +98,7 @@ function SiteMenu({
         name: `${t("Rotate code")}…`,
         icon: <EditIcon />,
         section: SettingsSection,
-        visible: isPublished,
+        visible: isPublished && isProtected,
         perform: () => onRotate(site),
       }),
       createAction({
@@ -129,6 +137,7 @@ function SiteMenu({
       t,
       site,
       isPublished,
+      isProtected,
       publishedUrl,
       onPublish,
       onRotate,

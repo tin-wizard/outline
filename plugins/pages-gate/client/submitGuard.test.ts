@@ -6,6 +6,7 @@ const base = {
   sourceCount: 0,
   needsCode: false,
   codeLength: 0,
+  codeChoiceReady: true,
 };
 
 describe("canSubmitForm", () => {
@@ -25,6 +26,10 @@ describe("canSubmitForm", () => {
     expect(canSubmitForm({ ...base, needsCode: true, codeLength: 4 })).toBe(
       true
     );
+  });
+
+  it("requires a complete choice of a new access code", () => {
+    expect(canSubmitForm({ ...base, codeChoiceReady: false })).toBe(false);
   });
 
   it("allows a rotation with nothing else required", () => {

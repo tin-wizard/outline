@@ -8,6 +8,7 @@ import Button from "~/components/Button";
 import CopyToClipboard from "~/components/CopyToClipboard";
 import Flex from "~/components/Flex";
 import Text from "~/components/Text";
+import { PagesGateType } from "../../shared/accessCode";
 import { isStaleCleanupWarning } from "../publishErrors";
 import type { PublishResult } from "../types";
 
@@ -16,6 +17,8 @@ interface Props {
   result: PublishResult;
   /** Whether the result came from a rotation. */
   rotated: boolean;
+  /** Whether the administrator chose the new code, so none is shown. */
+  customCode?: boolean;
   /** Called when the administrator has finished with the dialog. */
   onDone: () => void;
 }
@@ -24,7 +27,7 @@ interface Props {
  * Shows the outcome of a publish or rotation. When the response holds an
  * access code it is displayed here only and is gone when this unmounts.
  */
-export function OneTimeCode({ result, rotated, onDone }: Props) {
+export function OneTimeCode({ result, rotated, customCode, onDone }: Props) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const { accessCode, publishedUrl, pageCount, warnings } = result;
@@ -51,6 +54,20 @@ export function OneTimeCode({ result, rotated, onDone }: Props) {
           </a>
         </Text>
       )}
+
+      {result.site.gateType === PagesGateType.None ? (
+        <Text as="p" type="secondary">
+          {t(
+            "This site is not protected. Anyone with the address can read it."
+          )}
+        </Text>
+      ) : accessCode === undefined && customCode ? (
+        <Text as="p" type="secondary">
+          {t(
+            "Readers open the site with the access code you set. Share it only through a private channel."
+          )}
+        </Text>
+      ) : null}
 
       {accessCode !== undefined && (
         <Flex column gap={8}>

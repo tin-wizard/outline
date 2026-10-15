@@ -7,6 +7,8 @@ export interface SubmitState {
   /** Whether the current access code must be typed. */
   needsCode: boolean;
   codeLength: number;
+  /** Whether the choice of a new access code, when one is issued, is complete. */
+  codeChoiceReady: boolean;
 }
 
 /**
@@ -21,6 +23,7 @@ export function canSubmitForm(state: SubmitState): boolean {
   return (
     !state.pending &&
     (!state.needsSources || state.sourceCount > 0) &&
-    (!state.needsCode || state.codeLength > 0)
+    (!state.needsCode || state.codeLength > 0) &&
+    state.codeChoiceReady
   );
 }

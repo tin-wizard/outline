@@ -282,6 +282,29 @@ describe("#pages.create", () => {
     expect(stored?.prefix).toEqual(`sites/${slug}/`);
   });
 
+  it("creates an unprotected site when asked", async () => {
+    const { admin } = await setup();
+    const slug = uniqueSlug();
+
+    const res = await server.post("/api/pages.create", admin, {
+      body: { slug, title: "Brochure", gateType: "none" },
+    });
+    const body = await res.json();
+
+    expect(res.status).toEqual(200);
+    expect(body.data.gateType).toEqual("none");
+    const stored = await PagesSite.findOne({ where: { slug } });
+    expect(stored?.gateType).toEqual("none");
+  });
+
+  it("rejects an unknown gate type", async () => {
+    const { admin } = await setup();
+    const res = await server.post("/api/pages.create", admin, {
+      body: { slug: uniqueSlug(), title: "Brochure", gateType: "password" },
+    });
+    expect(res.status).toEqual(400);
+  });
+
   it("ignores a teamId in the body", async () => {
     const { team, admin } = await setup();
     const other = await buildTeam();

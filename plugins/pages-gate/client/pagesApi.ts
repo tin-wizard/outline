@@ -1,4 +1,5 @@
 import { client } from "~/utils/ApiClient";
+import type { PagesGateType } from "../shared/accessCode";
 import type {
   InsightsData,
   PagesSiteData,
@@ -35,7 +36,8 @@ export async function listSites(): Promise<PagesSiteData[]> {
 /**
  * Creates a draft site.
  *
- * @param input the site fields; hostname is omitted when blank.
+ * @param input the site fields; hostname is omitted when blank and gateType
+ * defaults to a protected site.
  * @returns the created site.
  */
 export async function createSite(input: {
@@ -43,6 +45,7 @@ export async function createSite(input: {
   title: string;
   measurementEnabled: boolean;
   hostname?: string;
+  gateType?: PagesGateType;
 }): Promise<PagesSiteData> {
   const res = await client.post("/pages.create", input);
   return res.data;
@@ -58,14 +61,16 @@ function toRequestSources(sources: SourceChoice[]) {
  * Publishes a site. The response may hold the one-time access code: callers
  * keep it in component state only.
  *
- * @param input the site, the chosen sources (empty reuses the stored ones) and
- * the current access code when republishing.
+ * @param input the site, the chosen sources (empty reuses the stored ones),
+ * the current access code when republishing, and on a first publish an
+ * optional chosen code to use instead of a generated one.
  * @returns the publish result.
  */
 export async function publishSite(input: {
   id: string;
   sources: SourceChoice[];
   accessCode?: string;
+  newAccessCode?: string;
 }): Promise<PublishResult> {
   const res = await client.post(
     "/pages.publish",
@@ -73,6 +78,7 @@ export async function publishSite(input: {
       id: input.id,
       sources: toRequestSources(input.sources),
       accessCode: input.accessCode || undefined,
+      newAccessCode: input.newAccessCode,
     },
     NO_RETRY
   );
@@ -80,18 +86,25 @@ export async function publishSite(input: {
 }
 
 /**
- * Replaces the access code. The response holds the new one-time code.
+ * Replaces the access code. Unless a code is chosen, the response holds the
+ * new one-time code.
  *
- * @param input the site and the chosen sources (empty reuses the stored ones).
+ * @param input the site, the chosen sources (empty reuses the stored ones)
+ * and an optional chosen code to use instead of a generated one.
  * @returns the publish result.
  */
 export async function rotateSite(input: {
   id: string;
   sources: SourceChoice[];
+  newAccessCode?: string;
 }): Promise<PublishResult> {
   const res = await client.post(
     "/pages.rotate",
-    { id: input.id, sources: toRequestSources(input.sources) },
+    {
+      id: input.id,
+      sources: toRequestSources(input.sources),
+      newAccessCode: input.newAccessCode,
+    },
     NO_RETRY
   );
   return res.data;

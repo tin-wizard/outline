@@ -6,11 +6,19 @@ import Flex from "~/components/Flex";
 import Input from "~/components/Input";
 import Text from "~/components/Text";
 import useStores from "~/hooks/useStores";
+import { PagesGateType } from "../../shared/accessCode";
+import type { AccessCodeChoice } from "../accessCodeForm";
+import {
+  GENERATED_CODE,
+  accessCodeChoiceProblem,
+  newAccessCode,
+} from "../accessCodeForm";
 import { publishSite, rotateSite } from "../pagesApi";
 import type { PublishFailure } from "../publishErrors";
 import { classifyPublishFailure } from "../publishErrors";
 import type { PagesSiteData, PublishResult, SourceChoice } from "../types";
 import { canSubmitForm } from "../submitGuard";
+import { AccessCodeFields } from "./AccessCodeFields";
 import { OneTimeCode } from "./OneTimeCode";
 import { RotateNotice } from "./RotateNotice";
 import SourcePicker from "./SourcePicker";
@@ -25,18 +33,24 @@ interface Props {
 
 /**
  * Publishes or rotates a site and then shows the one-time access code. The
- * code lives only in this component's state, never in a store or a prop, so it
- * is gone once the dialog closes.
+ * code, and any code the administrator types, lives only in this component's
+ * state, never in a store or a prop, so it is gone once the dialog closes.
  */
 export function PublishDialog({ site, mode, onChanged }: Props) {
   const { t } = useTranslation();
   const { dialogs } = useStores();
   const isRepublish = mode === "publish" && site.status === "published";
+  const isProtected = site.gateType !== PagesGateType.None;
+  // A new code is issued on a first publish and on every rotation.
+  const issuesCode = isProtected && (mode === "rotate" || !isRepublish);
   const [sources, setSources] = useState<SourceChoice[]>([]);
   const [pickerOpen, setPickerOpen] = useState(
     mode === "publish" && !isRepublish
   );
   const [code, setCode] = useState("");
+  const [codeChoice, setCodeChoice] =
+    useState<AccessCodeChoice>(GENERATED_CODE);
+  const [customCode, setCustomCode] = useState(false);
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<PublishFailure | null>(null);
   const [result, setResult] = useState<PublishResult | null>(null);
@@ -48,12 +62,14 @@ export function PublishDialog({ site, mode, onChanged }: Props) {
   const needsSources =
     (!isRepublish && (mode === "publish" || pickerOpen)) ||
     failure?.kind === "sources_missing";
+  const codeChoiceReady = !accessCodeChoiceProblem(codeChoice);
   const canSubmit = canSubmitForm({
     pending,
     needsSources,
     sourceCount: sources.length,
-    needsCode: isRepublish && mode === "publish",
+    needsCode: isRepublish && isProtected && mode === "publish",
     codeLength: code.length,
+    codeChoiceReady: !issuesCode || codeChoiceReady,
   });
 
   const run = useCallback(
@@ -61,23 +77,33 @@ export function PublishDialog({ site, mode, onChanged }: Props) {
       if (inFlight.current) {
         return;
       }
-      // A rotation needs no code; every other call must pass the form guard.
-      if (action === "publish" && !canSubmit) {
+      // A rotation needs no current code, only a complete choice of the new
+      // one; every other call must pass the form guard.
+      if (action === "publish" ? !canSubmit : !codeChoiceReady) {
         return;
       }
+      const sendsNewCode = action === "rotate" || issuesCode;
+      const chosenCode = sendsNewCode ? newAccessCode(codeChoice) : undefined;
       inFlight.current = true;
       setPending(true);
       setFailure(null);
       try {
         const response =
           action === "rotate"
-            ? await rotateSite({ id: site.id, sources })
+            ? await rotateSite({
+                id: site.id,
+                sources,
+                newAccessCode: chosenCode,
+              })
             : await publishSite({
                 id: site.id,
                 sources,
-                accessCode: isRepublish ? code : undefined,
+                accessCode: isRepublish && isProtected ? code : undefined,
+                newAccessCode: chosenCode,
               });
         setCode("");
+        setCodeChoice(GENERATED_CODE);
+        setCustomCode(chosenCode !== undefined);
         setRotated(action === "rotate");
         setResult(response);
         toast.success(
@@ -88,7 +114,11 @@ export function PublishDialog({ site, mode, onChanged }: Props) {
         const classified = classifyPublishFailure(err, {
           action,
           sentSources: sources.length > 0,
-          sentCode: action === "publish" && isRepublish && code.length > 0,
+          sentCode:
+            action === "publish" &&
+            isRepublish &&
+            isProtected &&
+            code.length > 0,
         });
         setConfirmingRotate(false);
         if (classified.kind === "sources_missing") {
@@ -103,7 +133,19 @@ export function PublishDialog({ site, mode, onChanged }: Props) {
         setPending(false);
       }
     },
-    [site.id, sources, isRepublish, code, canSubmit, onChanged, t]
+    [
+      site.id,
+      sources,
+      isRepublish,
+      isProtected,
+      issuesCode,
+      code,
+      codeChoice,
+      codeChoiceReady,
+      canSubmit,
+      onChanged,
+      t,
+    ]
   );
 
   const handleSubmit = useCallback(
@@ -128,7 +170,12 @@ export function PublishDialog({ site, mode, onChanged }: Props) {
 
   if (result) {
     return (
-      <OneTimeCode result={result} rotated={rotated} onDone={handleDone} />
+      <OneTimeCode
+        result={result}
+        rotated={rotated}
+        customCode={customCode}
+        onDone={handleDone}
+      />
     );
   }
 
@@ -136,6 +183,11 @@ export function PublishDialog({ site, mode, onChanged }: Props) {
     return (
       <Flex column gap={16}>
         <RotateNotice />
+        <AccessCodeFields
+          value={codeChoice}
+          onChange={setCodeChoice}
+          disabled={pending}
+        />
         <span role="status" aria-live="polite">
           {pending && (
             <Text type="secondary">
@@ -155,7 +207,7 @@ export function PublishDialog({ site, mode, onChanged }: Props) {
           <Button
             type="button"
             onClick={handleConfirmRotate}
-            disabled={pending}
+            disabled={pending || !codeChoiceReady}
             aria-busy={pending}
           >
             {pending ? `${t("Working")}…` : t("Rotate code")}
@@ -170,7 +222,7 @@ export function PublishDialog({ site, mode, onChanged }: Props) {
       <Flex column gap={16}>
         {mode === "rotate" ? <RotateNotice /> : null}
 
-        {isRepublish && mode === "publish" && (
+        {isRepublish && isProtected && mode === "publish" && (
           <div>
             <Input
               type="password"
@@ -225,7 +277,8 @@ export function PublishDialog({ site, mode, onChanged }: Props) {
             {(failure.kind === "incorrect_code" ||
               failure.kind === "state_conflict" ||
               (failure.kind === "message" && failure.offerRotate)) &&
-              mode === "publish" && (
+              mode === "publish" &&
+              isProtected && (
                 <div>
                   <Button
                     type="button"
@@ -238,6 +291,14 @@ export function PublishDialog({ site, mode, onChanged }: Props) {
                 </div>
               )}
           </div>
+        )}
+
+        {issuesCode && (
+          <AccessCodeFields
+            value={codeChoice}
+            onChange={setCodeChoice}
+            disabled={pending}
+          />
         )}
 
         <span role="status" aria-live="polite">
