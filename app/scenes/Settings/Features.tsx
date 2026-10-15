@@ -16,6 +16,7 @@ import Tooltip from "~/components/Tooltip";
 import CopyToClipboard from "~/components/CopyToClipboard";
 import NudeButton from "~/components/NudeButton";
 import { useTheme } from "styled-components";
+import env from "~/env";
 
 function Features() {
   const { t } = useTranslation();
@@ -25,6 +26,15 @@ function Features() {
   const handleMCPChange = React.useCallback(
     async (checked: boolean) => {
       team.setPreference(TeamPreference.MCP, checked);
+      await team.save();
+      toast.success(t("Settings saved"));
+    },
+    [team, t]
+  );
+
+  const handleAIAnswersChange = React.useCallback(
+    async (checked: boolean) => {
+      team.setPreference(TeamPreference.AIAnswers, checked);
       await team.save();
       toast.success(t("Settings saved"));
     },
@@ -47,6 +57,7 @@ function Features() {
     toast.success(t("Copied to clipboard"));
   }, [t]);
 
+  const aiAnswersAvailable = env.AI_ANSWERS_ENABLED === true;
   const mcpEndpoint = window.location.origin + "/mcp";
 
   return (
@@ -140,14 +151,26 @@ function Features() {
       )}
 
       <SettingRow
-        name="answers"
+        name={TeamPreference.AIAnswers}
         label={t("AI answers")}
-        description={t(
-          "Use AI to get direct answers to questions in search. This feature requires a paid license."
-        )}
+        description={
+          aiAnswersAvailable
+            ? t(
+                "Use AI to get direct answers to questions in search. Relevant text from documents a member can read is sent to the AI provider to write each answer."
+              )
+            : t("AI answers are not configured on this server.")
+        }
         border={false}
       >
-        <Switch disabled />
+        <Switch
+          id={TeamPreference.AIAnswers}
+          name={TeamPreference.AIAnswers}
+          checked={
+            aiAnswersAvailable && team.getPreference(TeamPreference.AIAnswers)
+          }
+          disabled={!aiAnswersAvailable}
+          onChange={handleAIAnswersChange}
+        />
       </SettingRow>
     </Scene>
   );

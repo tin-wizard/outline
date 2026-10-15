@@ -1,0 +1,6 @@
+{
+  "id": "pages-gate",
+  "name": "Pages",
+  "priority": 0,
+  "description": "Publish gated pages to Cloudflare R2 from Settings."
+}
