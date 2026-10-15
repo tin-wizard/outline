@@ -16,6 +16,7 @@ import { QueryHelper } from "@server/storage/QueryHelper";
 import type { APIContext } from "@server/types";
 import { AuthenticationType } from "@server/types";
 import { RateLimiterStrategy } from "@server/utils/RateLimiter";
+import { PagesGateType } from "../../shared/accessCode";
 import pagesEnv from "../env";
 import {
   InvalidHostnameError,
@@ -152,7 +153,8 @@ router.post(
   validate(T.PagesCreateSchema),
   transaction(),
   async (ctx: APIContext<T.PagesCreateReq>) => {
-    const { slug, title, measurementEnabled, hostname } = ctx.input.body;
+    const { slug, title, measurementEnabled, hostname, gateType } =
+      ctx.input.body;
     const { user } = ctx.state.auth;
     const { transaction } = ctx.state;
 
@@ -187,7 +189,7 @@ router.post(
           title,
           prefix,
           status: PagesSiteStatus.Draft,
-          gateType: "code",
+          gateType: gateType ?? PagesGateType.Code,
           measurementEnabled: measurementEnabled ?? false,
           teamId: user.teamId,
           createdById: user.id,
