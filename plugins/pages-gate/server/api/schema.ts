@@ -1,5 +1,11 @@
 import { z } from "zod";
 import { BaseSchema } from "@server/routes/api/schema";
+import {
+  CUSTOM_CODE_MAX_LENGTH,
+  CUSTOM_CODE_MIN_LENGTH,
+  PagesGateType,
+  customCodeProblem,
+} from "../../shared/accessCode";
 import { validateHostname } from "../lib/hostnames";
 import { isValidPageKey } from "../lib/keys";
 
@@ -28,6 +34,8 @@ export const PagesCreateSchema = BaseSchema.extend({
     measurementEnabled: z.boolean().optional(),
     /** Checked with validateHostname in the route. */
     hostname: z.string().optional(),
+    /** "code" (the default) protects every page; "none" publishes plain pages. */
+    gateType: z.enum(PagesGateType).optional(),
   }),
 });
 
@@ -55,6 +63,18 @@ export const PagesInsightsSchema = BaseSchema.extend({
 
 export type PagesInsightsReq = z.infer<typeof PagesInsightsSchema>;
 
+/**
+ * An access code chosen by the administrator, set when a new code is issued.
+ * Secret: never log or echo it. The message does not include the value.
+ */
+const newAccessCode = z
+  .string()
+  .max(256)
+  .refine((code) => !customCodeProblem(code), {
+    message: `The access code must be ${CUSTOM_CODE_MIN_LENGTH} to ${CUSTOM_CODE_MAX_LENGTH} characters, ignoring spaces, using letters, digits and punctuation only`,
+  })
+  .optional();
+
 /** Omitted on republish or rotation to reuse the sources already published. */
 const sources = z
   .array(
@@ -73,16 +93,21 @@ export const PagesPublishSchema = BaseSchema.extend({
     sources,
     /** Secret: never log or echo it. Zod messages do not include the value. */
     accessCode: z.string().max(64).optional(),
+    /** Only on the first publish of a protected site; replaces the generated code. */
+    newAccessCode,
   }),
 });
 
 export type PagesPublishReq = z.infer<typeof PagesPublishSchema>;
 
-// No access code: rotation replaces it and verifies nothing. Zod strips one.
+// No current access code: rotation replaces it and verifies nothing. Zod
+// strips one.
 export const PagesRotateSchema = BaseSchema.extend({
   body: z.object({
     id: z.uuid(),
     sources,
+    /** Replaces the generated code. */
+    newAccessCode,
   }),
 });
 
@@ -126,3 +151,17 @@ export const PagesIngestEventSchema = z.object({
 });
 
 export type PagesIngestEvent = z.infer<typeof PagesIngestEventSchema>;
+
+export const PagesPublishArtifactSchema = BaseSchema.extend({
+  body: z.object({
+    documentId: z.uuid(),
+    attachmentId: z.uuid(),
+    title: z.string().trim().min(1).max(255).optional(),
+    /** Checked with assertValidSlug in the route; a random one is generated when omitted. */
+    slug: z.string().optional(),
+  }),
+});
+
+export type PagesPublishArtifactReq = z.infer<
+  typeof PagesPublishArtifactSchema
+>;

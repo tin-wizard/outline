@@ -1,6 +1,9 @@
 import crypto from "node:crypto";
 import { promisify } from "node:util";
+import { normalizeCode } from "../../shared/accessCode";
 import { GATE_TEMPLATE } from "./gateTemplate";
+
+export { normalizeCode };
 
 /** The 31 characters access codes are drawn from; no 0, 1, i, l or o. */
 export const ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789";
@@ -46,17 +49,6 @@ export function generateAccessCode(
     throw new Error("Random source did not yield enough usable bytes");
   }
   return code.match(/.{4}/g)?.join("-") ?? code;
-}
-
-/**
- * Normalises a typed access code exactly as the gate template's client script
- * does before key derivation: lowercase, all whitespace removed, hyphens kept.
- *
- * @param input the code as typed.
- * @returns the normalised code.
- */
-export function normalizeCode(input: string): string {
-  return input.toLowerCase().replace(/\s+/g, "");
 }
 
 /**

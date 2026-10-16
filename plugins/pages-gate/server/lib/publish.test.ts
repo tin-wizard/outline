@@ -9,6 +9,8 @@ import {
   AccessCodeRequiredError,
   EmptySiteError,
   IncorrectCodeError,
+  InvalidCustomCodeError,
+  NewCodeNotApplicableError,
   NoLivePageError,
   NothingToRotateError,
   publishSite,
@@ -1000,5 +1002,186 @@ describe("publishSite rotation", () => {
     for (const spy of [...consoleSpies, ...loggerSpies]) {
       spy.mockRestore();
     }
+  });
+});
+
+describe("publishSite with a chosen code", () => {
+  beforeEach(() => {
+    vi.mocked(gate.createGate).mockClear();
+    vi.mocked(gate.generateAccessCode).mockClear();
+  });
+
+  const CHOSEN = "Correct Horse Battery";
+
+  it("uses the chosen code on first publish and never returns it", async () => {
+    const site = await buildPagesSite();
+    const store = createMemoryStore();
+    const result = await publishSite({
+      site,
+      pages: [page("index.html"), page("a.html")],
+      store,
+      actorId: site.createdById,
+      newCode: CHOSEN,
+    });
+
+    expect(result.issuedCode).toBeUndefined();
+    expect(vi.mocked(gate.generateAccessCode)).not.toHaveBeenCalled();
+    const index = store.text(result.indexKey) ?? "";
+    expect(await gate.verifyCode(CHOSEN, index)).toBe(true);
+    // Readers may type it in any case and with any spacing.
+    expect(await gate.verifyCode("correcthorsebattery", index)).toBe(true);
+    await site.reload();
+    expect(site.codeVersion).toBe(1);
+  });
+
+  it("republishes with the chosen code as the current code", async () => {
+    const site = await buildPagesSite();
+    const store = createMemoryStore();
+    const pages = [page("index.html")];
+    await publishSite({
+      site,
+      pages,
+      store,
+      actorId: site.createdById,
+      newCode: CHOSEN,
+    });
+    const result = await publishSite({
+      site,
+      pages,
+      store,
+      actorId: site.createdById,
+      code: CHOSEN,
+    });
+    expect(result.issuedCode).toBeUndefined();
+    expect(result.version).toBe(2);
+  });
+
+  it("rotates to a chosen code", async () => {
+    const { site, store, code } = await firstPublish();
+    const result = await publishSite({
+      site,
+      pages: [page("index.html"), page("a.html")],
+      store,
+      actorId: site.createdById,
+      rotate: true,
+      newCode: CHOSEN,
+    });
+    const index = store.text(result.indexKey) ?? "";
+    expect(result.issuedCode).toBeUndefined();
+    expect(await gate.verifyCode(CHOSEN, index)).toBe(true);
+    expect(await gate.verifyCode(code, index)).toBe(false);
+  });
+
+  it("refuses a chosen code on a republish, changing nothing", async () => {
+    const { site, store, code } = await firstPublish();
+    const before = await snapshot(site, store);
+    await expect(
+      publishSite({
+        site,
+        pages: [page("index.html")],
+        store,
+        actorId: site.createdById,
+        code,
+        newCode: CHOSEN,
+      })
+    ).rejects.toBeInstanceOf(NewCodeNotApplicableError);
+    expect(await snapshot(site, store)).toEqual(before);
+  });
+
+  it("refuses a short or non-ASCII chosen code before touching anything", async () => {
+    for (const newCode of [
+      "too short",
+      "a b c d e f g h i j k",
+      "ünïcödé-cödé-ünïcödé",
+    ]) {
+      const site = await buildPagesSite();
+      const store = createMemoryStore();
+      await expect(
+        publishSite({
+          site,
+          pages: [page("index.html")],
+          store,
+          actorId: site.createdById,
+          newCode,
+        })
+      ).rejects.toBeInstanceOf(InvalidCustomCodeError);
+      expect(store.keys()).toEqual([]);
+    }
+  });
+});
+
+describe("publishSite for an unprotected site", () => {
+  beforeEach(() => {
+    vi.mocked(gate.createGate).mockClear();
+    vi.mocked(gate.generateAccessCode).mockClear();
+  });
+
+  async function buildPublicSite() {
+    return buildPagesSite({ gateType: "none" });
+  }
+
+  it("uploads plain pages marked noindex, with no code", async () => {
+    const site = await buildPublicSite();
+    const store = createMemoryStore();
+    const pages = [page("index.html"), page("a.html")];
+    pages[0].html = `<!DOCTYPE html><html><head><title>x</title></head><body>${MARKER}</body></html>`;
+    const result = await publishSite({
+      site,
+      pages,
+      store,
+      actorId: site.createdById,
+    });
+
+    expect(result.issuedCode).toBeUndefined();
+    expect(vi.mocked(gate.createGate)).not.toHaveBeenCalled();
+    const index = store.text(result.indexKey) ?? "";
+    expect(gate.parseGatePage(index)).toBeNull();
+    expect(index).toBe(
+      `<!DOCTYPE html><html><head><meta name="robots" content="noindex,nofollow"><title>x</title></head><body>${MARKER}</body></html>`
+    );
+    expect(store.text(`sites/${site.slug}/a.html`)).toContain(MARKER);
+    await site.reload();
+    expect(site.status).toBe(PagesSiteStatus.Published);
+    expect(site.codeVersion).toBe(0);
+  });
+
+  it("republishes without a code", async () => {
+    const site = await buildPublicSite();
+    const store = createMemoryStore();
+    const pages = [page("index.html")];
+    await publishSite({ site, pages, store, actorId: site.createdById });
+    const result = await publishSite({
+      site,
+      pages,
+      store,
+      actorId: site.createdById,
+    });
+    expect(result.version).toBe(2);
+    expect(result.issuedCode).toBeUndefined();
+  });
+
+  it("refuses rotation and a chosen code", async () => {
+    const site = await buildPublicSite();
+    const store = createMemoryStore();
+    const pages = [page("index.html")];
+    await publishSite({ site, pages, store, actorId: site.createdById });
+    await expect(
+      publishSite({
+        site,
+        pages,
+        store,
+        actorId: site.createdById,
+        rotate: true,
+      })
+    ).rejects.toBeInstanceOf(NothingToRotateError);
+    await expect(
+      publishSite({
+        site,
+        pages,
+        store,
+        actorId: site.createdById,
+        newCode: "a-perfectly-good-code",
+      })
+    ).rejects.toBeInstanceOf(NewCodeNotApplicableError);
   });
 });

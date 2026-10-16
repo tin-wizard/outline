@@ -987,3 +987,120 @@ describe("measurement beacon", () => {
     }
   });
 });
+
+describe("chosen access codes", () => {
+  const CHOSEN = "Our Quarterly Numbers 2026";
+  const indexText = (site: PagesSite) =>
+    store.text(`sites/${site.slug}/index.html`) ?? "";
+
+  it("publishes with a chosen code and does not echo it", async () => {
+    const { admin, site, document } = await setup();
+    const res = await post("pages.publish", admin, {
+      id: site.id,
+      sources: docSource(document),
+      newAccessCode: CHOSEN,
+    });
+    const body = await res.json();
+
+    expect(res.status).toEqual(200);
+    expect(body.data).not.toHaveProperty("accessCode");
+    expect(JSON.stringify(body)).not.toContain(CHOSEN);
+    expect(await verifyCode(CHOSEN, indexText(site))).toBe(true);
+
+    const republish = await post("pages.publish", admin, {
+      id: site.id,
+      accessCode: CHOSEN,
+    });
+    expect(republish.status).toEqual(200);
+  });
+
+  it("refuses a short chosen code without echoing it or uploading", async () => {
+    const { admin, site, document } = await setup();
+    const res = await post("pages.publish", admin, {
+      id: site.id,
+      sources: docSource(document),
+      newAccessCode: "short-one",
+    });
+    expect(res.status).toEqual(400);
+    expect(JSON.stringify(await res.json())).not.toContain("short-one");
+    expect(puts()).toEqual([]);
+  });
+
+  it("refuses a chosen code on a republish", async () => {
+    const { admin, site, document } = await setup();
+    const code = await publishFirst(admin, site, document);
+    const mark = store.calls.length;
+    const res = await post("pages.publish", admin, {
+      id: site.id,
+      accessCode: code,
+      newAccessCode: CHOSEN,
+    });
+    expect(res.status).toEqual(400);
+    expect((await res.json()).error).toEqual("new_code_not_applicable");
+    expect(store.calls.slice(mark).filter((c) => c.startsWith("put "))).toEqual(
+      []
+    );
+  });
+
+  it("rotates to a chosen code", async () => {
+    const { admin, site, document } = await setup();
+    const oldCode = await publishFirst(admin, site, document);
+    const res = await post("pages.rotate", admin, {
+      id: site.id,
+      newAccessCode: CHOSEN,
+    });
+    const body = await res.json();
+
+    expect(res.status).toEqual(200);
+    expect(body.data).not.toHaveProperty("accessCode");
+    expect(await verifyCode(CHOSEN, indexText(site))).toBe(true);
+    expect(await verifyCode(oldCode, indexText(site))).toBe(false);
+  });
+});
+
+describe("unprotected sites", () => {
+  async function setupPublic() {
+    const context = await setup();
+    await context.site.update({ gateType: "none" });
+    return context;
+  }
+
+  it("publishes plain pages with no code and republishes without one", async () => {
+    const { admin, site, document } = await setupPublic();
+    const res = await post("pages.publish", admin, {
+      id: site.id,
+      sources: docSource(document),
+    });
+    const body = await res.json();
+
+    expect(res.status).toEqual(200);
+    expect(body.data).not.toHaveProperty("accessCode");
+    expect(body.data.site.gateType).toEqual("none");
+    const index = store.text(`sites/${site.slug}/index.html`) ?? "";
+    expect(parseGatePage(index)).toBeNull();
+    expect(index).toContain(MARKER);
+    expect(index).toContain('<meta name="robots" content="noindex,nofollow">');
+
+    const republish = await post("pages.publish", admin, { id: site.id });
+    expect(republish.status).toEqual(200);
+  });
+
+  it("refuses rotation and a chosen code", async () => {
+    const { admin, site, document } = await setupPublic();
+    await post("pages.publish", admin, {
+      id: site.id,
+      sources: docSource(document),
+    });
+
+    const rotate = await post("pages.rotate", admin, { id: site.id });
+    expect(rotate.status).toEqual(409);
+    expect((await rotate.json()).error).toEqual("nothing_to_rotate");
+
+    const chosen = await post("pages.publish", admin, {
+      id: site.id,
+      newAccessCode: "a-perfectly-good-code",
+    });
+    expect(chosen.status).toEqual(400);
+    expect((await chosen.json()).error).toEqual("new_code_not_applicable");
+  });
+});

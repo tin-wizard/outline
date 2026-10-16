@@ -5,6 +5,7 @@ import { PagesPublication, PagesSite } from "@server/models";
 import { PagesSourceType } from "@server/models/PagesPublication";
 import { PagesSiteStatus } from "@server/models/PagesSite";
 import { sequelize } from "@server/storage/database";
+import { PagesGateType, customCodeProblem } from "../../shared/accessCode";
 import {
   type Gate,
   createGate,
@@ -30,9 +31,15 @@ export interface PublishInput {
   code?: string;
   /**
    * Replaces the access code: a new code and salt are issued and `code` is
-   * ignored. Only valid for a site with a live index.
+   * ignored. Only valid for a protected site with a live index.
    */
   rotate?: boolean;
+  /**
+   * An access code chosen by the administrator, used instead of a generated
+   * one when a new code is issued: on the first publish of a protected site or
+   * on rotation. Being known to the caller, it is never returned.
+   */
+  newCode?: string;
   /** The user publishing. */
   actorId: string;
   /** Optional transform of each page's plaintext HTML before encryption. */
@@ -59,7 +66,10 @@ export interface PublishResult {
   warnings: string[];
   /** The site's new currentVersion. */
   version: number;
-  /** The new access code; present only on the first publish and on rotation. */
+  /**
+   * The generated access code; present only when the first publish or a
+   * rotation generated one, never for a chosen code or an unprotected site.
+   */
   issuedCode?: string;
 }
 
@@ -97,6 +107,22 @@ export class NothingToRotateError extends Error {
   }
 }
 
+/** Thrown when a chosen access code is set where no new code is issued. */
+export class NewCodeNotApplicableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NewCodeNotApplicableError";
+  }
+}
+
+/** Thrown when a chosen access code is too short or has unusable characters. */
+export class InvalidCustomCodeError extends Error {
+  constructor() {
+    super("The access code is too short or has unsupported characters");
+    this.name = "InvalidCustomCodeError";
+  }
+}
+
 /** Thrown when a publish has no pages, so a live site is never wiped. */
 export class EmptySiteError extends Error {
   constructor() {
@@ -108,9 +134,11 @@ export class EmptySiteError extends Error {
 /**
  * Encrypts and uploads a site's pages and records the publication. The site
  * row is locked for the whole publish so publishes of one site serialise. On
- * the first publish a new access code is generated and returned once; it is
- * never stored, logged or put in an error. With `rotate`, a new code and salt
- * replace the live ones in the same pipeline and the new code is returned once.
+ * the first publish a new access code is issued: the chosen `newCode`, or a
+ * generated one that is returned once. Neither is ever stored, logged or put
+ * in an error. With `rotate`, a new code and salt replace the live ones in the
+ * same pipeline. An unprotected site (gate type "none") is uploaded as plain
+ * HTML and has no code to issue, verify or rotate.
  *
  * Pages other than the index are uploaded first and the index last, inside
  * the transaction after the database writes. If anything fails before the
@@ -130,11 +158,16 @@ export class EmptySiteError extends Error {
  * @throws {AccessCodeRequiredError} when republishing without a code.
  * @throws {IncorrectCodeError} when the code does not open the live site.
  * @throws {NoLivePageError} when the live entry page is missing or unusable.
- * @throws {NothingToRotateError} when rotating a site with no live index.
+ * @throws {NothingToRotateError} when rotating an unprotected site or one with no live index.
+ * @throws {NewCodeNotApplicableError} when `newCode` is given but no code is issued.
+ * @throws {InvalidCustomCodeError} when `newCode` is too short or has unusable characters.
  */
 export async function publishSite(input: PublishInput): Promise<PublishResult> {
-  const { pages, store, decoratePage } = input;
+  const { pages, store, decoratePage, newCode } = input;
   assertPageSet(pages);
+  if (newCode !== undefined && customCodeProblem(newCode)) {
+    throw new InvalidCustomCodeError();
+  }
 
   const committed = await sequelize.transaction(async (transaction) => {
     const site = await PagesSite.findByPk(input.site.id, {
@@ -145,18 +178,39 @@ export async function publishSite(input: PublishInput): Promise<PublishResult> {
     const guarded = createGuardedStore(store, site.slug);
     const prefix = sitePrefix(site.slug);
     const indexKey = prefix + INDEX_PAGE_KEY;
-    if (input.rotate && !(await hasLiveIndex(site, transaction))) {
+    const isProtected = site.gateType !== PagesGateType.None;
+    if (
+      input.rotate &&
+      (!isProtected || !(await hasLiveIndex(site, transaction)))
+    ) {
       throw new NothingToRotateError();
     }
-    const codeVersion = input.rotate
-      ? site.codeVersion + 1
-      : Math.max(site.codeVersion, 1);
-    const { gate, issuedCode } = await resolveGate(
-      input.rotate ? 0 : site.codeVersion,
-      input.code,
-      guarded,
-      indexKey
-    );
+    if (newCode !== undefined) {
+      if (!isProtected) {
+        throw new NewCodeNotApplicableError(
+          "This site is not protected, so it has no access code"
+        );
+      }
+      if (!input.rotate && site.codeVersion !== 0) {
+        throw new NewCodeNotApplicableError(
+          "A new access code can only be set on the first publish or by rotating the code"
+        );
+      }
+    }
+    const codeVersion = !isProtected
+      ? site.codeVersion
+      : input.rotate
+        ? site.codeVersion + 1
+        : Math.max(site.codeVersion, 1);
+    const { gate, issuedCode } = isProtected
+      ? await resolveGate(
+          input.rotate ? 0 : site.codeVersion,
+          input.code,
+          newCode,
+          guarded,
+          indexKey
+        )
+      : { gate: undefined, issuedCode: undefined };
 
     // index.html last, after the database writes too: a half-finished publish
     // never exposes a new index that links to pages not yet uploaded, and a
@@ -170,12 +224,14 @@ export async function publishSite(input: PublishInput): Promise<PublishResult> {
       const html = decoratePage
         ? decoratePage(page.html, { pageKey: page.pageKey, site })
         : page.html;
-      const body = renderGatePage({
-        title: site.title,
-        storageKey,
-        salt: gate.salt,
-        blob: gate.encryptPage(html),
-      });
+      const body = gate
+        ? renderGatePage({
+            title: site.title,
+            storageKey,
+            salt: gate.salt,
+            blob: gate.encryptPage(html),
+          })
+        : markNoIndex(html);
       await guarded.put(prefix + page.pageKey, body, {
         contentType: "text/html; charset=utf-8",
         cacheControl: "no-cache",
@@ -312,17 +368,33 @@ async function hasLiveIndex(
 }
 
 /**
- * Issues a new gate (fresh code and salt) when `codeVersion` is 0, which
- * rotation passes too, else verifies the code against the live
- * index and rebuilds the gate with the live salt so readers' keys keep working.
+ * Asks search engines not to index an unprotected page, as the gate page does
+ * for protected ones: the site is meant for people given its address.
+ */
+function markNoIndex(html: string): string {
+  return html.replace(
+    /<head(\s[^>]*)?>/i,
+    (head) => `${head}<meta name="robots" content="noindex,nofollow">`
+  );
+}
+
+/**
+ * Issues a new gate (fresh salt, and the chosen code or a generated one) when
+ * `codeVersion` is 0, which rotation passes too, else verifies the code
+ * against the live index and rebuilds the gate with the live salt so readers'
+ * keys keep working.
  */
 async function resolveGate(
   codeVersion: number,
   code: string | undefined,
+  newCode: string | undefined,
   store: ObjectStore,
   indexKey: string
 ): Promise<{ gate: Gate; issuedCode?: string }> {
   if (codeVersion === 0) {
+    if (newCode !== undefined) {
+      return { gate: await createGate(newCode) };
+    }
     const issuedCode = generateAccessCode();
     return { gate: await createGate(issuedCode), issuedCode };
   }
