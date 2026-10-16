@@ -24,6 +24,13 @@ export enum PagesSiteStatus {
   Unpublished = "unpublished",
 }
 
+export enum PagesSiteKind {
+  /** Gated pages rendered from documents, under `sites/<slug>/`. */
+  Pages = "pages",
+  /** An uploaded interactive artifact, public, under `artifacts/<slug>/`. */
+  Artifact = "artifact",
+}
+
 @Table({
   tableName: "pages_sites",
   modelName: "pagesSite",
@@ -46,6 +53,10 @@ class PagesSite extends IdModel<
   @Default("code")
   @Column(DataType.STRING)
   gateType: string;
+
+  @Default(PagesSiteKind.Pages)
+  @Column(DataType.STRING)
+  kind: PagesSiteKind;
 
   /** The object storage prefix for the site, e.g. `sites/<slug>/`. */
   @Column(DataType.STRING)
