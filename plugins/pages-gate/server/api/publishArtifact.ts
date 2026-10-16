@@ -1,18 +1,16 @@
 import Router from "koa-router";
-import { NotFoundError, ValidationError } from "@server/errors";
+import { NotFoundError } from "@server/errors";
 import auth from "@server/middlewares/authentication";
 import { rateLimiter } from "@server/middlewares/rateLimiter";
 import timeout from "@server/middlewares/timeout";
 import validate from "@server/middlewares/validate";
 import { Attachment, Document } from "@server/models";
 import { authorize } from "@server/policies";
-import FileStorage from "@server/storage/files";
 import type { APIContext } from "@server/types";
 import { AuthenticationType } from "@server/types";
 import { RateLimiterStrategy } from "@server/utils/RateLimiter";
-import { BUNDLE_LIMITS } from "../lib/artifactBundle";
+import { readAttachmentBytes } from "../lib/artifactUpload";
 import { publishArtifact } from "../lib/publishArtifact";
-import { ReadCapExceededError, readCapped } from "../lib/readCapped";
 import "../policies";
 import { presentPagesSite, publishedUrl } from "../presenters/pagesSite";
 import { PUBLISH_TIMEOUT_MS, type StoreFactory } from "./publish";
@@ -64,32 +62,12 @@ export function createArtifactPublishRouter(
         throw NotFoundError();
       }
 
-      const readBytes = async () => {
-        // Refuse before loading an oversized upload into memory.
-        if (Number(attachment.size) > BUNDLE_LIMITS.totalBytes) {
-          throw ValidationError("The file is too large");
-        }
-        const stream = await FileStorage.getFileStream(attachment.key);
-        if (!stream) {
-          throw new Error("No stream available");
-        }
-        // The declared size is client-supplied, so cap the real read too.
-        try {
-          return await readCapped(stream, BUNDLE_LIMITS.totalBytes);
-        } catch (err) {
-          if (err instanceof ReadCapExceededError) {
-            throw ValidationError("The file is too large");
-          }
-          throw err;
-        }
-      };
-
       const { site, fileCount } = await publishArtifact({
         user,
         slug,
         title,
         fileName: attachment.name,
-        readBytes,
+        readBytes: () => readAttachmentBytes(attachment),
         storeFactory,
       });
 

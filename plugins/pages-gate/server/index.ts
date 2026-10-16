@@ -3,6 +3,7 @@ import config from "../plugin.json";
 import pages from "./api/pages";
 import env from "./env";
 import { registerSentryScrubber } from "./lib/sentry";
+import { pagesMcpTools } from "./mcp";
 import CleanupPagesInsightsTask from "./tasks/CleanupPagesInsightsTask";
 import RollupPagesInsightsTask from "./tasks/RollupPagesInsightsTask";
 
@@ -13,6 +14,10 @@ if (env.PAGES_ENABLED) {
       ...config,
       type: Hook.API,
       value: pages,
+    },
+    {
+      type: Hook.MCPTools,
+      value: pagesMcpTools,
     },
     {
       type: Hook.Task,
