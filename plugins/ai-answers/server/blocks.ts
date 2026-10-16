@@ -373,14 +373,24 @@ function escapeLineStarts(text: string): string {
  * Backslash-escapes every character that could start a link, image, reference,
  * autolink or HTML on re-parse, outside inline code spans (which render
  * literally). Unpaired backticks are escaped so the spans stay as detected.
+ * In a table cell, pipes are escaped too, everywhere.
  */
-function escapeInline(text: string): string {
+function escapeInline(text: string, inTableCell = false): string {
+  const special = inTableCell ? /[\\[\]<>!`|]/g : /[\\[\]<>!`]/g;
   return text
     .split(/(`[^`]+`)/)
-    .map((part, i) => (i % 2 ? part : part.replace(/[\\[\]<>!`]/g, "\\$&")))
+    .map((part, i) =>
+      // Code spans keep their backslashes: the table splitter drops exactly one
+      // backslash before each pipe, whatever precedes it, then the span is literal.
+      i % 2
+        ? inTableCell
+          ? part.split("|").join("\\|")
+          : part
+        : part.replace(special, "\\$&")
+    )
     .join("");
 }
 
 function row(cells: string[]): string {
-  return `| ${cells.map((cell) => escapeInline(cell).replace(/\|/g, "\\|")).join(" | ")} |`;
+  return `| ${cells.map((cell) => escapeInline(cell, true)).join(" | ")} |`;
 }

@@ -1,3 +1,4 @@
+import MarkdownIt from "markdown-it";
 import {
   type Block,
   BlockSplitter,
@@ -286,6 +287,40 @@ describe("blockToMarkdown", () => {
     expect(row.cells).toEqual(["[x](y) a\\|b"]);
     expect(blockToMarkdown(row)).toEqual("| \\[x\\](y) a\\\\\\|b |");
   });
+
+  it.each([
+    ["trailing backslash", ["x\\", "[a](b)"], ["x\\", "[a](b)"]],
+    ["backslash before pipe", ["a\\|b", "c\\\\|d"], ["a\\|b", "c\\\\|d"]],
+    ["pipe inside a code span", ["`a|b`", "<i>"], ["a|b", "<i>"]],
+    ["backslash inside a code span", ["`a\\`", "![i](j)"], ["a\\", "![i](j)"]],
+    ["backslash and pipe inside a code span", ["`a\\|b`", "z"], ["a\\|b", "z"]],
+    ["code span then trailing backslash", ["`a` \\", "<b>"], ["a \\", "<b>"]],
+  ])(
+    "round-trips a table cell with a %s through markdown-it",
+    (_label, cells, expected) => {
+      const [block] = splitBlocks("Text");
+      const header = blockToMarkdown({ ...block, kind: "tableHeader", cells });
+      const tokens = new MarkdownIt("default", {
+        html: false,
+        linkify: false,
+      }).parse(header, {});
+      const inline = tokens.filter((t) => t.type === "inline");
+      const children = inline.flatMap((t) => t.children ?? []);
+
+      expect(tokens.filter((t) => t.type === "th_open")).toHaveLength(
+        cells.length
+      );
+      expect(tokens.filter((t) => t.type === "tr_open")).toHaveLength(1);
+      expect(
+        inline.map((t) => (t.children ?? []).map((c) => c.content).join(""))
+      ).toEqual(expected);
+      expect(
+        children.filter((c) =>
+          ["link_open", "image", "html_inline"].includes(c.type)
+        )
+      ).toEqual([]);
+    }
+  );
 
   it("uses a fence longer than any backtick run in the code", () => {
     const [block] = splitBlocks("~~~\na ``` b\n~~~");
