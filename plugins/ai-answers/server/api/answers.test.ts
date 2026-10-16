@@ -174,7 +174,9 @@ describe("#documents.answerQuestion", () => {
       expect(body.documents.map((d: { id: string }) => d.id)).toContain(
         document.id
       );
-      expect(await SearchQuery.count({ where: { userId: user.id } })).toEqual(0);
+      expect(await SearchQuery.count({ where: { userId: user.id } })).toEqual(
+        0
+      );
     });
 
     it("never sends another user's private text to the model", async () => {
@@ -207,6 +209,59 @@ describe("#documents.answerQuestion", () => {
       expect(body.documents.map((d: { id: string }) => d.id)).not.toContain(
         secretDocument.id
       );
+    });
+
+    it("redacts planted secrets in documents and the query before the model", async () => {
+      const { user } = await setup();
+      // Synthetic values assembled at runtime so no real-looking secret is committed.
+      const docToken = "gh" + "p_" + "Q".repeat(36);
+      const docPassword = "Plant" + "ed9pass";
+      const keyBody = "MIIEpAIBAAKCAQEA" + "K".repeat(40);
+      const queryKey = "sk-ant-" + "api03-" + "Z".repeat(30);
+      const keyBlock = [
+        "-----BEGIN " + "PRIVATE KEY-----",
+        keyBody,
+        "-----END " + "PRIVATE KEY-----",
+      ].join("\n");
+      await buildDocument({
+        teamId: user.teamId,
+        userId: user.id,
+        title: "Holiday admin",
+        text: `# Holiday admin\nThe holiday tool uses ${docToken} to sync.\n\npassword: ${docPassword}\n\n\`\`\`\n${keyBlock}\n\`\`\``,
+      });
+      create.mockResolvedValue({
+        stop_reason: "end_turn",
+        content: [
+          {
+            type: "text",
+            text: "Twenty five days.",
+            citations: [
+              {
+                type: "search_result_location",
+                cited_text: "Employees receive twenty five days of holiday.",
+                search_result_index: 0,
+                start_block_index: 0,
+                end_block_index: 1,
+              },
+            ],
+          },
+        ],
+      });
+
+      const res = await server.post("/api/documents.answerQuestion", user, {
+        body: { query: `How many days of holiday? My key is ${queryKey}` },
+      });
+      const body = await res.json();
+
+      expect(res.status).toEqual(200);
+      expect(body.answer).toEqual("Twenty five days.");
+      expect(create).toHaveBeenCalledTimes(1);
+      const sent = JSON.stringify(create.mock.calls[0][0]);
+      expect(sent).toContain("holiday tool uses");
+      expect(sent).toContain("[REDACTED:");
+      for (const secret of [docToken, docPassword, keyBody, queryKey]) {
+        expect(sent).not.toContain(secret);
+      }
     });
   });
 });

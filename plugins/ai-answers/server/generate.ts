@@ -1,5 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import env from "./env";
+import { redactSecrets } from "./redact";
 import type { AnswerSource } from "./retrieve";
 import { headingOf } from "./text";
 
@@ -84,14 +85,15 @@ export async function generateAnswer(
           ...sources.map((s) => ({
             type: "search_result" as const,
             source: s.document.url,
-            title: s.document.title || "Untitled",
+            title: redactSecrets(s.document.title || "Untitled").text,
             content: s.sections.map((text) => ({
               type: "text" as const,
               text,
             })),
             citations: { enabled: true },
           })),
-          { type: "text" as const, text: question },
+          // A pasted secret in the question must not reach the model either.
+          { type: "text" as const, text: redactSecrets(question).text },
         ],
       },
     ],

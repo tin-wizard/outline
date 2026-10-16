@@ -7,6 +7,7 @@ import {
 import { expandDocumentIdLeaves } from "@server/routes/api/documents/documents";
 import SearchProviderManager from "@server/utils/SearchProviderManager";
 import type * as T from "./api/schema";
+import { redactSecrets } from "./redact";
 import {
   selectSections,
   splitIntoSections,
@@ -14,7 +15,7 @@ import {
   toKeywords,
 } from "./text";
 
-/** A document and the sections of it that are sent to the model. */
+/** A document and the sections of it that are sent to the model, secrets redacted. */
 export interface AnswerSource {
   document: Document;
   sections: string[];
@@ -67,9 +68,10 @@ export async function retrieveSources(
 
   const sources: AnswerSource[] = [];
   for (const { document } of results) {
-    const markdown = await DocumentHelper.toMarkdown(document, {
-      includeTitle: false,
-    });
+    // Redacted before splitting so a key block cut across sections is still caught.
+    const { text: markdown } = redactSecrets(
+      await DocumentHelper.toMarkdown(document, { includeTitle: false })
+    );
     const sections = selectSections(
       splitIntoSections(markdown),
       keywords,
