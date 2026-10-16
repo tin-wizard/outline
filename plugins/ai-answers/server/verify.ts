@@ -271,22 +271,30 @@ function toPassage(raw: string): Passage {
  * Share of the text's content words found in the passage, or undefined when
  * a number, URL, email, code span or acronym/ID in it is missing there.
  */
-function supportRatio(text: string, passage: Passage): number | undefined {
+function supportRatio(
+  text: string,
+  passage: Passage,
+  countRepeats = false
+): number | undefined {
   const prose = proseIfExactTokensIn(text, passage.folded);
   if (prose === undefined) {
     return undefined;
   }
-  const words = [
-    ...new Set(
-      splitWords(prose)
-        .filter((w) => w && !STOPWORDS.has(w))
-        .map(stem)
-    ),
-  ];
+  const all = splitWords(prose)
+    .filter((w) => w && !STOPWORDS.has(w))
+    .map(stem);
+  const words = [...new Set(all)];
   if (words.length === 0) {
     return 1;
   }
-  return words.filter((w) => passage.words.has(w)).length / words.length;
+  const unique =
+    words.filter((w) => passage.words.has(w)).length / words.length;
+  if (!countRepeats) {
+    return unique;
+  }
+  // Counted with repeats too, so padding with one junk word cannot hide behind a single miss.
+  const counted = all.filter((w) => passage.words.has(w)).length / all.length;
+  return Math.min(unique, counted);
 }
 
 /**
@@ -510,7 +518,8 @@ export function verifyBlock(
   const ctx = Array.isArray(sources) ? prepareSources(sources) : sources;
   if (
     block.text.length > MAX_BLOCK_LENGTH ||
-    block.cells.join("").length > MAX_BLOCK_LENGTH
+    block.cells.join("").length > MAX_BLOCK_LENGTH ||
+    block.text.normalize("NFKC").length > MAX_BLOCK_LENGTH
   ) {
     return {
       ok: false,
@@ -581,7 +590,8 @@ export function verifyBlock(
   });
 
   if (structural) {
-    return isLabel(text, ctx, MIN_HEADING_SUPPORT)
+    return isLabel(text, ctx, HEADING_MIN_WORD_LENGTH) &&
+      !IMPERATIVE_WORDS.has(splitWords(text).find(Boolean) ?? "")
       ? accept([], false)
       : drop("structure");
   }
@@ -591,27 +601,36 @@ export function verifyBlock(
     return resolved ? [resolved] : [];
   });
   if (valid.length > 0) {
+    if (hasLongRun(text)) {
+      return drop("unsupported");
+    }
     const passages = valid.map((v) => toPassage(v.passage));
-    let backed = false;
+    // Only citations that supported something are returned with the block.
+    const used = new Set<number>();
     if (block.kind === "tableRow") {
-      backed = passages.some((p) => isRowSupported(cleaned, p));
+      const at = passages.findIndex((p, i) =>
+        isRowSupported(cleaned, p, flatten(valid[i].passage))
+      );
+      if (at === -1) {
+        return drop("unsupported");
+      }
+      used.add(at);
     } else {
       for (const sentence of sentencesOf(text)) {
-        if (passages.some((p) => isClaimSupported(sentence, p))) {
-          backed = true;
+        const at = passages.findIndex((p) => isClaimSupported(sentence, p));
+        if (at !== -1) {
+          used.add(at);
         } else if (!isGapStatement(sentence, ctx)) {
           return drop("unsupported");
         }
       }
     }
-    if (!backed) {
+    if (used.size === 0) {
       // Only gap statements: releasable, but they back nothing.
-      return block.kind === "tableRow"
-        ? drop("unsupported")
-        : accept([], false);
+      return accept([], false);
     }
     return accept(
-      valid.map((v) => v.entry),
+      [...used].sort((a, b) => a - b).map((i) => valid[i].entry),
       true
     );
   }
@@ -658,6 +677,11 @@ export function verifyFinal(state: FinalState): FinalVerdict {
  * Verifies the blocks of one streamed answer in order, remembering what was
  * released: a table row is dropped (reason "table") unless its header was
  * released, and `finish` runs the final gate over the released blocks.
+ *
+ * Use exactly one `BlockSplitter` per verifier: table ids are counters local
+ * to a splitter, so rows from a second splitter could match the wrong header.
+ * A pipe row after a blank line is a paragraph, not a table row; it is
+ * verified as a claim and rendered escaped.
  */
 export class AnswerVerifier {
   /** The verdicts of every block released so far, in order. */
@@ -718,8 +742,24 @@ const MAX_BLOCK_LENGTH = 4000;
 /** Longest uncited heading, table header or lead-in. */
 const MAX_STRUCTURAL_LENGTH = 80;
 
-/** Share of a heading's words that must come from the sources or the structural vocabulary. */
-const MIN_HEADING_SUPPORT = 0.8;
+/**
+ * Heading and table-header words longer than this must all come from the
+ * sources or the neutral vocabulary; shorter ones are mostly function words.
+ */
+const HEADING_MIN_WORD_LENGTH = 3;
+
+/** Instructions are not labels: a heading may not start with one of these. */
+const IMPERATIVE_WORDS = new Set(
+  (
+    "use run install configure disable enable set reset delete remove send share click open go visit email " +
+    "contact call change update download upload add create turn stop start skip avoid ignore enter type paste " +
+    "copy follow check make give tell ask reply log sign grant allow deny bypass export import transfer pay " +
+    "buy submit approve reject first then next always never do don dont"
+  ).split(" ")
+);
+
+/** More identical tokens in a row than this is padding, not prose. */
+const MAX_REPEATED_TOKENS = 20;
 
 /** Longest statement of what the documents do not cover. */
 const MAX_GAP_LENGTH = 160;
@@ -732,12 +772,10 @@ const MIN_CODE_LENGTH = 8;
  * they label structure and assert nothing.
  */
 const STRUCTURAL_WORDS = (
-  "overview summary details detail background introduction integrations integration steps step " +
-  "setup set up install installation configuration configure usage use using example examples " +
-  "notes note comparison compare differences difference troubleshooting diagnosis causes cause " +
-  "fixes fix solution solutions requirements prerequisites options option features feature key " +
-  "points related information further following below these here how what why documents document " +
-  "sources source cover covered mention answer follow run next first then finally limitations known issues"
+  "overview summary details detail background introduction integrations integration steps " +
+  "setup installation configuration usage example examples notes comparison differences " +
+  "troubleshooting diagnosis causes fixes solutions requirements prerequisites options features " +
+  "key points related information documents sources limitations known issues"
 ).replace(/\s+/g, " ");
 
 /**
@@ -747,27 +785,50 @@ const STRUCTURAL_WORDS = (
 const ANY_URL_PATTERN =
   /(?:\b[a-z][a-z0-9+.-]{0,30}:\/\/|(?<![\w/:])\/\/(?=[\w-])|\b(?:javascript|data|vbscript|file):|\bwww\.|\b[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63}){0,10}\.[a-z]{2,24}\/)[^\s<>()[\]"'`]{0,2000}/gi;
 
-/** Host names without a scheme or path, such as evil.example.com. */
+/** Host names without a scheme or path, such as evil.example.com or évil.cöm. */
 const BARE_DOMAIN_PATTERN =
-  /\b[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63}){0,10}\.[a-z]{2,24}\b/gi;
+  /(?<![\p{L}\p{N}-])[\p{L}\p{N}-]{1,63}(?:\.[\p{L}\p{N}-]{1,63}){0,10}\.\p{L}{2,24}(?![\p{L}\p{N}-])/giu;
 
-/** Tokens that look like code: paths, flags, calls, member access, assignments. */
-const CODE_LIKE_PATTERN = /[/\\{}$<>=~]|\w\.\w|--|::|\(\)/;
+/** Spelled-out hosts: "evil dot com", "evil (dot) com". */
+const DOT_WORD_PATTERN =
+  /(?<![\p{L}\p{N}])[\p{L}\p{N}-]{1,63}\s{0,3}[[(]?dot[\])]?\s{0,3}\p{L}{2,24}(?![\p{L}\p{N}])/giu;
+
+/**
+ * Tokens that look like code: paths, flags (also single-dash), calls, member
+ * access, assignments, and defanged hosts like evil[.]com or evil(dot)com.
+ */
+const CODE_LIKE_PATTERN =
+  /[/\\{}$<>=~]|\w\.\w|--|::|\(\)|^-[A-Za-z]|\[\.\]|[[(]dot[\])]/i;
+
+/** Shell commands; the command and the word after it must be in the passage. */
+const COMMAND_WORDS = new Set(
+  "sudo curl wget rm chmod chown bash sh zsh powershell ssh scp nc netcat eval exec".split(
+    " "
+  )
+);
 
 /** Abbreviations that look like member access but are prose. */
 const PROSE_ABBREVIATIONS = /^(?:e\.g|i\.e|etc)\.?$/i;
 
-/** Words whose presence flips or asserts a table cell; they must be in the passage. */
+/** Words that assert or flip a table cell; rows with them must be copied verbatim. */
 const POLARITY_WORDS = new Set(
-  "no not yes none never true false".split(" ").map(stem)
+  "no not yes none never true false y n".split(" ").map(stem)
 );
 
+/** A fixed lead, then the object (group 1) of what is not covered. */
 const GAP_PATTERN =
-  /^(?:the\s+)?(?:provided\s+|available\s+)?(?:documents?|sources?|search results|knowledge base)\s+(?:provided\s+)?(?:do|does)\s*(?:not|n['’]t)\s+(?:cover|mention|say|state|describe|specify|include|contain|explain|address|discuss|list|provide|detail)(?:\s+[\p{L}\p{N}'’-]+){1,6}\.?$/iu;
+  /^(?:the\s+)?(?:provided\s+|available\s+)?(?:documents?|sources?|search results|knowledge base)\s+(?:provided\s+)?(?:do|does)\s*(?:not|n['’]t)\s+(?:cover|mention|describe|include|contain|explain|address|discuss|list|provide|detail)((?:\s+[\p{L}\p{N}'’-]+){1,6})\.?$/iu;
 
-/** Words that would let a gap statement carry a claim or an instruction. */
+/** Words in the object that would let a gap statement carry a claim or an instruction. */
 const GAP_BLOCKERS =
-  /\b(?:but|however|although|though|instead|yet|because|since|while|whereas|therefore|so|that|which|and|or|nor|as|if|when|then|unless|until|before|after|should|must|need|can|is|are|was|were|tell|use|email|contact|disable|enable|set|run)\b|[—–,;:`]/i;
+  /\b(?:but|however|although|though|instead|yet|because|since|while|whereas|therefore|so|that|which|and|or|nor|as|if|when|then|unless|until|before|after|should|must|need|can|is|are|was|were|tell|use|email|contact|disable|enable|set|run|not|no|never|to|any|only|without)\b|[—–,;:`]/i;
+
+/** Actions (any form) that may not be the object of a gap statement. */
+const GAP_ACTIONS =
+  /(?<![\p{L}])(?:disabl|enabl|bypass|shar|reus|skip|delet|remov|turn|send|sent|reset|chang|grant|export|transfer|install|run|download|upload|click|open|visit|ignor|switch|kill|stop)/iu;
+
+/** Most content words a gap statement's object may have. */
+const MAX_GAP_OBJECT_WORDS = 2;
 
 /** Accepts a citation only when it maps to sent sections and its quote is in them. */
 function resolveCitation(
@@ -848,7 +909,11 @@ function addressesIn(text: string): {
   const rest = urls
     .concat(emails)
     .reduce((left, token) => left.replace(token, " "), probe);
-  return { urls, emails, domains: rest.match(BARE_DOMAIN_PATTERN) ?? [] };
+  const domains: string[] = [
+    ...(rest.match(BARE_DOMAIN_PATTERN) ?? []),
+    ...(rest.match(DOT_WORD_PATTERN) ?? []),
+  ];
+  return { urls, emails, domains };
 }
 
 /**
@@ -894,53 +959,82 @@ function findVerbatim(
   return undefined;
 }
 
-/** Whether every code-like token in the text appears in the normalised passage. */
+/**
+ * Whether every code-like token in the text appears in the normalised
+ * passage; a shell command word and the word after it count as code-like.
+ */
 function codeLikeTokensKnown(text: string, passage: string): boolean {
-  return text
+  const tokens = text
     .split(/\s+/)
-    .map((token) => token.replace(/^[[("'`*]+|[\])"'`*.,;:!?]+$/g, ""))
-    .filter(
-      (token) =>
-        CODE_LIKE_PATTERN.test(token) && !PROSE_ABBREVIATIONS.test(token)
-    )
-    .every((token) => containsToken(passage, normalise(token)));
+    .map((token) => token.replace(/^[[("'`*]+|[\])"'`*.,;:!?]+$/g, ""));
+  return tokens.every((token, i) => {
+    const command =
+      COMMAND_WORDS.has(token.toLowerCase()) ||
+      COMMAND_WORDS.has(tokens[i - 1]?.toLowerCase() ?? "");
+    const codeLike =
+      command ||
+      (CODE_LIKE_PATTERN.test(token) && !PROSE_ABBREVIATIONS.test(token));
+    return !codeLike || !token || containsToken(passage, normalise(token));
+  });
 }
 
 /** A claim sentence supported by one cited passage. */
 function isClaimSupported(sentence: string, passage: Passage): boolean {
   return (
-    (supportRatio(sentence, passage) ?? 0) >= MIN_CONTENT_WORD_SUPPORT &&
+    (supportRatio(sentence, passage, true) ?? 0) >= MIN_CONTENT_WORD_SUPPORT &&
     codeLikeTokensKnown(sentence, passage.text)
   );
 }
 
-/** A table row whose cells and whole row are supported by one cited passage. */
-function isRowSupported(cells: string[], passage: Passage): boolean {
+/**
+ * A table row whose cells and whole row are supported by one cited passage.
+ * A row with yes/no-type words or a cell without letters or digits (✓, ❌,
+ * empty) must be copied verbatim, cells in order, from that passage.
+ */
+function isRowSupported(
+  cells: string[],
+  passage: Passage,
+  flatPassage: string
+): boolean {
   const filled = cells.filter((c) => c.trim());
   const row = filled.join(" ");
+  if (
+    cells.some((cell) => !/[\p{L}\p{N}]/u.test(cell)) ||
+    splitWords(row).some((w) => POLARITY_WORDS.has(stem(w)))
+  ) {
+    return flatPassage.includes(flatten(`| ${cells.join(" | ")} |`));
+  }
   return (
     filled.every((cell) => isClaimSupported(cell, passage)) &&
-    isClaimSupported(row, passage) &&
-    splitWords(row)
-      .map(stem)
-      .filter((w) => POLARITY_WORDS.has(w))
-      .every((w) => passage.words.has(w))
+    isClaimSupported(row, passage)
   );
 }
 
-/** A short label that carries no claim the sources do not make. */
+/**
+ * A short label that carries no claim the sources do not make: no URL or
+ * email, known exact and code-like tokens, and every content word longer than
+ * `minWordLength` from the sent sections or the neutral vocabulary.
+ */
 function isLabel(
   text: string,
   ctx: PreparedSources,
-  minSupport: number
+  minWordLength: number
 ): boolean {
   const found = addressesIn(text);
+  if (
+    text.length > MAX_STRUCTURAL_LENGTH ||
+    found.urls.length > 0 ||
+    found.emails.length > 0 ||
+    !codeLikeTokensKnown(text, ctx.known.text)
+  ) {
+    return false;
+  }
+  const prose = proseIfExactTokensIn(text, ctx.labels.folded);
   return (
-    text.length <= MAX_STRUCTURAL_LENGTH &&
-    found.urls.length === 0 &&
-    found.emails.length === 0 &&
-    codeLikeTokensKnown(text, ctx.known.text) &&
-    (supportRatio(text, ctx.labels) ?? 0) >= minSupport
+    prose !== undefined &&
+    splitWords(prose)
+      .filter((w) => w.length > minWordLength && !STOPWORDS.has(w))
+      .every((w) => ctx.labels.words.has(stem(w)))
   );
 }
 
@@ -949,8 +1043,22 @@ function isLeadIn(text: string, ctx: PreparedSources): boolean {
   return (
     text.endsWith(":") &&
     sentencesOf(text).length === 1 &&
-    isLabel(text, ctx, 1)
+    isLabel(text, ctx, 0)
   );
+}
+
+/** More than `MAX_REPEATED_TOKENS` identical whitespace-separated tokens in a row. */
+function hasLongRun(text: string): boolean {
+  let run = 0;
+  let previous = "";
+  for (const token of text.split(/\s+/)) {
+    run = token === previous ? run + 1 : 1;
+    previous = token;
+    if (run > MAX_REPEATED_TOKENS) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -959,11 +1067,17 @@ function isLeadIn(text: string, ctx: PreparedSources): boolean {
  */
 function isGapStatement(sentence: string, ctx: PreparedSources): boolean {
   const text = sentence.trim();
+  const object =
+    text.length <= MAX_GAP_LENGTH ? text.match(GAP_PATTERN)?.[1] : undefined;
+  if (!object) {
+    return false;
+  }
   const found = addressesIn(text);
   return (
-    text.length <= MAX_GAP_LENGTH &&
-    GAP_PATTERN.test(text) &&
-    !GAP_BLOCKERS.test(text) &&
+    !GAP_BLOCKERS.test(object) &&
+    !GAP_ACTIONS.test(object) &&
+    splitWords(object).filter((w) => w && !STOPWORDS.has(w)).length <=
+      MAX_GAP_OBJECT_WORDS &&
     !/\p{N}/u.test(text) &&
     found.urls.length + found.emails.length + found.domains.length === 0 &&
     !text.split(/\s+/).some((t) => CODE_LIKE_PATTERN.test(t)) &&

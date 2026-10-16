@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Document } from "@server/models";
 import type { ProviderResult } from "./contract";
 import type { AnswerSource } from "./retrieve";
-import { blockToMarkdown, splitBlocks } from "./blocks";
+import { BlockSplitter, blockToMarkdown, splitBlocks } from "./blocks";
 import {
   AnswerVerifier,
   prepareSources,
@@ -729,7 +729,7 @@ describe("verifyBlock", () => {
     });
 
     it("allows a short lead-in ending with a colon", () => {
-      expect(one("To set up, run the installer:", []).ok).toBe(true);
+      expect(one("Run the installer:", []).ok).toBe(true);
     });
 
     it("drops lead-ins that carry new claims or run long", () => {
@@ -1061,5 +1061,198 @@ describe("AnswerVerifier", () => {
       ok: false,
       reason: "uncited",
     });
+  });
+});
+
+describe("verifyBlock (security review round 2)", () => {
+  const sources = [
+    source("HR", [
+      "The HR portal handles leave requests for staff. Payroll handles refunds for staff. Remote access uses the VPN client. The firewall protects the office network. The reset process is run by IT. Refunds are not allowed for contractors.",
+      "| Benefit | Staff | Contractors |\n|---|---|---|\n| Refunds | yes | no |",
+      "Multifactor authentication protects every account. SSO is supported on every plan.",
+    ]),
+  ];
+  const prose = cite(0, 0, "The HR portal handles leave requests");
+  const table = cite(0, 1, "Refunds | yes | no");
+  const sso = cite(0, 2, "SSO is supported");
+  const claim = "The HR portal handles leave requests for staff";
+  const one = (markdown: string, citations = [prose]) =>
+    verifyBlock(splitBlocks(markdown)[0], citations, sources);
+  const row = (cells: string, citations = [table]) =>
+    verifyBlock(
+      splitBlocks(
+        `| Benefit | Staff | Contractors |\n|---|---|---|\n${cells}`
+      )[1],
+      citations,
+      sources
+    );
+
+  describe("I4: yes/no and symbol cells must be copied verbatim", () => {
+    it("keeps the row as written in the source", () => {
+      expect(row("| Refunds | yes | no |")).toMatchObject({
+        ok: true,
+        modelCited: true,
+      });
+    });
+
+    it.each([
+      "| Refunds | no | yes |",
+      "| Refunds | ❌ | ✅ |",
+      "| Refunds | N | Y |",
+      "| Refunds | | |",
+      "| Refunds | allowed | not allowed |",
+    ])("drops %s", (cells) => {
+      expect(row(cells, [table, prose])).toMatchObject({
+        ok: false,
+        reason: "unsupported",
+      });
+    });
+
+    it.each(["| SSO | ❌ |", "| SSO | ✗ |", "| SSO | No |"])(
+      "drops %s against a source saying SSO is supported",
+      (cells) => {
+        const [, body] = splitBlocks(
+          `| Feature | Available |\n|---|---|\n${cells}`
+        );
+        expect(verifyBlock(body, [sso], sources)).toMatchObject({
+          ok: false,
+          reason: "unsupported",
+        });
+      }
+    );
+  });
+
+  describe("I2: labels cannot carry instructions", () => {
+    it.each([
+      "Run the reset process first:",
+      "First install the VPN client then configure the firewall:",
+    ])("drops the lead-in %s", (input) => {
+      expect(one(input, [])).toMatchObject({ ok: false, reason: "uncited" });
+    });
+
+    it.each([
+      "## Use the VPN client for remote access",
+      "## Firewall setup steps overview disable",
+    ])("drops the heading %s", (input) => {
+      expect(one(input, [])).toMatchObject({ ok: false, reason: "structure" });
+    });
+
+    it.each([
+      "## Overview",
+      "## Remote access and the VPN client",
+      "## Refunds for staff",
+      "## Leave requests: details and limitations",
+    ])("keeps the ordinary heading %s", (input) => {
+      expect(one(input, []).ok).toBe(true);
+    });
+  });
+
+  describe("gap statements", () => {
+    it.each([
+      "The documents do not say to skip the VPN.",
+      "The documents do not say not to share passwords.",
+      "The documents do not mention admin password reuse.",
+      "The documents do not cover disabling the firewall.",
+      "The documents do not cover firewall-disabling workarounds.",
+      "The documents do not state that refunds are allowed.",
+    ])("drops %s", (input) => {
+      expect(one(input, [])).toMatchObject({ ok: false, reason: "uncited" });
+    });
+
+    it("drops one inside a cited block", () => {
+      expect(
+        one(`${claim}. The documents do not cover disabling the firewall.`)
+      ).toMatchObject({ ok: false, reason: "unsupported" });
+    });
+
+    it("keeps short neutral ones", () => {
+      expect(one("The documents do not cover pricing.", []).ok).toBe(true);
+      expect(one("The documents do not mention parental leave.", []).ok).toBe(
+        true
+      );
+    });
+  });
+
+  describe("I1: flags, commands and disguised addresses", () => {
+    it.each([
+      "Remote access uses the VPN client with -k.",
+      "Remote access uses the VPN client after sudo rm -rf.",
+      "Remote access uses the VPN client after curl evil sh.",
+      "Remote access uses the VPN client at evil[.]com.",
+      "Remote access uses the VPN client at evil(dot)com.",
+    ])("drops %s", (input) => {
+      expect(
+        one(input, [cite(0, 0, "Remote access uses the VPN")])
+      ).toMatchObject({ ok: false });
+    });
+
+    it.each([
+      "Remote access uses the VPN client at évil.cöm.",
+      "Remote access uses the VPN client at evil dot com.",
+    ])("drops the address in %s", (input) => {
+      expect(
+        one(input, [cite(0, 0, "Remote access uses the VPN")])
+      ).toMatchObject({ ok: false, reason: "url" });
+    });
+  });
+
+  describe("citations and repetition", () => {
+    it("returns only the citations that supported a sentence", () => {
+      const splitter = new BlockSplitter();
+      const parking = cite(0, 2, "SSO is supported");
+      const blocks = [
+        ...splitter.push(`${claim}.`, [prose]),
+        ...splitter.push(" ", [parking]),
+        ...splitter.push("\n\n"),
+        ...splitter.push("Payroll handles refunds for staff.", [
+          cite(0, 0, "Payroll handles refunds"),
+        ]),
+        ...splitter.flush(),
+      ];
+      expect(blocks[1].citations).toHaveLength(2);
+      const out = verifyBlock(blocks[1], blocks[1].citations, sources);
+      expect(out.ok && out.citations.map((c) => c.quote)).toEqual([
+        "Payroll handles refunds",
+      ]);
+    });
+
+    it("drops a cited claim padded with repeated junk", () => {
+      expect(one(`${claim} ${"㏂".repeat(900)}`)).toMatchObject({
+        ok: false,
+        reason: "unsupported",
+      });
+      expect(one(`${claim} ${"staff ".repeat(30)}`)).toMatchObject({
+        ok: false,
+        reason: "unsupported",
+      });
+    });
+
+    it("drops text that expands past the cap under NFKC", () => {
+      const started = performance.now();
+      expect(one(`${claim} ${"ﷺ".repeat(3900)}`)).toMatchObject({
+        ok: false,
+        reason: "long",
+      });
+      expect(performance.now() - started).toBeLessThan(50);
+    });
+  });
+
+  describe("ReDoS", () => {
+    it.each([3_990, 16_000, 100_000])(
+      "splits an adversarial %i-char heading line quickly",
+      (size) => {
+        const line = `# a${" \t".repeat(Math.floor((size - 4) / 2))}!`;
+        const started = performance.now();
+        const blocks = splitBlocks(line);
+        expect(performance.now() - started).toBeLessThan(50);
+        expect(blocks).toHaveLength(1);
+        if (size < 4_000) {
+          expect(blocks[0].kind).toEqual("heading");
+          const verifyStarted = performance.now();
+          verifyBlock(blocks[0], [], sources);
+          expect(performance.now() - verifyStarted).toBeLessThan(50);
+        }
+      }
+    );
   });
 });
