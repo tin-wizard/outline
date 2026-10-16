@@ -1601,6 +1601,32 @@ describe("#collections.create", () => {
     expect(body.data.permission).toBe(null);
     expect(body.policies.length).toBe(1);
     expect(body.policies[0].abilities.read).toBeTruthy();
+    expect(body.data.aiExcluded).toBe(false);
+  });
+
+  it("should create a collection excluded from AI answers", async () => {
+    const user = await buildAdmin();
+    const res = await server.post("/api/collections.create", user, {
+      body: { name: "Test", aiExcluded: true },
+    });
+    const body = await res.json();
+    expect(res.status).toEqual(200);
+    expect(body.data.aiExcluded).toBe(true);
+  });
+
+  it("should not let a non-admin member create an AI-excluded collection", async () => {
+    const team = await buildTeam({ memberCollectionCreate: true });
+    const member = await buildUser({ teamId: team.id });
+
+    const res = await server.post("/api/collections.create", member, {
+      body: { name: "Test", aiExcluded: true },
+    });
+    expect(res.status).toEqual(403);
+
+    const plain = await server.post("/api/collections.create", member, {
+      body: { name: "Test" },
+    });
+    expect(plain.status).toEqual(200);
   });
 
   it("should error when index is invalid", async () => {
@@ -1922,6 +1948,57 @@ describe("#collections.update", () => {
       },
     });
     expect(res.status).toEqual(403);
+  });
+
+  it("defaults aiExcluded to false and lets an admin toggle it", async () => {
+    const team = await buildTeam();
+    const admin = await buildAdmin({ teamId: team.id });
+    const collection = await buildCollection({ teamId: team.id });
+    expect(collection.aiExcluded).toBe(false);
+
+    const res = await server.post("/api/collections.update", admin, {
+      body: { id: collection.id, aiExcluded: true },
+    });
+    const body = await res.json();
+    expect(res.status).toEqual(200);
+    expect(body.data.aiExcluded).toBe(true);
+    expect((await collection.reload()).aiExcluded).toBe(true);
+
+    const res2 = await server.post("/api/collections.update", admin, {
+      body: { id: collection.id, aiExcluded: false },
+    });
+    expect(res2.status).toEqual(200);
+    expect((await collection.reload()).aiExcluded).toBe(false);
+  });
+
+  it("does not let a collection admin who is not a workspace admin change aiExcluded", async () => {
+    const team = await buildTeam();
+    const manager = await buildUser({ teamId: team.id });
+    const collection = await buildCollection({
+      teamId: team.id,
+      aiExcluded: true,
+    });
+    await UserMembership.create({
+      createdById: manager.id,
+      collectionId: collection.id,
+      userId: manager.id,
+      permission: CollectionPermission.Admin,
+    });
+
+    const res = await server.post("/api/collections.update", manager, {
+      body: { id: collection.id, aiExcluded: false },
+    });
+    expect(res.status).toEqual(403);
+    expect((await collection.reload()).aiExcluded).toBe(true);
+
+    // The edit form sends every value, so an unchanged flag must not block a rename.
+    const rename = await server.post("/api/collections.update", manager, {
+      body: { id: collection.id, name: "Renamed", aiExcluded: true },
+    });
+    expect(rename.status).toEqual(200);
+    await collection.reload();
+    expect(collection.name).toEqual("Renamed");
+    expect(collection.aiExcluded).toBe(true);
   });
 
   it("allows editing non-private collection", async () => {

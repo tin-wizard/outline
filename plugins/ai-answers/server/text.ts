@@ -45,32 +45,61 @@ const STOP_WORDS = new Set([
   "here",
   "than",
   "then",
+  "or",
 ]);
 
-const MAX_KEYWORDS = 8;
+// Raised from 8: one slug/path token can use up to five slots (parts + compound).
+const MAX_KEYWORDS = 10;
 
 const CJK_PATTERN =
   /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
 
+// A word, or words joined by slug/path separators such as `owner/repo-name`.
+const TOKEN_PATTERN = /[\p{L}\p{N}\p{M}]+(?:[/\-_.][\p{L}\p{N}\p{M}]+)*/gu;
+
+const SEPARATOR_PATTERN = /[/\-_.]/;
+
+// Two-letter words that only matter when shouted ("WHAT IS AI").
+const SHORT_STOP_WORDS = new Set(
+  "is of to in on at by it we do be as if my an or up so no us me he am".split(
+    " "
+  )
+);
+
 /**
- * Extracts the significant words of a natural-language question.
+ * Extracts the significant words of a natural-language question. Slug and path
+ * tokens such as `owner/repo-name` yield their parts and the compound itself.
+ * Two-letter terms (AI, HR, QA) are kept only when upper-case or quoted.
  *
  * @param question the question as typed by the user.
- * @returns up to eight lowercase, deduplicated keywords, in order of first use.
+ * @returns up to ten lowercase, deduplicated keywords, in order of first use.
  */
 export function toKeywords(question: string): string[] {
   // shortcut: space-less CJK text becomes one long keyword; use real word
   // segmentation if CJK workspaces matter.
-  const words = question
-    .normalize("NFC")
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\p{M}\s]/gu, " ")
-    .split(/\s+/)
-    .filter(
-      (word) =>
-        ([...word].length > 2 || CJK_PATTERN.test(word)) &&
-        !STOP_WORDS.has(word)
-    );
+  const text = question.normalize("NFC");
+  const words: string[] = [];
+
+  for (const match of text.matchAll(TOKEN_PATTERN)) {
+    const token = match[0];
+    const quoted =
+      (text.slice(0, match.index).match(/"/g)?.length ?? 0) % 2 === 1;
+    const parts = token.split(SEPARATOR_PATTERN);
+    const candidates = parts.length > 1 ? [...parts, token] : parts;
+
+    for (const original of candidates) {
+      const word = original.toLowerCase();
+      const length = [...word].length;
+      const shouted = original === original.toUpperCase() && original !== word;
+      const keep =
+        CJK_PATTERN.test(word) ||
+        length > 2 ||
+        (length === 2 && (quoted || shouted) && !SHORT_STOP_WORDS.has(word));
+      if (keep && !STOP_WORDS.has(word)) {
+        words.push(word);
+      }
+    }
+  }
 
   return [...new Set(words)].slice(0, MAX_KEYWORDS);
 }
@@ -84,6 +113,17 @@ export function toKeywords(question: string): string[] {
  */
 export function toKeywordQuery(keywords: string[]): string {
   return keywords.join(" or ");
+}
+
+/**
+ * Builds a full-text query that requires every keyword. Compound slug/path
+ * keywords are left out because their parts are already present.
+ *
+ * @param keywords the keywords from `toKeywords`.
+ * @returns the query string, empty when there are no keywords.
+ */
+export function toKeywordAndQuery(keywords: string[]): string {
+  return keywords.filter((word) => !SEPARATOR_PATTERN.test(word)).join(" ");
 }
 
 /**

@@ -39,6 +39,7 @@ export default async function collectionDuplicator(
     sharing: collection.sharing,
     sort: collection.sort,
     commenting: collection.commenting,
+    aiExcluded: collection.aiExcluded,
     templateManagement: collection.templateManagement,
     sourceMetadata: {
       ...collection.sourceMetadata,

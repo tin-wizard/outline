@@ -13,6 +13,7 @@ import {
   ImportIcon,
   PinIcon,
   SearchIcon,
+  SparklesIcon,
   UnsubscribeIcon,
   SubscribeIcon,
   MoveIcon,
@@ -43,7 +44,7 @@ import {
 } from "outline-icons";
 import { toast } from "sonner";
 import Icon from "@shared/components/Icon";
-import type { NavigationNode } from "@shared/types";
+import { TeamPreference, type NavigationNode } from "@shared/types";
 import {
   DocumentPreference,
   ExportContentType,
@@ -95,6 +96,7 @@ import {
   newNestedDocumentPath,
   newSiblingDocumentPath,
   searchPath,
+  aiPath,
   documentPath,
   urlify,
   desktopify,
@@ -113,6 +115,7 @@ import type {
 } from "~/types";
 import lazyWithRetry from "~/utils/lazyWithRetry";
 import env from "~/env";
+import { canUseAIAnswers } from "~/hooks/useAIAnswersEnabled";
 import { isMac, isWindows } from "@shared/utils/browser";
 import isCloudHosted from "~/utils/isCloudHosted";
 import DocumentMove from "~/components/DocumentExplorer/DocumentMove";
@@ -1137,6 +1140,43 @@ export const searchInDocument = createInternalLinkAction({
     const [pathname, search] = searchPath({
       documentId: activeDocumentId,
     }).split("?");
+
+    return {
+      pathname,
+      search,
+      state: { sidebarContext },
+    };
+  },
+});
+
+export const askAIAboutDocument = createInternalLinkAction({
+  name: ({ t }) => t("Ask AI about this document"),
+  analyticsName: "Ask AI about document",
+  section: ActiveDocumentSection,
+  icon: <SparklesIcon />,
+  visible: ({ stores, activeDocumentId }) => {
+    if (
+      !activeDocumentId ||
+      !stores.documents.get(activeDocumentId)?.isActive
+    ) {
+      return false;
+    }
+    const { user, team } = stores.auth;
+    return canUseAIAnswers({
+      available: env.AI_ANSWERS_ENABLED === true,
+      preference: !!team?.getPreference(TeamPreference.AIAnswers),
+      isGuest: !!user?.isGuest,
+      isViewer: !!user?.isViewer,
+    });
+  },
+  to: ({ activeDocumentId, sidebarContext }) => {
+    if (!activeDocumentId) {
+      return "";
+    }
+
+    const [pathname, search] = aiPath({ documentId: activeDocumentId }).split(
+      "?"
+    );
 
     return {
       pathname,

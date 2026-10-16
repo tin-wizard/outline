@@ -1,4 +1,12 @@
+import { IncomingMessage } from "node:http";
+import { Socket } from "node:net";
 import type { DefaultState } from "koa";
+import type { Transaction } from "sequelize";
+import type { MockInstance } from "vitest";
+import {
+  releaseRequestTransaction,
+  requestContext,
+} from "@server/storage/requestContext";
 import { errToString } from "@shared/utils/error";
 import { randomString } from "@shared/random";
 import { Scope } from "@shared/types";
@@ -589,6 +597,119 @@ describe("Authentication middleware", () => {
       );
       expect(next).toHaveBeenCalled();
       expect(state.auth.user.id).toEqual(user.id);
+    });
+  });
+
+  describe("request transaction", () => {
+    /** Runs the middleware inside a request context, as the API router does. */
+    async function run(next: (t: Transaction) => Promise<void>) {
+      const user = await buildUser();
+      const spies: {
+        commit?: MockInstance<Transaction["commit"]>;
+        rollback?: MockInstance<Transaction["rollback"]>;
+      } = {};
+      const store = { req: new IncomingMessage(new Socket()) };
+      const result = requestContext.run(store, () =>
+        auth()(
+          {
+            // @ts-expect-error mock request
+            request: {
+              get: vi.fn(() => `Bearer ${user.getSessionToken()}`),
+            },
+            state: {} as DefaultState,
+            cache: {},
+          },
+          async () => {
+            const t = requestContext.getStore()?.transaction;
+            expect(t).toBeDefined();
+            if (!t) {
+              return;
+            }
+            spies.commit = vi.spyOn(t, "commit");
+            spies.rollback = vi.spyOn(t, "rollback");
+            await next(t);
+          }
+        )
+      );
+      return { result, spies };
+    }
+
+    it("commits once after the route when it is not released", async () => {
+      const { result, spies } = await run(async () => undefined);
+      await expect(result).resolves.toBeUndefined();
+      expect(spies.commit).toHaveBeenCalledTimes(1);
+      expect(spies.rollback).not.toHaveBeenCalled();
+    });
+
+    it("rolls back and rethrows when the route throws", async () => {
+      const { result, spies } = await run(async () => {
+        throw new Error("route failed");
+      });
+      await expect(result).rejects.toThrow("route failed");
+      expect(spies.commit).not.toHaveBeenCalled();
+      expect(spies.rollback).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not commit again when the route released it early", async () => {
+      const { result, spies } = await run(async () => {
+        await releaseRequestTransaction();
+      });
+      await expect(result).resolves.toBeUndefined();
+      expect(spies.commit).toHaveBeenCalledTimes(1);
+      expect(spies.rollback).not.toHaveBeenCalled();
+    });
+
+    it("surfaces the route's own error after an early release", async () => {
+      const { result, spies } = await run(async () => {
+        await releaseRequestTransaction();
+        throw new Error("route failed");
+      });
+      await expect(result).rejects.toThrow("route failed");
+      expect(spies.commit).toHaveBeenCalledTimes(1);
+      expect(spies.rollback).not.toHaveBeenCalled();
+    });
+
+    it("commits both transactions once when auth() is nested", async () => {
+      // api.batch dispatches each sub-request through its own auth() inside
+      // the parent's, so each auth() must settle the transaction it created.
+      const user = await buildUser();
+      const ctx = () => ({
+        request: {
+          get: vi.fn(() => `Bearer ${user.getSessionToken()}`),
+        },
+        state: {} as DefaultState,
+        cache: {},
+      });
+      const commits: MockInstance<Transaction["commit"]>[] = [];
+      const rollbacks: MockInstance<Transaction["rollback"]>[] = [];
+      const spyOnCurrent = () => {
+        const t = requestContext.getStore()?.transaction;
+        expect(t).toBeDefined();
+        if (t) {
+          commits.push(vi.spyOn(t, "commit"));
+          rollbacks.push(vi.spyOn(t, "rollback"));
+        }
+      };
+      const store = { req: new IncomingMessage(new Socket()) };
+
+      await requestContext.run(store, () =>
+        // @ts-expect-error mock request
+        auth()(ctx(), async () => {
+          spyOnCurrent();
+          // @ts-expect-error mock request
+          await auth()(ctx(), async () => {
+            spyOnCurrent();
+          });
+        })
+      );
+
+      expect(commits).toHaveLength(2);
+      for (const commit of commits) {
+        expect(commit).toHaveBeenCalledTimes(1);
+      }
+      for (const rollback of rollbacks) {
+        expect(rollback).not.toHaveBeenCalled();
+      }
     });
   });
 });
