@@ -15,6 +15,7 @@ import { rateLimiter } from "@server/middlewares/rateLimiter";
 import requestTracer from "@server/middlewares/requestTracer";
 import { UserFlag } from "@server/models/User";
 import { AuthenticationType } from "@server/types";
+import { Hook, PluginManager } from "@server/utils/PluginManager";
 import { RateLimiterStrategy } from "@server/utils/RateLimiter";
 import { getOAuthOrigin } from "@server/utils/oauth";
 import { getTeamFromContext } from "@server/utils/passport";
@@ -130,6 +131,10 @@ function createMcpServer(scopes: string[], guidance?: string): McpServer {
   fetchTool(server, scopes);
   templateTools(server, scopes);
   userTools(server, scopes);
+  // Plugins add their own tools; each hook applies its own scope checks.
+  PluginManager.getHooks(Hook.MCPTools).forEach((hook) =>
+    hook.value(server, scopes)
+  );
 
   return server;
 }
