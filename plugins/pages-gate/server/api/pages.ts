@@ -1,7 +1,7 @@
 import Router from "koa-router";
 import { Op, UniqueConstraintError, type WhereOptions } from "sequelize";
 import env from "@server/env";
-import { InternalError, NotFoundError, ValidationError } from "@server/errors";
+import { NotFoundError, ValidationError } from "@server/errors";
 import auth from "@server/middlewares/authentication";
 import { rateLimiter } from "@server/middlewares/rateLimiter";
 import { transaction } from "@server/middlewares/transaction";
@@ -25,7 +25,7 @@ import {
 } from "../lib/hostnames";
 import { loadInsights } from "../lib/insights";
 import { InvalidSlugError, sitePrefix } from "../lib/keys";
-import type { ObjectStore } from "../lib/objectStore";
+import { defaultStore } from "../lib/defaultStore";
 import "../policies";
 import { pagesSiteIncludes, presentPagesSite } from "../presenters/pagesSite";
 import { createIngestRouter } from "./ingest";
@@ -292,39 +292,6 @@ export function createPagesRouter(
   // The one route without auth(); every other route declares its own.
   pagesRouter.use(createIngestRouter().routes());
   return pagesRouter;
-}
-
-let r2Store: ObjectStore | undefined;
-
-/** Builds the R2 store from the plugin env on first use, never at import. */
-async function defaultStore(): Promise<ObjectStore> {
-  if (!r2Store) {
-    const { createR2Client, createR2Store } =
-      await import("../lib/objectStore");
-    const {
-      PAGES_R2_ACCOUNT_ID,
-      PAGES_R2_ACCESS_KEY_ID,
-      PAGES_R2_SECRET_ACCESS_KEY,
-      PAGES_R2_BUCKET,
-    } = pagesEnv;
-    if (
-      !PAGES_R2_ACCOUNT_ID ||
-      !PAGES_R2_ACCESS_KEY_ID ||
-      !PAGES_R2_SECRET_ACCESS_KEY ||
-      !PAGES_R2_BUCKET
-    ) {
-      throw InternalError("Pages storage is not configured");
-    }
-    r2Store = createR2Store({
-      client: createR2Client({
-        accountId: PAGES_R2_ACCOUNT_ID,
-        accessKeyId: PAGES_R2_ACCESS_KEY_ID,
-        secretAccessKey: PAGES_R2_SECRET_ACCESS_KEY,
-      }),
-      bucket: PAGES_R2_BUCKET,
-    });
-  }
-  return r2Store;
 }
 
 export default createPagesRouter();
