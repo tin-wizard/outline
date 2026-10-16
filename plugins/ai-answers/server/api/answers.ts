@@ -17,6 +17,7 @@ import { generateAnswerWithUsage, type AnswerResult } from "../generate";
 import { retrieveSources, type AnswerSource } from "../retrieve";
 import {
   estimateUsage,
+  markUnmetered,
   recordUsage,
   reserveModelCall,
   type UsageEntry,
@@ -37,6 +38,8 @@ async function record(entry: UsageEntry) {
       inputTokens: entry.usage.inputTokens,
       outputTokens: entry.usage.outputTokens,
     });
+    // Unrecorded spend breaks the budget: stop calling the model for now.
+    await markUnmetered(entry.teamId);
   }
 }
 
@@ -66,7 +69,7 @@ async function answerWithinLimits(
 
   const startedAt = Date.now();
   try {
-    const { answer, citations, droppedSegments, usage } =
+    const { answer, citations, droppedSegments, abstained, usage } =
       await generateAnswerWithUsage(getClient(), query, sources);
     if (!usage) {
       Logger.warn("AI answers response lacked usage; recording an estimate");
@@ -74,10 +77,10 @@ async function answerWithinLimits(
     await record({
       ...base,
       usage: usage ?? estimateUsage(query, sources),
-      outcome: !usage
-        ? "error"
-        : answer
-          ? "answered"
+      outcome: answer
+        ? "answered"
+        : abstained
+          ? "no_answer"
           : droppedSegments > 0
             ? "dropped"
             : "no_answer",

@@ -34,6 +34,7 @@ export async function generateAnswerWithUsage(
       answer: null,
       citations: [],
       droppedSegments: 0,
+      abstained: false,
       usage: ZERO_USAGE,
     };
   }

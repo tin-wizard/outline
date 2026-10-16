@@ -18,8 +18,19 @@ export const SLOT_TTL_MS = 60_000;
 /** Redis calls slower than this count as Redis being down (fail closed). */
 const REDIS_TIMEOUT_MS = 2000;
 
+const DEFAULT_BUDGET_USD = 25;
+const MAX_BUDGET_USD = 100_000;
+let warnedInvalidBudget = false;
+
+/** How long a workspace stays blocked after a usage row could not be saved. */
+const UNMETERED_TTL_SECONDS = 3600;
+
 /** Why a model call was not made. */
-export type BlockReason = "budget" | "concurrency" | "unavailable";
+export type BlockReason =
+  | "budget"
+  | "concurrency"
+  | "unavailable"
+  | "unmetered";
 
 /** The result of asking permission to call the model. */
 export type Reservation =
@@ -43,8 +54,20 @@ export interface UsageEntry {
  * @returns the cap; 0 (AI answers disabled) when the setting is 0 or invalid.
  */
 export function monthlyBudgetMicroUsd(): number {
-  const usd = Number(env.AI_ANSWERS_MONTHLY_BUDGET_USD);
-  return Number.isFinite(usd) && usd > 0 ? Math.round(usd * 1_000_000) : 0;
+  const raw = (env.AI_ANSWERS_MONTHLY_BUDGET_USD ?? "").trim();
+  // An empty variable is the same as an unset one.
+  if (raw === "") {
+    return DEFAULT_BUDGET_USD * 1_000_000;
+  }
+  const usd = Number(raw);
+  if (!/^\d+(\.\d+)?$/.test(raw) || usd <= 0 || usd > MAX_BUDGET_USD) {
+    if (!warnedInvalidBudget) {
+      warnedInvalidBudget = true;
+      Logger.warn("AI_ANSWERS_MONTHLY_BUDGET_USD is invalid; AI answers off");
+    }
+    return 0;
+  }
+  return Math.round(usd * 1_000_000);
 }
 
 /**
@@ -61,7 +84,7 @@ export async function recordUsage(entry: UsageEntry): Promise<number> {
     model: entry.model,
     inputTokens: entry.usage.inputTokens,
     outputTokens: entry.usage.outputTokens,
-    costMicroUsd: cost,
+    costMicroUsd: String(cost),
     outcome: entry.outcome,
     droppedSegments: entry.droppedSegments ?? 0,
     durationMs: entry.durationMs ?? 0,
@@ -152,6 +175,27 @@ export async function releaseSlot(
 }
 
 /**
+ * Blocks a workspace's model calls for an hour. Used when a call's usage could
+ * not be recorded, so spend that is not in the books cannot keep growing.
+ *
+ * @param teamId the workspace.
+ */
+export async function markUnmetered(teamId: string): Promise<void> {
+  try {
+    await withTimeout(
+      Redis.defaultClient.set(
+        unmeteredKey(teamId),
+        "1",
+        "EX",
+        UNMETERED_TTL_SECONDS
+      )
+    );
+  } catch {
+    Logger.warn("AI answers could not flag an unmetered workspace");
+  }
+}
+
+/**
  * Decides whether a model call may be made and takes a concurrency slot.
  * Any failure to find out (database or Redis) refuses the call.
  *
@@ -159,7 +203,12 @@ export async function releaseSlot(
  * @returns a release function when allowed, otherwise the reason it is not.
  */
 export async function reserveModelCall(teamId: string): Promise<Reservation> {
+  // Budget and slot are not taken atomically; any overshoot is bounded by the
+  // concurrency cap (3 calls in flight).
   try {
+    if (await withTimeout(Redis.defaultClient.exists(unmeteredKey(teamId)))) {
+      return { ok: false, reason: "unmetered" };
+    }
     if (await isOverBudget(teamId)) {
       return { ok: false, reason: "budget" };
     }
@@ -218,6 +267,10 @@ redis.call('ZADD', KEYS[1], tonumber(ARGV[1]) + tonumber(ARGV[2]), ARGV[4])
 redis.call('PEXPIRE', KEYS[1], ARGV[2])
 return 1
 `;
+
+function unmeteredKey(teamId: string): string {
+  return `ai-answers:unmetered:${teamId}`;
+}
 
 function slotKey(teamId: string): string {
   return `ai-answers:slots:${teamId}`;

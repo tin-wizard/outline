@@ -74,7 +74,11 @@ export function createAnthropicProvider(client: AnswerClient): AnswerProvider {
         finishReason: response.stop_reason === "end_turn" ? "stop" : "other",
         usage: response.usage
           ? {
-              inputTokens: response.usage.input_tokens,
+              // Cache writes and reads are billed at (at least) the input price.
+              inputTokens:
+                response.usage.input_tokens +
+                (response.usage.cache_creation_input_tokens ?? 0) +
+                (response.usage.cache_read_input_tokens ?? 0),
               outputTokens: response.usage.output_tokens,
             }
           : null,

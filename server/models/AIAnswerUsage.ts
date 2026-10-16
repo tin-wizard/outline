@@ -55,9 +55,9 @@ class AIAnswerUsage extends Model<
   @Column(DataType.INTEGER)
   outputTokens: number;
 
-  /** Cost in integer micro-dollars (1e-6 USD). */
+  /** Cost in integer micro-dollars (1e-6 USD); a string because pg returns bigint as one. */
   @Column(DataType.BIGINT)
-  costMicroUsd: number;
+  costMicroUsd: string;
 
   @Column(DataType.TEXT)
   outcome: AIAnswerOutcome;

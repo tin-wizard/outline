@@ -4,9 +4,12 @@ import { AIAnswerUsage } from "@server/models";
 import env from "@server/env";
 import Redis from "@server/storage/redis";
 import { buildTeam, buildUser } from "@server/test/factories";
+import { CLIENT_MAX_RETRIES, CLIENT_TIMEOUT_MS } from "./anthropicClient";
 import pluginEnv from "./env";
 import {
   MAX_CONCURRENT_CALLS,
+  SLOT_TTL_MS,
+  markUnmetered,
   acquireSlot,
   estimateUsage,
   getMonthlySpendMicroUsd,
@@ -30,7 +33,7 @@ async function addRow(
     model: "claude-sonnet-5-5",
     inputTokens: 0,
     outputTokens: 0,
-    costMicroUsd,
+    costMicroUsd: String(costMicroUsd),
     outcome: "answered",
     droppedSegments: 0,
     durationMs: 0,
@@ -49,7 +52,19 @@ describe("monthlyBudgetMicroUsd", () => {
     expect(monthlyBudgetMicroUsd()).toEqual(25_000_000);
   });
 
-  it.each(["0", "-5", "abc", "", "NaN"])(
+  it("treats an empty or blank value as unset (default $25)", () => {
+    pluginEnv.AI_ANSWERS_MONTHLY_BUDGET_USD = "";
+    expect(monthlyBudgetMicroUsd()).toEqual(25_000_000);
+    pluginEnv.AI_ANSWERS_MONTHLY_BUDGET_USD = "  ";
+    expect(monthlyBudgetMicroUsd()).toEqual(25_000_000);
+  });
+
+  it("accepts decimals and surrounding whitespace", () => {
+    pluginEnv.AI_ANSWERS_MONTHLY_BUDGET_USD = " 12.5 ";
+    expect(monthlyBudgetMicroUsd()).toEqual(12_500_000);
+  });
+
+  it.each(["0", "-5", "abc", "NaN", "1e3", "Infinity", "0x10", "100001", "5."])(
     "disables AI answers for %p",
     (value) => {
       pluginEnv.AI_ANSWERS_MONTHLY_BUDGET_USD = value;
@@ -75,7 +90,7 @@ describe("recordUsage and spend", () => {
     const row = await AIAnswerUsage.findOne({ where: { teamId: team.id } });
     expect(row?.inputTokens).toEqual(1000);
     expect(row?.outputTokens).toEqual(100);
-    expect(Number(row?.costMicroUsd)).toEqual(3000);
+    expect(row?.costMicroUsd).toEqual("3000");
     expect(row?.outcome).toEqual("answered");
     expect(row?.droppedSegments).toEqual(1);
   });
@@ -105,6 +120,14 @@ describe("recordUsage and spend", () => {
     expect(await isOverBudget(team.id)).toEqual(false);
     await addRow(team.id, 1);
     expect(await isOverBudget(team.id)).toEqual(true);
+  });
+});
+
+describe("slot lifetime", () => {
+  it("outlasts the client timeout across all attempts", () => {
+    expect(SLOT_TTL_MS).toBeGreaterThan(
+      CLIENT_TIMEOUT_MS * (CLIENT_MAX_RETRIES + 1)
+    );
   });
 });
 
@@ -139,6 +162,30 @@ describe("row-level security", () => {
         await isolated.close();
       }
     };
+
+    // WITH CHECK: a tenant cannot write another tenant's rows.
+    const insertAs = async (tenantId: string, rowTeamId: string) => {
+      const isolated = new Sequelize(env.DATABASE_URL as string, {
+        logging: false,
+      });
+      try {
+        await isolated.transaction(async (transaction) => {
+          await isolated.query(
+            `SELECT set_config('app.team_id', :tenantId, true), set_config('app.rls_forced', 'on', true)`,
+            { replacements: { tenantId }, transaction }
+          );
+          await isolated.query(
+            `INSERT INTO ai_answer_usages (id, "teamId", model, "inputTokens", "outputTokens", "costMicroUsd", outcome, "createdAt")
+             VALUES (gen_random_uuid(), :rowTeamId, 'm', 0, 0, 0, 'answered', now())`,
+            { replacements: { rowTeamId }, transaction }
+          );
+        });
+      } finally {
+        await isolated.close();
+      }
+    };
+    await expect(insertAs(b.id, a.id)).rejects.toThrow(/row-level security/);
+    await expect(insertAs(b.id, b.id)).resolves.toBeUndefined();
 
     expect(await countAs(b.id)).toEqual(0);
     expect(await countAs(a.id)).toEqual(1);
@@ -230,6 +277,19 @@ describe("reserveModelCall", () => {
       });
     } finally {
       spy.mockRestore();
+    }
+  });
+
+  it("blocks while the workspace is flagged unmetered", async () => {
+    const team = await buildTeam();
+    await markUnmetered(team.id);
+    try {
+      expect(await reserveModelCall(team.id)).toEqual({
+        ok: false,
+        reason: "unmetered",
+      });
+    } finally {
+      await Redis.defaultClient.del(`ai-answers:unmetered:${team.id}`);
     }
   });
 

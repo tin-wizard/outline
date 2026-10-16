@@ -41,6 +41,7 @@ describe("verifyAnswer", () => {
     );
     expect(out).toEqual({
       droppedSegments: 0,
+      abstained: false,
       answer: "25 days.",
       citations: [
         {
@@ -82,7 +83,25 @@ describe("verifyAnswer", () => {
       answer: null,
       citations: [],
       droppedSegments: 0,
+      abstained: false,
     });
+  });
+
+  it("reports abstention when the model replies NO_ANSWER", () => {
+    const out = verifyAnswer(
+      result([{ text: "NO_ANSWER", citations: [] }]),
+      sources
+    );
+    expect(out.answer).toBeNull();
+    expect(out.abstained).toEqual(true);
+  });
+
+  it("does not report abstention for a normal answer", () => {
+    const out = verifyAnswer(
+      result([{ text: "25 days.", citations: [cite(0)] }]),
+      sources
+    );
+    expect(out.abstained).toEqual(false);
   });
 
   it("drops uncited text that is not copied from a section", () => {

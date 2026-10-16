@@ -1,3 +1,5 @@
+export { default as AIAnswerUsage } from "./AIAnswerUsage";
+
 export { default as ApiKey } from "./ApiKey";
 
 export { default as Attachment } from "./Attachment";
@@ -59,8 +61,6 @@ export { default as Pin } from "./Pin";
 export { default as Reaction } from "./Reaction";
 
 export { default as Revision } from "./Revision";
-
-export { default as AIAnswerUsage } from "./AIAnswerUsage";
 
 export { default as SearchQuery } from "./SearchQuery";
 

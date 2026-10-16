@@ -10,6 +10,7 @@ import {
 } from "@server/test/factories";
 import { server as mswServer } from "@server/test/msw";
 import { getTestServer } from "@server/test/support";
+import Redis from "@server/storage/redis";
 import { acquireSlot, releaseSlot } from "../usage";
 
 // Plugins are loaded with a runtime require, which vi.mock cannot reach, so the
@@ -345,7 +346,7 @@ describe("#documents.answerQuestion", () => {
           model: "claude-sonnet-5-5",
           inputTokens: 0,
           outputTokens: 0,
-          costMicroUsd,
+          costMicroUsd: String(costMicroUsd),
           outcome: "answered",
           droppedSegments: 0,
           durationMs: 0,
@@ -366,7 +367,7 @@ describe("#documents.answerQuestion", () => {
         expect(rows[0].outcome).toEqual("answered");
         expect(rows[0].inputTokens).toEqual(1000);
         expect(rows[0].outputTokens).toEqual(100);
-        expect(Number(rows[0].costMicroUsd)).toBeGreaterThan(0);
+        expect(BigInt(rows[0].costMicroUsd) > 0n).toEqual(true);
         expect(rows[0].userId).toEqual(user.id);
       });
 
@@ -392,7 +393,7 @@ describe("#documents.answerQuestion", () => {
           where: { teamId: user.teamId, outcome: "budget_blocked" },
         });
         expect(blocked).toHaveLength(1);
-        expect(Number(blocked[0].costMicroUsd)).toEqual(0);
+        expect(blocked[0].costMicroUsd).toEqual("0");
       });
 
       it("another workspace's spend does not block this one", async () => {
@@ -456,17 +457,17 @@ describe("#documents.answerQuestion", () => {
         }
       });
 
-      it("records a conservative estimate, not zero, when usage is missing", async () => {
+      it("records a conservative estimate, not zero, when usage is missing (labelled by result)", async () => {
         const { user, document } = await setup();
         create.mockResolvedValue(reply(document));
         await ask(user);
         const [row] = await AIAnswerUsage.findAll({
           where: { teamId: user.teamId },
         });
-        expect(row.outcome).toEqual("error");
+        expect(row.outcome).toEqual("answered");
         expect(row.outputTokens).toEqual(1024);
         expect(row.inputTokens).toBeGreaterThan(0);
-        expect(Number(row.costMicroUsd)).toBeGreaterThan(0);
+        expect(BigInt(row.costMicroUsd) > 0n).toEqual(true);
       });
 
       it("records a conservative estimate when the provider call fails", async () => {
@@ -477,7 +478,72 @@ describe("#documents.answerQuestion", () => {
           where: { teamId: user.teamId },
         });
         expect(row.outcome).toEqual("error");
-        expect(Number(row.costMicroUsd)).toBeGreaterThan(0);
+        expect(BigInt(row.costMicroUsd) > 0n).toEqual(true);
+      });
+
+      it("makes exactly one upstream request when Anthropic returns a 500", async () => {
+        const { user } = await setup();
+        let requests = 0;
+        mswServer.use(
+          http.post("https://api.anthropic.com/v1/messages", () => {
+            requests++;
+            return HttpResponse.json({ type: "error" }, { status: 500 });
+          })
+        );
+        const body = await (await ask(user)).json();
+        expect(body.answer).toBeNull();
+        expect(requests).toEqual(1);
+      });
+
+      it("records abstention as no_answer, not dropped", async () => {
+        const { user } = await setup();
+        create.mockResolvedValue({
+          stop_reason: "end_turn",
+          usage: { input_tokens: 500, output_tokens: 5 },
+          content: [{ type: "text", text: "NO_ANSWER" }],
+        });
+        await ask(user);
+        const [row] = await AIAnswerUsage.findAll({
+          where: { teamId: user.teamId },
+        });
+        expect(row.outcome).toEqual("no_answer");
+      });
+
+      it("frees every slot after the provider throws", async () => {
+        const { user } = await setup();
+        create.mockRejectedValue(new Error("boom"));
+        await ask(user);
+        const tokens: Array<string | null> = [];
+        for (let i = 0; i < 3; i++) {
+          tokens.push(await acquireSlot(user.teamId));
+        }
+        expect(tokens.every(Boolean)).toEqual(true);
+        for (const token of tokens) {
+          await releaseSlot(user.teamId, token as string);
+        }
+      });
+
+      it("blocks later requests after usage could not be recorded", async () => {
+        const { user, document } = await setup();
+        create.mockResolvedValue(
+          reply(document, { input_tokens: 1, output_tokens: 1 })
+        );
+        const spy = vi
+          .spyOn(AIAnswerUsage, "create")
+          .mockRejectedValueOnce(new Error("db down"));
+        try {
+          const first = await (await ask(user)).json();
+          expect(first.answer).toEqual("Twenty five days.");
+          expect(create).toHaveBeenCalledTimes(1);
+
+          const second = await (await ask(user)).json();
+          expect(second.answer).toBeNull();
+          expect(second.documents).toHaveLength(1);
+          expect(create).toHaveBeenCalledTimes(1);
+        } finally {
+          spy.mockRestore();
+          await Redis.defaultClient.del(`ai-answers:unmetered:${user.teamId}`);
+        }
       });
 
       it("records no_answer when the model returns nothing", async () => {

@@ -20,6 +20,8 @@ export interface AnswerResult {
 /** An answer result plus how many segments the verifier discarded. */
 export interface VerifiedAnswer extends AnswerResult {
   droppedSegments: number;
+  /** True when the model abstained (replied with the NO_ANSWER sentinel). */
+  abstained: boolean;
 }
 
 const MAX_QUOTE = 300;
@@ -256,7 +258,12 @@ export function verifyAnswer(
 ): VerifiedAnswer {
   // Anything but a clean finish (refusal, max_tokens, pause_turn, tool_use) may be partial.
   if (result.finishReason !== "stop") {
-    return { answer: null, citations: [], droppedSegments: 0 };
+    return {
+      answer: null,
+      citations: [],
+      droppedSegments: 0,
+      abstained: false,
+    };
   }
 
   const normalisedSections = sources.flatMap((source) =>
@@ -360,7 +367,12 @@ export function verifyAnswer(
   // NO_ANSWER anywhere, even in dropped text, means the model abstained.
   const abstained = result.segments.some((s) => s.text.includes(NO_ANSWER));
   if (!answer || abstained || !hasModelCitation) {
-    return { answer: null, citations: [], droppedSegments };
+    return { answer: null, citations: [], droppedSegments, abstained };
   }
-  return { answer, citations: [...citations.values()], droppedSegments };
+  return {
+    answer,
+    citations: [...citations.values()],
+    droppedSegments,
+    abstained,
+  };
 }
