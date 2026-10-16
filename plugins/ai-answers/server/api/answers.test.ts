@@ -988,6 +988,38 @@ describe("#documents.answerQuestion", () => {
         });
         expect(row.outcome).toEqual("answered");
       });
+
+      it("makes no model call when the client is gone before the handler runs", async () => {
+        const { user, document } = await setup();
+        create.mockResolvedValue(reply(document));
+        const controller = new AbortController();
+        // Auth opens the pinned transaction right before the handler:
+        // disconnect there and let the server see the close first.
+        const original = sequelize.transaction.bind(sequelize);
+        const spy = vi
+          .spyOn(sequelize, "transaction")
+          .mockImplementationOnce(async () => {
+            controller.abort();
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            return original();
+          });
+        try {
+          await server
+            .post("/api/documents.answerQuestion", user, {
+              body: { query: "How many days of holiday?" },
+              signal: controller.signal,
+            })
+            .catch(() => undefined);
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        } finally {
+          spy.mockRestore();
+        }
+        expect(create).not.toHaveBeenCalled();
+        expect(
+          await AIAnswerUsage.count({ where: { teamId: user.teamId } })
+        ).toEqual(0);
+        await expectSlotsFree(user.teamId);
+      });
     });
   });
 });

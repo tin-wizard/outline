@@ -173,6 +173,10 @@ router.post(
     };
     // `res` close, not `req`: req emits "close" once the body is read, res only when the connection ends or the response finishes.
     ctx.res.once("close", handleClose);
+    // A close before the listener was attached is never emitted again.
+    if (ctx.res.destroyed || ctx.req.socket.destroyed) {
+      clientGone.abort();
+    }
 
     try {
       const sources = await retrieveSources(
