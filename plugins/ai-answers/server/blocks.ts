@@ -124,6 +124,25 @@ export class BlockSplitter {
       this.inTable = 0;
       return;
     }
+    // Too long to verify anyway (dropped as "long"); keep it as paragraph
+    // text without running any block pattern over it.
+    if (raw.length > MAX_LINE_LENGTH) {
+      this.inTable = 0;
+      if (this.open) {
+        this.open.lines.push(trimmed);
+        this.open.citations.push(...citations);
+        this.open.maybeTable = false;
+        return;
+      }
+      this.open = {
+        kind: "paragraph",
+        level: 0,
+        marker: "",
+        lines: [trimmed],
+        citations: [...citations],
+      };
+      return;
+    }
     if (this.inTable && trimmed.startsWith("|")) {
       out.push({
         ...block("tableRow", cellsOf(trimmed), citations),
@@ -155,13 +174,12 @@ export class BlockSplitter {
       };
       return;
     }
-    const heading = raw.match(
-      /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$/
-    );
+    // Linear: the optional closing #s are stripped by hand, not by the pattern.
+    const heading = raw.match(/^ {0,3}(#{1,6})(?:[ \t]+([^\n]*))?$/);
     if (heading) {
       this.close(out);
       out.push({
-        ...block("heading", heading[2] ?? "", citations),
+        ...block("heading", stripClosingHashes(heading[2] ?? ""), citations),
         level: heading[1].length,
       });
       return;
@@ -271,6 +289,24 @@ export function blockToMarkdown(block: Block): string {
     default:
       return escapeLineStarts(escapeInline(block.text));
   }
+}
+
+/** Lines longer than this skip the block patterns (the verifier caps blocks at 4000). */
+const MAX_LINE_LENGTH = 4000;
+
+/** Removes an ATX heading's optional closing sequence ("## Title ##") in linear time. */
+function stripClosingHashes(text: string): string {
+  const trimmed = text.trimEnd();
+  let end = trimmed.length;
+  while (end > 0 && trimmed[end - 1] === "#") {
+    end--;
+  }
+  if (end === 0) {
+    return "";
+  }
+  return end < trimmed.length && /[ \t]/.test(trimmed[end - 1])
+    ? trimmed.slice(0, end).trimEnd()
+    : trimmed;
 }
 
 interface Lines {
