@@ -7,14 +7,100 @@ import auth from "@server/middlewares/authentication";
 import { rateLimiter } from "@server/middlewares/rateLimiter";
 import validate from "@server/middlewares/validate";
 import { presentDocument, presentPolicies } from "@server/presenters";
+import type { User } from "@server/models";
 import type { APIContext } from "@server/types";
 import { RateLimiterStrategy } from "@server/utils/RateLimiter";
 import { getClient } from "../anthropicClient";
-import { generateAnswer } from "../generate";
-import { retrieveSources } from "../retrieve";
+import { ZERO_USAGE } from "../contract";
+import env from "../env";
+import { generateAnswerWithUsage, type AnswerResult } from "../generate";
+import { retrieveSources, type AnswerSource } from "../retrieve";
+import {
+  estimateUsage,
+  recordUsage,
+  reserveModelCall,
+  type UsageEntry,
+} from "../usage";
 import * as T from "./schema";
 
 const router = new Router();
+
+const NO_ANSWER_RESULT: AnswerResult = { answer: null, citations: [] };
+
+/** Records usage; a failure is logged, never allowed to break the response. */
+async function record(entry: UsageEntry) {
+  try {
+    await recordUsage(entry);
+  } catch {
+    Logger.warn("AI answers usage could not be recorded", {
+      outcome: entry.outcome,
+      inputTokens: entry.usage.inputTokens,
+      outputTokens: entry.usage.outputTokens,
+    });
+  }
+}
+
+/**
+ * Calls the model only when the workspace is under its monthly budget and
+ * concurrency cap, and meters the call. Fails closed: if the limits cannot be
+ * checked there is no model call, and if the cost of a call is unknown a
+ * conservative estimate is recorded instead of zero.
+ */
+async function answerWithinLimits(
+  user: User,
+  query: string,
+  sources: AnswerSource[]
+): Promise<AnswerResult> {
+  const base = {
+    teamId: user.teamId,
+    userId: user.id,
+    model: env.AI_ANSWERS_MODEL,
+  };
+  const reservation = await reserveModelCall(user.teamId);
+  if (!reservation.ok) {
+    if (reservation.reason === "budget") {
+      await record({ ...base, usage: ZERO_USAGE, outcome: "budget_blocked" });
+    }
+    return NO_ANSWER_RESULT;
+  }
+
+  const startedAt = Date.now();
+  try {
+    const { answer, citations, droppedSegments, usage } =
+      await generateAnswerWithUsage(getClient(), query, sources);
+    if (!usage) {
+      Logger.warn("AI answers response lacked usage; recording an estimate");
+    }
+    await record({
+      ...base,
+      usage: usage ?? estimateUsage(query, sources),
+      outcome: !usage
+        ? "error"
+        : answer
+          ? "answered"
+          : droppedSegments > 0
+            ? "dropped"
+            : "no_answer",
+      droppedSegments,
+      durationMs: Date.now() - startedAt,
+    });
+    return { answer, citations };
+  } catch (error) {
+    Logger.warn("AI answers generation failed", {
+      error: toError(error).message,
+    });
+    // Billing for a failed call is unknown: assume the worst case.
+    await record({
+      ...base,
+      usage: estimateUsage(query, sources),
+      outcome: "error",
+      durationMs: Date.now() - startedAt,
+    });
+    return NO_ANSWER_RESULT;
+  } finally {
+    await reservation.release();
+  }
+}
 
 router.post(
   "documents.answerQuestion",
@@ -33,19 +119,10 @@ router.post(
     const documents = sources.map((source) => source.document);
 
     // Generation is best-effort: fall back to the retrieved documents alone.
-    let answer: string | null = null;
-    let citations: Awaited<ReturnType<typeof generateAnswer>>["citations"] = [];
-    try {
-      ({ answer, citations } = await generateAnswer(
-        getClient(),
-        query,
-        sources
-      ));
-    } catch (error) {
-      Logger.warn("AI answers generation failed", {
-        error: toError(error).message,
-      });
-    }
+    const { answer, citations } =
+      sources.length > 0
+        ? await answerWithinLimits(user, query, sources)
+        : NO_ANSWER_RESULT;
 
     ctx.body = {
       documents: await Promise.all(

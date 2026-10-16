@@ -1,7 +1,7 @@
 import { http, HttpResponse } from "msw";
 import { vi } from "vitest";
 import { TeamPreference } from "@shared/types";
-import { SearchQuery } from "@server/models";
+import { AIAnswerUsage, SearchQuery } from "@server/models";
 import {
   buildAdmin,
   buildCollection,
@@ -10,6 +10,7 @@ import {
 } from "@server/test/factories";
 import { server as mswServer } from "@server/test/msw";
 import { getTestServer } from "@server/test/support";
+import { acquireSlot, releaseSlot } from "../usage";
 
 // Plugins are loaded with a runtime require, which vi.mock cannot reach, so the
 // model is stubbed at the HTTP layer. `create` receives the request body.
@@ -306,6 +307,194 @@ describe("#documents.answerQuestion", () => {
       ]) {
         expect(sent).not.toContain(secret);
       }
+    });
+
+    describe("metering and limits", () => {
+      const reply = (
+        document: { url: string; title: string },
+        usage?: object
+      ) => ({
+        stop_reason: "end_turn",
+        ...(usage ? { usage } : {}),
+        content: [
+          {
+            type: "text",
+            text: "Twenty five days.",
+            citations: [
+              {
+                type: "search_result_location",
+                cited_text: "Employees receive twenty five days of holiday.",
+                source: document.url,
+                title: document.title,
+                search_result_index: 0,
+                start_block_index: 0,
+                end_block_index: 1,
+              },
+            ],
+          },
+        ],
+      });
+      const ask = (user: Parameters<typeof server.post>[1]) =>
+        server.post("/api/documents.answerQuestion", user, {
+          body: { query: "How many days of holiday?" },
+        });
+      const spendRow = (teamId: string, costMicroUsd: number) =>
+        AIAnswerUsage.create({
+          teamId,
+          userId: null,
+          model: "claude-sonnet-5-5",
+          inputTokens: 0,
+          outputTokens: 0,
+          costMicroUsd,
+          outcome: "answered",
+          droppedSegments: 0,
+          durationMs: 0,
+        });
+
+      it("answers under budget and records tokens and cost", async () => {
+        const { user, document } = await setup();
+        create.mockResolvedValue(
+          reply(document, { input_tokens: 1000, output_tokens: 100 })
+        );
+        const body = await (await ask(user)).json();
+        expect(body.answer).toEqual("Twenty five days.");
+
+        const rows = await AIAnswerUsage.findAll({
+          where: { teamId: user.teamId },
+        });
+        expect(rows).toHaveLength(1);
+        expect(rows[0].outcome).toEqual("answered");
+        expect(rows[0].inputTokens).toEqual(1000);
+        expect(rows[0].outputTokens).toEqual(100);
+        expect(Number(rows[0].costMicroUsd)).toBeGreaterThan(0);
+        expect(rows[0].userId).toEqual(user.id);
+      });
+
+      it("over budget returns documents with a null answer and never calls the model", async () => {
+        const { user, document } = await setup();
+        await spendRow(user.teamId, 25_000_000);
+        create.mockResolvedValue(
+          reply(document, { input_tokens: 1, output_tokens: 1 })
+        );
+
+        const res = await ask(user);
+        const body = await res.json();
+        expect(res.status).toEqual(200);
+        expect(body.answer).toBeNull();
+        expect(body.citations).toEqual([]);
+        expect(body.documents.map((d: { id: string }) => d.id)).toContain(
+          document.id
+        );
+        expect(body.policies).toBeDefined();
+        expect(create).not.toHaveBeenCalled();
+
+        const blocked = await AIAnswerUsage.findAll({
+          where: { teamId: user.teamId, outcome: "budget_blocked" },
+        });
+        expect(blocked).toHaveLength(1);
+        expect(Number(blocked[0].costMicroUsd)).toEqual(0);
+      });
+
+      it("another workspace's spend does not block this one", async () => {
+        const { user, document } = await setup();
+        const other = await buildUser();
+        await spendRow(other.teamId, 99_000_000);
+        create.mockResolvedValue(
+          reply(document, { input_tokens: 1, output_tokens: 1 })
+        );
+        expect((await (await ask(user)).json()).answer).toEqual(
+          "Twenty five days."
+        );
+      });
+
+      it("blocks the call beyond three concurrent ones, then allows it once a slot is freed", async () => {
+        const { user, document } = await setup();
+        create.mockResolvedValue(
+          reply(document, { input_tokens: 1, output_tokens: 1 })
+        );
+        const held = [
+          await acquireSlot(user.teamId),
+          await acquireSlot(user.teamId),
+          await acquireSlot(user.teamId),
+        ] as string[];
+
+        const blocked = await (await ask(user)).json();
+        expect(blocked.answer).toBeNull();
+        expect(blocked.documents).toHaveLength(1);
+        expect(create).not.toHaveBeenCalled();
+
+        await releaseSlot(user.teamId, held[0]);
+        const allowed = await (await ask(user)).json();
+        expect(allowed.answer).toEqual("Twenty five days.");
+        expect(create).toHaveBeenCalledTimes(1);
+
+        // The request released its own slot: two are still held, so one is free.
+        const again = await acquireSlot(user.teamId);
+        expect(again).not.toBeNull();
+        for (const token of [held[1], held[2], again as string]) {
+          await releaseSlot(user.teamId, token);
+        }
+      });
+
+      it("fails closed when the budget lookup throws: no model call", async () => {
+        const { user, document } = await setup();
+        create.mockResolvedValue(
+          reply(document, { input_tokens: 1, output_tokens: 1 })
+        );
+        const spy = vi
+          .spyOn(AIAnswerUsage, "sum")
+          .mockRejectedValue(new Error("db down"));
+        try {
+          const res = await ask(user);
+          const body = await res.json();
+          expect(res.status).toEqual(200);
+          expect(body.answer).toBeNull();
+          expect(body.documents).toHaveLength(1);
+          expect(create).not.toHaveBeenCalled();
+        } finally {
+          spy.mockRestore();
+        }
+      });
+
+      it("records a conservative estimate, not zero, when usage is missing", async () => {
+        const { user, document } = await setup();
+        create.mockResolvedValue(reply(document));
+        await ask(user);
+        const [row] = await AIAnswerUsage.findAll({
+          where: { teamId: user.teamId },
+        });
+        expect(row.outcome).toEqual("error");
+        expect(row.outputTokens).toEqual(1024);
+        expect(row.inputTokens).toBeGreaterThan(0);
+        expect(Number(row.costMicroUsd)).toBeGreaterThan(0);
+      });
+
+      it("records a conservative estimate when the provider call fails", async () => {
+        const { user } = await setup();
+        create.mockRejectedValue(new Error("boom"));
+        await ask(user);
+        const [row] = await AIAnswerUsage.findAll({
+          where: { teamId: user.teamId },
+        });
+        expect(row.outcome).toEqual("error");
+        expect(Number(row.costMicroUsd)).toBeGreaterThan(0);
+      });
+
+      it("records no_answer when the model returns nothing", async () => {
+        const { user } = await setup();
+        create.mockResolvedValue({
+          stop_reason: "end_turn",
+          usage: { input_tokens: 500, output_tokens: 5 },
+          content: [],
+        });
+        const body = await (await ask(user)).json();
+        expect(body.answer).toBeNull();
+        const [row] = await AIAnswerUsage.findAll({
+          where: { teamId: user.teamId },
+        });
+        expect(row.outcome).toEqual("no_answer");
+        expect(row.inputTokens).toEqual(500);
+      });
     });
   });
 });

@@ -1,5 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import {
+  MAX_OUTPUT_TOKENS,
   SYSTEM_PROMPT,
   type AnswerProvider,
   type ProviderSegment,
@@ -24,7 +25,7 @@ export function createAnthropicProvider(client: AnswerClient): AnswerProvider {
     async generate({ question, sources }) {
       const response = await client.messages.create({
         model: env.AI_ANSWERS_MODEL,
-        max_tokens: 1024,
+        max_tokens: MAX_OUTPUT_TOKENS,
         system: SYSTEM_PROMPT,
         messages: [
           {

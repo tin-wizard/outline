@@ -60,6 +60,8 @@ export { default as Reaction } from "./Reaction";
 
 export { default as Revision } from "./Revision";
 
+export { default as AIAnswerUsage } from "./AIAnswerUsage";
+
 export { default as SearchQuery } from "./SearchQuery";
 
 export { default as Share } from "./Share";

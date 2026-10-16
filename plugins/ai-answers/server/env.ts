@@ -27,6 +27,16 @@ class AIAnswersPluginEnvironment extends Environment {
   @IsString()
   public AI_ANSWERS_MODEL =
     this.toOptionalString(environment.AI_ANSWERS_MODEL) ?? "claude-haiku-5-5";
+
+  /**
+   * Monthly spend cap per workspace in USD (calendar month, UTC). Defaults to
+   * 25. A value of 0 or anything that is not a positive number disables AI
+   * answers, so a typo fails closed.
+   */
+  @IsOptional()
+  @IsString()
+  public AI_ANSWERS_MONTHLY_BUDGET_USD =
+    this.toOptionalString(environment.AI_ANSWERS_MONTHLY_BUDGET_USD) ?? "25";
 }
 
 export default new AIAnswersPluginEnvironment();
