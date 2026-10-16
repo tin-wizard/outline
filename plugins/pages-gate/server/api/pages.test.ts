@@ -210,6 +210,7 @@ describe("#pages.info", () => {
         "gateType",
         "id",
         "ingestKey",
+        "kind",
         "measurementEnabled",
         "pages",
         "publishedUrl",
