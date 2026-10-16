@@ -937,7 +937,11 @@ describe("#documents.answerQuestion", () => {
           const pause = async () => {
             flag.__inHook = true;
             await settled(() => flag.__aborted === true, 5000);
-            await new Promise((resolve) => setTimeout(resolve, 100));
+            // The server has seen the disconnect once its socket is destroyed.
+            await settled(
+              () => requestContext.getStore()?.req.socket.destroyed === true,
+              5000
+            );
             flag.__hookDone = true;
           };
           const spy =
@@ -996,12 +1000,29 @@ describe("#documents.answerQuestion", () => {
         // Auth opens the pinned transaction right before the handler:
         // disconnect there and let the server see the close first.
         const original = sequelize.transaction.bind(sequelize);
+        let finished = false;
         const spy = vi
           .spyOn(sequelize, "transaction")
           .mockImplementationOnce(async () => {
             controller.abort();
-            await new Promise((resolve) => setTimeout(resolve, 300));
-            return original();
+            await settled(
+              () => requestContext.getStore()?.req.socket.destroyed === true,
+              5000
+            );
+            await new Promise((resolve) => setImmediate(resolve));
+            const transaction = await original();
+            // Auth commits (or rolls back) once the handler has returned.
+            for (const method of ["commit", "rollback"] as const) {
+              const real = transaction[method].bind(transaction);
+              transaction[method] = async () => {
+                try {
+                  await real();
+                } finally {
+                  finished = true;
+                }
+              };
+            }
+            return transaction;
           });
         try {
           await server
@@ -1010,7 +1031,7 @@ describe("#documents.answerQuestion", () => {
               signal: controller.signal,
             })
             .catch(() => undefined);
-          await new Promise((resolve) => setTimeout(resolve, 500));
+          expect(await settled(() => finished, 5000)).toEqual(true);
         } finally {
           spy.mockRestore();
         }

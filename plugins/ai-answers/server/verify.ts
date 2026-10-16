@@ -324,11 +324,11 @@ export function verifyAnswer(
     };
   }
 
-  const normalisedSections = sources.flatMap((source) =>
+  const flatSections = sources.flatMap((source) =>
     source.sections.map((section) => ({
       source,
       section,
-      text: normalise(section),
+      flat: flattenLines(section),
     }))
   );
   const parts: string[] = [];
@@ -360,12 +360,14 @@ export function verifyAnswer(
       continue;
     }
 
-    const needle = normalise(text);
+    // Whole sentences, lines, items or cells only: a substring could drop a
+    // negation ("Never run X." -> "Run X.").
+    const needle = verbatimNeedle(text);
     if (needle.length < MIN_GROUNDED_LENGTH) {
       droppedSegments++;
       continue;
     }
-    const match = normalisedSections.find((s) => s.text.includes(needle));
+    const match = flatSections.find((s) => containsWhole(s.flat, needle));
     if (!match) {
       droppedSegments++;
       continue;
@@ -1000,28 +1002,38 @@ function isBounded(section: FlatSection, start: number, needle: string) {
   return startsWell && endsWell;
 }
 
+/** Copied text as compared with a flattened section, list marker removed. */
+function verbatimNeedle(text: string): string {
+  return flatten(text).replace(LIST_MARKER, "");
+}
+
+/** Whether the needle occurs in the section as a whole, bounded unit. */
+function containsWhole(section: FlatSection, needle: string): boolean {
+  for (
+    let start = section.text.indexOf(needle);
+    start !== -1;
+    start = section.text.indexOf(needle, start + 1)
+  ) {
+    if (isBounded(section, start, needle)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** An uncited block counts as a source copy when it is long, verbatim and whole. */
 function findVerbatim(
   text: string,
   ctx: PreparedSources
 ): AnswerCitation | undefined {
-  const needle = flatten(text).replace(LIST_MARKER, "");
+  const needle = verbatimNeedle(text);
   if (needle.length < MIN_GROUNDED_LENGTH) {
     return undefined;
   }
   for (const [i, source] of ctx.sources.entries()) {
-    const at = ctx.flat[i].findIndex((section) => {
-      for (
-        let start = section.text.indexOf(needle);
-        start !== -1;
-        start = section.text.indexOf(needle, start + 1)
-      ) {
-        if (isBounded(section, start, needle)) {
-          return true;
-        }
-      }
-      return false;
-    });
+    const at = ctx.flat[i].findIndex((section) =>
+      containsWhole(section, needle)
+    );
     if (at !== -1) {
       return citationFor(source, source.sections[at], text);
     }

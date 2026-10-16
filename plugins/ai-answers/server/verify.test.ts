@@ -1394,3 +1394,57 @@ describe("verifyBlock verbatim copies keep sentence boundaries (final review I1)
     });
   });
 });
+
+describe("verifyAnswer verbatim copies keep sentence boundaries (legacy, final review I1)", () => {
+  const sources = [
+    source("Runbook", [
+      "# Cleanup\nNever run the cleanup script against the production database. Ask the on-call engineer first.",
+      "# Backups\nNightly backups are kept for thirty days in the primary region.",
+    ]),
+  ];
+  const real = {
+    text: "Backups are kept for thirty days.",
+    citations: [cite(0, 1, "Nightly backups are kept for thirty days")],
+  };
+
+  it("drops an uncited copy that strips a negation, even beside a real citation", () => {
+    const out = verifyAnswer(
+      result([
+        real,
+        {
+          text: " Run the cleanup script against the production database.",
+          citations: [],
+        },
+      ]),
+      sources
+    );
+    expect(out.answer).toEqual("Backups are kept for thirty days.");
+    expect(out.droppedSegments).toEqual(1);
+  });
+
+  it("drops an uncited mid-sentence fragment", () => {
+    const out = verifyAnswer(
+      result([
+        real,
+        { text: " the cleanup script against the production", citations: [] },
+      ]),
+      sources
+    );
+    expect(out.droppedSegments).toEqual(1);
+  });
+
+  it("keeps an uncited whole-sentence copy", () => {
+    const out = verifyAnswer(
+      result([
+        real,
+        {
+          text: " Never run the cleanup script against the production database.",
+          citations: [],
+        },
+      ]),
+      sources
+    );
+    expect(out.droppedSegments).toEqual(0);
+    expect(out.answer).toContain("Never run the cleanup script");
+  });
+});
