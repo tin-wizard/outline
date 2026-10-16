@@ -1209,7 +1209,7 @@ describe("verifyBlock (security review round 2)", () => {
         ]),
         ...splitter.flush(),
       ];
-      expect(blocks[1].citations).toHaveLength(2);
+      expect(blocks[1].citations).toHaveLength(1);
       const out = verifyBlock(blocks[1], blocks[1].citations, sources);
       expect(out.ok && out.citations.map((c) => c.quote)).toEqual([
         "Payroll handles refunds",
@@ -1254,5 +1254,48 @@ describe("verifyBlock (security review round 2)", () => {
         }
       }
     );
+  });
+});
+
+describe("verifyBlock verbatim fallback", () => {
+  const sources = [
+    source("Leave", [
+      "# Leave\nEmployees receive 25 days of paid holiday per year.",
+      "# Sick leave\nEmployees get 3 sick days per year.",
+    ]),
+  ];
+
+  it("grounds an uncited verbatim block from the splitter", () => {
+    const [block] = splitBlocks("Employees get 3 sick days per year.");
+    expect(block.citations).toEqual([]);
+    const out = verifyBlock(block, block.citations, sources);
+    expect(out).toMatchObject({ ok: true, modelCited: false });
+    expect(out.ok && out.citations[0].heading).toEqual("Sick leave");
+  });
+
+  it("still grounds a verbatim block whose citation points elsewhere", () => {
+    const [block] = splitBlocks("Employees get 3 sick days per year.");
+    const out = verifyBlock(
+      block,
+      [cite(0, 0, "25 days of paid holiday")],
+      sources
+    );
+    expect(out).toMatchObject({ ok: true, modelCited: false });
+    expect(out.ok && out.citations.map((c) => c.heading)).toEqual([
+      "Sick leave",
+    ]);
+  });
+
+  it("drops a short or non-verbatim uncited block", () => {
+    expect(
+      verifyBlock(splitBlocks("3 sick days.")[0], [], sources)
+    ).toMatchObject({ ok: false, reason: "uncited" });
+    expect(
+      verifyBlock(
+        splitBlocks("Employees get 5 sick days per year.")[0],
+        [],
+        sources
+      )
+    ).toMatchObject({ ok: false, reason: "uncited" });
   });
 });

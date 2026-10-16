@@ -41,28 +41,27 @@ export class BlockSplitter {
    * Adds generated text and the citations attached to it.
    *
    * @param text the next piece of generated text.
-   * @param citations citations for this piece; they attach to every block it
-   * touches, or to the next block when the piece is only whitespace.
+   * @param citations citations for this piece. They attach only to lines
+   * where the piece puts non-whitespace text. When the piece also completes
+   * an earlier line, its unfinished last line gets none: that text runs into
+   * the next piece and may belong to a different block. Citations of a
+   * whitespace-only piece attach nowhere.
    * @returns the blocks completed by this piece, in order.
    */
   public push(text: string, citations: ProviderCitation[] = []): Block[] {
     const out: Block[] = [];
     const pieces = text.split("\n");
-    let attached = false;
+    const last = pieces.length - 1;
+    const completesText = pieces.slice(0, last).some((piece) => piece.trim());
     pieces.forEach((piece, i) => {
       this.partial += piece;
-      if (piece.trim()) {
-        this.partialCitations.push(...this.carried, ...citations);
-        this.carried = [];
-        attached = true;
+      if (piece.trim() && (i < last || !completesText)) {
+        this.partialCitations.push(...citations);
       }
-      if (i < pieces.length - 1) {
+      if (i < last) {
         this.endLine(out);
       }
     });
-    if (!attached) {
-      this.carried.push(...citations);
-    }
     return out;
   }
 
@@ -85,8 +84,6 @@ export class BlockSplitter {
 
   private partial = "";
   private partialCitations: ProviderCitation[] = [];
-  /** Citations of whitespace-only pieces, waiting for the next content. */
-  private carried: ProviderCitation[] = [];
   private open?: OpenBlock;
   private fence?: { char: string; length: number; info: string } & Lines;
   /** The id of the table being read; 0 outside tables. */

@@ -99,7 +99,7 @@ describe("BlockSplitter", () => {
     expect(splitter.flush()).toEqual([]);
   });
 
-  it("carries citations on whitespace-only chunks to the next block", () => {
+  it("drops citations of whitespace-only chunks", () => {
     const splitter = new BlockSplitter();
     const blocks = [
       ...splitter.push("Intro.\n"),
@@ -110,7 +110,49 @@ describe("BlockSplitter", () => {
     ];
     expect(blocks.map((b) => [b.text, b.citations])).toEqual([
       ["Intro.", []],
-      ["Claim.", [cite(0), cite(1)]],
+      ["Claim.", []],
+    ]);
+  });
+
+  it("does not carry a citation across a paragraph boundary", () => {
+    const splitter = new BlockSplitter();
+    const blocks = [
+      ...splitter.push("Leave is 25 days.\n\nAlso", [cite(1)]),
+      ...splitter.push(" employees get 3 sick days.\n\n", []),
+      ...splitter.flush(),
+    ];
+    expect(blocks.map((b) => [b.text, b.citations])).toEqual([
+      ["Leave is 25 days.", [cite(1)]],
+      ["Also employees get 3 sick days.", []],
+    ]);
+  });
+
+  it("attaches a citation that arrives on the last chunk of a sentence", () => {
+    const splitter = new BlockSplitter();
+    const blocks = [
+      ...splitter.push("Intro.\n\nLeave ", []),
+      ...splitter.push("is 25 ", []),
+      ...splitter.push("days.", [cite(2)]),
+      ...splitter.push("\n\nNext.", []),
+      ...splitter.flush(),
+    ];
+    expect(blocks.map((b) => [b.text, b.citations])).toEqual([
+      ["Intro.", []],
+      ["Leave is 25 days.", [cite(2)]],
+      ["Next.", []],
+    ]);
+  });
+
+  it("attaches a chunk's citation to text after leading newlines", () => {
+    const splitter = new BlockSplitter();
+    const blocks = [
+      ...splitter.push("Intro.", []),
+      ...splitter.push("\n\nCited claim.", [cite(3)]),
+      ...splitter.flush(),
+    ];
+    expect(blocks.map((b) => [b.text, b.citations])).toEqual([
+      ["Intro.", []],
+      ["Cited claim.", [cite(3)]],
     ]);
   });
 
@@ -128,6 +170,21 @@ describe("BlockSplitter", () => {
 
   it("matches the one-shot split for random chunkings", () => {
     const expected = splitBlocks(SAMPLE);
+    // Which line each character is on, and which lines form each block
+    // (found by pushing one line at a time, cited with its line number).
+    const lineOf = [...SAMPLE].map(
+      (_, i) => SAMPLE.slice(0, i).split("\n").length - 1
+    );
+    const byLine = new BlockSplitter();
+    const lineBlocks = [
+      ...SAMPLE.split("\n").flatMap((line, i) =>
+        byLine.push(`${line}\n`, [cite(i)])
+      ),
+      ...byLine.flush(),
+    ];
+    const blockLines = lineBlocks.map(
+      (b) => new Set(b.citations.map((c) => c.sourceIndex))
+    );
     let seed = 7;
     const random = () => {
       seed = (seed * 1103515245 + 12345) % 2147483648;
@@ -136,35 +193,41 @@ describe("BlockSplitter", () => {
     for (let run = 0; run < 200; run++) {
       const splitter = new BlockSplitter();
       const blocks: Block[] = [];
-      const cited: number[] = [];
+      // Lines of SAMPLE each chunk put non-whitespace text on.
+      const chunkLines: Set<number>[] = [];
       let at = 0;
-      let chunk = 0;
       while (at < SAMPLE.length) {
         // Some chunks are newline-only, as between provider content blocks.
         const size = 1 + Math.floor(random() * 12);
+        const start = at;
         const text =
           SAMPLE[at] === "\n" && random() < 0.5
             ? SAMPLE.slice(at, (at += 1))
             : SAMPLE.slice(at, (at += size));
-        blocks.push(...splitter.push(text, [cite(chunk)]));
-        if (SAMPLE.slice(at).trim() || text.trim()) {
-          cited.push(chunk);
+        const lines = new Set<number>();
+        for (let i = start; i < Math.min(at, SAMPLE.length); i++) {
+          if (SAMPLE[i].trim()) {
+            lines.add(lineOf[i]);
+          }
         }
-        chunk++;
+        chunkLines.push(lines);
+        blocks.push(...splitter.push(text, [cite(chunkLines.length - 1)]));
       }
       blocks.push(...splitter.flush());
       const plain = (list: Block[]) =>
         list.map((b) => ({ ...b, citations: [] }));
       expect(plain(blocks)).toEqual(plain(expected));
-      // Every chunk followed by more content lands on some block, once per block.
-      const landed = blocks.flatMap((b) =>
-        b.citations.map((c) => c.sourceIndex)
-      );
-      expect([...new Set(landed)].sort((a, b) => a - b)).toEqual(cited);
-      for (const b of blocks) {
+      // A block's citations come only from chunks that put text on its lines.
+      blocks.forEach((b, i) => {
+        const own = blockLines[i];
+        for (const c of b.citations) {
+          expect([...chunkLines[c.sourceIndex]].some((l) => own.has(l))).toBe(
+            true
+          );
+        }
         const ids = b.citations.map((c) => c.sourceIndex);
         expect(new Set(ids).size).toEqual(ids.length);
-      }
+      });
     }
   });
 

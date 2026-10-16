@@ -600,6 +600,12 @@ export function verifyBlock(
     const resolved = resolveCitation(c, ctx.sources);
     return resolved ? [resolved] : [];
   });
+  // A verbatim copy of a sent section stands on its own, even when the
+  // provider's citation points elsewhere (e.g. misattributed while streaming).
+  const verbatimOr = (fallback: DroppedBlock): BlockVerdict => {
+    const copied = findVerbatim(text, ctx);
+    return copied ? accept([copied], false) : fallback;
+  };
   if (valid.length > 0) {
     if (hasLongRun(text)) {
       return drop("unsupported");
@@ -612,7 +618,7 @@ export function verifyBlock(
         isRowSupported(cleaned, p, flatten(valid[i].passage))
       );
       if (at === -1) {
-        return drop("unsupported");
+        return verbatimOr(drop("unsupported"));
       }
       used.add(at);
     } else {
@@ -621,7 +627,7 @@ export function verifyBlock(
         if (at !== -1) {
           used.add(at);
         } else if (!isGapStatement(sentence, ctx)) {
-          return drop("unsupported");
+          return verbatimOr(drop("unsupported"));
         }
       }
     }
