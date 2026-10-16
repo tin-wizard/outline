@@ -1,3 +1,4 @@
+import { Collection } from "@server/models";
 import type { Document, User } from "@server/models";
 import { DocumentHelper } from "@server/models/helpers/DocumentHelper";
 import {
@@ -22,12 +23,15 @@ export interface AnswerSource {
 }
 
 const MAX_DOCUMENTS = 5;
+// Extra candidates so documents dropped by AI exclusion do not starve results.
+const FETCH_LIMIT = MAX_DOCUMENTS * 4;
 const MAX_CHARS_PER_DOCUMENT = 20_000;
 
 /**
  * Finds the documents the user may read that best match a question, and cuts
  * them down to the sections most relevant to it. Permissions are enforced by
  * the search provider, so nothing the user cannot read is ever returned.
+ * Documents in collections excluded from AI answers are dropped for everyone.
  *
  * @param user the user asking the question.
  * @param body the validated request body.
@@ -64,13 +68,34 @@ export async function retrieveSources(
     {
       query: toKeywordQuery(keywords),
       filter: resolvedFilter,
-      limit: MAX_DOCUMENTS,
+      limit: FETCH_LIMIT,
       offset: 0,
     }
   );
 
+  // Dropped before any text is read, so excluded documents never reach the model.
+  const collectionIds = [
+    ...new Set(results.map((r) => r.document.collectionId)),
+  ].filter((id): id is string => !!id);
+  const excluded = new Set(
+    collectionIds.length
+      ? (
+          await Collection.findAll({
+            where: { id: collectionIds, teamId: user.teamId, aiExcluded: true },
+            attributes: ["id"],
+            // A trashed collection's documents can still be searched.
+            paranoid: false,
+          })
+        ).map((c) => c.id)
+      : []
+  );
+  const documents = results
+    .map((r) => r.document)
+    .filter((d) => !d.collectionId || !excluded.has(d.collectionId))
+    .slice(0, MAX_DOCUMENTS);
+
   const sources: AnswerSource[] = [];
-  for (const { document } of results) {
+  for (const document of documents) {
     // Redacted before splitting so a key block cut across sections is still caught.
     const { text: markdown } = redactSecrets(
       await DocumentHelper.toMarkdown(document, { includeTitle: false })

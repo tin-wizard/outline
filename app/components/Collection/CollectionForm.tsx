@@ -6,7 +6,7 @@ import { Trans, useTranslation } from "react-i18next";
 import styled from "styled-components";
 import Icon from "@shared/components/Icon";
 import { randomElement } from "@shared/random";
-import { CollectionPermission } from "@shared/types";
+import { CollectionPermission, TeamPreference } from "@shared/types";
 import type { Option } from "~/components/InputSelect";
 import { IconLibrary } from "@shared/utils/IconLibrary";
 import { colorPalette } from "@shared/constants";
@@ -36,6 +36,7 @@ export type FormData = {
   sharing: boolean;
   permission: CollectionPermission | undefined;
   commenting?: boolean | null;
+  aiExcluded?: boolean;
   templateManagement: CollectionPermission;
 };
 
@@ -116,6 +117,7 @@ export const CollectionForm = observer(function CollectionForm_({
       sharing: collection?.sharing ?? true,
       permission: collection?.permission,
       commenting: collection?.commenting ?? true,
+      aiExcluded: collection?.aiExcluded ?? false,
       templateManagement:
         collection?.templateManagement ?? CollectionPermission.Admin,
       color: iconColor,
@@ -216,6 +218,24 @@ export const CollectionForm = observer(function CollectionForm_({
               id="commenting"
               label={t("Commenting")}
               note={t("Allow commenting on documents within this collection.")}
+              checked={!!field.value}
+              onChange={field.onChange}
+            />
+          )}
+        />
+      )}
+
+      {team.getPreference(TeamPreference.AIAnswers) && (
+        <Controller
+          control={control}
+          name="aiExcluded"
+          render={({ field }) => (
+            <Switch
+              id="aiExcluded"
+              label={t("Exclude from AI answers")}
+              note={t(
+                "Documents within this collection are never used to answer questions with AI."
+              )}
               checked={!!field.value}
               onChange={field.onChange}
             />

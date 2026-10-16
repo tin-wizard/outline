@@ -1,4 +1,5 @@
 import {
+  buildAdmin,
   buildCollection,
   buildDocument,
   buildTeam,
@@ -145,5 +146,73 @@ describe("retrieveSources", () => {
 
     expect(sources.length).toEqual(1);
     expect(sources[0].document.collectionId).toEqual(a.id);
+  });
+});
+
+describe("retrieveSources with AI-excluded collections", () => {
+  async function setup() {
+    const team = await buildTeam();
+    const admin = await buildAdmin({ teamId: team.id });
+    const excluded = await buildCollection({
+      teamId: team.id,
+      userId: admin.id,
+      aiExcluded: true,
+    });
+    const normal = await buildCollection({
+      teamId: team.id,
+      userId: admin.id,
+    });
+    await buildDocument({
+      teamId: team.id,
+      userId: admin.id,
+      collectionId: excluded.id,
+      title: "Board minutes",
+      text: "# Merger\nThe merger codename is bluefin.",
+    });
+    await buildDocument({
+      teamId: team.id,
+      userId: admin.id,
+      collectionId: normal.id,
+      title: "Handbook",
+      text: "# Merger\nThe merger policy is published openly.",
+    });
+    return { admin, excluded };
+  }
+
+  it("never returns documents from an excluded collection, even for an admin", async () => {
+    const { admin } = await setup();
+
+    const sources = await retrieveSources(admin, { query: "merger codename" });
+
+    expect(sources.map((s) => s.document.title)).toEqual(["Handbook"]);
+  });
+
+  it("restores retrieval when the exclusion is turned off", async () => {
+    const { admin, excluded } = await setup();
+    await excluded.update({ aiExcluded: false });
+
+    const sources = await retrieveSources(admin, { query: "merger codename" });
+
+    expect(sources.map((s) => s.document.title).sort()).toEqual([
+      "Board minutes",
+      "Handbook",
+    ]);
+  });
+
+  it("is not starved of results by many excluded matches", async () => {
+    const { admin, excluded } = await setup();
+    for (let i = 0; i < 6; i++) {
+      await buildDocument({
+        teamId: admin.teamId,
+        userId: admin.id,
+        collectionId: excluded.id,
+        title: `Merger memo ${i}`,
+        text: "# Merger\nMerger merger merger codename notes.",
+      });
+    }
+
+    const sources = await retrieveSources(admin, { query: "merger codename" });
+
+    expect(sources.map((s) => s.document.title)).toEqual(["Handbook"]);
   });
 });

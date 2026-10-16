@@ -75,6 +75,7 @@ router.post(
       sort,
       index,
       commenting,
+      aiExcluded,
       templateManagement,
     } = ctx.input.body;
 
@@ -94,6 +95,7 @@ router.post(
       sort,
       index,
       commenting,
+      aiExcluded,
       templateManagement,
     });
 
@@ -619,6 +621,7 @@ router.post(
       sort,
       sharing,
       commenting,
+      aiExcluded,
       templateManagement,
     } = ctx.input.body;
 
@@ -698,6 +701,10 @@ router.post(
 
     if (commenting !== undefined) {
       collection.commenting = commenting;
+    }
+
+    if (aiExcluded !== undefined) {
+      collection.aiExcluded = aiExcluded;
     }
 
     if (templateManagement !== undefined) {

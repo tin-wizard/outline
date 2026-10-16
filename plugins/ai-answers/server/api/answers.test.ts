@@ -3,6 +3,7 @@ import { vi } from "vitest";
 import { TeamPreference } from "@shared/types";
 import { SearchQuery } from "@server/models";
 import {
+  buildAdmin,
   buildCollection,
   buildDocument,
   buildUser,
@@ -208,6 +209,37 @@ describe("#documents.answerQuestion", () => {
       expect(sent).not.toContain("nine hundred thousand");
       expect(body.documents.map((d: { id: string }) => d.id)).not.toContain(
         secretDocument.id
+      );
+    });
+
+    it("never sends text from an AI-excluded collection to the model, even for an admin", async () => {
+      const { user } = await setup();
+      const admin = await buildAdmin({ teamId: user.teamId });
+      const excluded = await buildCollection({
+        teamId: user.teamId,
+        userId: admin.id,
+        aiExcluded: true,
+      });
+      const excludedDocument = await buildDocument({
+        teamId: user.teamId,
+        userId: admin.id,
+        collectionId: excluded.id,
+        text: "# Leave\nThe excluded holiday bonus is nine hundred thousand.",
+      });
+      create.mockResolvedValue({ stop_reason: "end_turn", content: [] });
+
+      const res = await server.post("/api/documents.answerQuestion", admin, {
+        body: { query: "holiday days bonus" },
+      });
+      const body = await res.json();
+
+      expect(res.status).toEqual(200);
+      expect(create).toHaveBeenCalledTimes(1);
+      const sent = JSON.stringify(create.mock.calls[0][0]);
+      expect(sent).toContain("twenty five days");
+      expect(sent).not.toContain("nine hundred thousand");
+      expect(body.documents.map((d: { id: string }) => d.id)).not.toContain(
+        excludedDocument.id
       );
     });
 

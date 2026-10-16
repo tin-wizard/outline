@@ -1601,6 +1601,17 @@ describe("#collections.create", () => {
     expect(body.data.permission).toBe(null);
     expect(body.policies.length).toBe(1);
     expect(body.policies[0].abilities.read).toBeTruthy();
+    expect(body.data.aiExcluded).toBe(false);
+  });
+
+  it("should create a collection excluded from AI answers", async () => {
+    const user = await buildAdmin();
+    const res = await server.post("/api/collections.create", user, {
+      body: { name: "Test", aiExcluded: true },
+    });
+    const body = await res.json();
+    expect(res.status).toEqual(200);
+    expect(body.data.aiExcluded).toBe(true);
   });
 
   it("should error when index is invalid", async () => {
@@ -1922,6 +1933,42 @@ describe("#collections.update", () => {
       },
     });
     expect(res.status).toEqual(403);
+  });
+
+  it("defaults aiExcluded to false and lets an admin toggle it", async () => {
+    const team = await buildTeam();
+    const admin = await buildAdmin({ teamId: team.id });
+    const collection = await buildCollection({ teamId: team.id });
+    expect(collection.aiExcluded).toBe(false);
+
+    const res = await server.post("/api/collections.update", admin, {
+      body: { id: collection.id, aiExcluded: true },
+    });
+    const body = await res.json();
+    expect(res.status).toEqual(200);
+    expect(body.data.aiExcluded).toBe(true);
+    expect((await collection.reload()).aiExcluded).toBe(true);
+
+    const res2 = await server.post("/api/collections.update", admin, {
+      body: { id: collection.id, aiExcluded: false },
+    });
+    expect(res2.status).toEqual(200);
+    expect((await collection.reload()).aiExcluded).toBe(false);
+  });
+
+  it("does not let a plain member change aiExcluded", async () => {
+    const team = await buildTeam();
+    const member = await buildUser({ teamId: team.id });
+    const collection = await buildCollection({
+      teamId: team.id,
+      aiExcluded: true,
+    });
+
+    const res = await server.post("/api/collections.update", member, {
+      body: { id: collection.id, aiExcluded: false },
+    });
+    expect(res.status).toEqual(403);
+    expect((await collection.reload()).aiExcluded).toBe(true);
   });
 
   it("allows editing non-private collection", async () => {
