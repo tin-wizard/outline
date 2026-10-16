@@ -5,7 +5,12 @@ import type { AnswerSource } from "./retrieve";
 
 function source(title: string, sections: string[]): AnswerSource {
   return {
-    document: { id: `${title}-id`, title, url: `/doc/${title}` },
+    document: {
+      id: `${title}-id`,
+      title,
+      url: `/doc/${title}`,
+      urlId: `${title}Id`,
+    },
     sections,
   } as unknown as AnswerSource;
 }
@@ -53,7 +58,8 @@ describe("generateAnswer", () => {
     const blocks = request.messages[0].content;
     expect(blocks[0]).toMatchObject({
       type: "search_result",
-      source: "/doc/Holidays",
+      // The url embeds a title slug, so only the opaque urlId is sent.
+      source: "/doc/HolidaysId",
       title: "Holidays",
       citations: { enabled: true },
     });

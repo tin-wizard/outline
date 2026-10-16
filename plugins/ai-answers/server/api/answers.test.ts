@@ -218,6 +218,8 @@ describe("#documents.answerQuestion", () => {
       const docPassword = "Plant" + "ed9pass";
       const keyBody = "MIIEpAIBAAKCAQEA" + "K".repeat(40);
       const queryKey = "sk-ant-" + "api03-" + "Z".repeat(30);
+      // The document url carries a lowercased title slug, so check that too.
+      const titleToken = "gl" + "pat-" + "Wq7".repeat(8);
       const keyBlock = [
         "-----BEGIN " + "PRIVATE KEY-----",
         keyBody,
@@ -226,7 +228,7 @@ describe("#documents.answerQuestion", () => {
       await buildDocument({
         teamId: user.teamId,
         userId: user.id,
-        title: "Holiday admin",
+        title: `Holiday admin ${titleToken}`,
         text: `# Holiday admin\nThe holiday tool uses ${docToken} to sync.\n\npassword: ${docPassword}\n\n\`\`\`\n${keyBlock}\n\`\`\``,
       });
       create.mockResolvedValue({
@@ -258,8 +260,18 @@ describe("#documents.answerQuestion", () => {
       expect(create).toHaveBeenCalledTimes(1);
       const sent = JSON.stringify(create.mock.calls[0][0]);
       expect(sent).toContain("holiday tool uses");
-      expect(sent).toContain("[REDACTED:");
-      for (const secret of [docToken, docPassword, keyBody, queryKey]) {
+      expect(sent).toContain("[REDACTED:private_key]");
+      expect(sent).toContain("[REDACTED:assignment]");
+      expect(sent).toContain("[REDACTED:vcs_token]");
+      expect(sent).toContain("[REDACTED:provider_key]");
+      expect(sent.toLowerCase()).not.toContain("wq7wq7wq7");
+      for (const secret of [
+        docToken,
+        docPassword,
+        keyBody,
+        queryKey,
+        titleToken,
+      ]) {
         expect(sent).not.toContain(secret);
       }
     });

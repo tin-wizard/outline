@@ -84,7 +84,8 @@ export async function generateAnswer(
         content: [
           ...sources.map((s) => ({
             type: "search_result" as const,
-            source: s.document.url,
+            // Not document.url: it embeds a slug of the unredacted title.
+            source: `/doc/${s.document.urlId}`,
             title: redactSecrets(s.document.title || "Untitled").text,
             content: s.sections.map((text) => ({
               type: "text" as const,

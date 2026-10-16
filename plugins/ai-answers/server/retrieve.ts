@@ -37,7 +37,10 @@ export async function retrieveSources(
   user: User,
   body: T.DocumentsAnswerQuestionReq["body"]
 ): Promise<AnswerSource[]> {
-  const keywords = toKeywords(body.query);
+  // The raw query never reaches the search provider; markers are not keywords.
+  const keywords = toKeywords(
+    redactSecrets(body.query).text.replace(/\[REDACTED:[a-z_]+\]/g, " ")
+  );
   if (keywords.length === 0) {
     return [];
   }
