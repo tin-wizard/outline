@@ -70,10 +70,12 @@ export function createAnthropicProvider(client: AnswerClient): AnswerProvider {
       }
       return {
         finishReason: response.stop_reason === "end_turn" ? "stop" : "other",
-        usage: {
-          inputTokens: response.usage?.input_tokens ?? 0,
-          outputTokens: response.usage?.output_tokens ?? 0,
-        },
+        usage: response.usage
+          ? {
+              inputTokens: response.usage.input_tokens,
+              outputTokens: response.usage.output_tokens,
+            }
+          : null,
         segments,
       };
     },

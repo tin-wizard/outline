@@ -2,17 +2,17 @@ import {
   createAnthropicProvider,
   type AnswerClient,
 } from "./providers/anthropic";
-import type { Usage } from "./contract";
+import { ZERO_USAGE, type Usage } from "./contract";
 import type { AnswerSource } from "./retrieve";
-import { verifyAnswer, type AnswerResult } from "./verify";
+import { verifyAnswer, type AnswerResult, type VerifiedAnswer } from "./verify";
 
 export type { AnswerClient } from "./providers/anthropic";
 export type { AnswerCitation, AnswerResult } from "./verify";
 
 /** A verified answer plus the token usage of the model call that produced it. */
-export interface AnswerOutcome extends AnswerResult {
-  /** Zero when no model call was made. */
-  usage: Usage;
+export interface AnswerOutcome extends VerifiedAnswer {
+  /** Zero when no model call was made; null when the provider reported none. */
+  usage: Usage | null;
 }
 
 /**
@@ -33,7 +33,8 @@ export async function generateAnswerWithUsage(
     return {
       answer: null,
       citations: [],
-      usage: { inputTokens: 0, outputTokens: 0 },
+      droppedSegments: 0,
+      usage: ZERO_USAGE,
     };
   }
   const result = await createAnthropicProvider(client).generate({

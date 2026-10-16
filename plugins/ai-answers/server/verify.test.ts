@@ -1,12 +1,16 @@
+import { randomUUID } from "node:crypto";
+import { Document } from "@server/models";
 import type { ProviderResult } from "./contract";
 import type { AnswerSource } from "./retrieve";
 import { verifyAnswer } from "./verify";
 
 function source(title: string, sections: string[]): AnswerSource {
-  return {
-    document: { id: `${title}-id`, title, url: `/doc/${title}` },
-    sections,
-  } as unknown as AnswerSource;
+  const document = Document.build({
+    id: randomUUID(),
+    urlId: `${title}Id`,
+    title,
+  });
+  return { document, sections };
 }
 
 function result(
@@ -35,12 +39,13 @@ describe("verifyAnswer", () => {
       sources
     );
     expect(out).toEqual({
+      droppedSegments: 0,
       answer: "25 days.",
       citations: [
         {
-          documentId: "A-id",
+          documentId: sources[0].document.id,
           title: "A",
-          url: "/doc/A",
+          url: sources[0].document.url,
           heading: "Leave",
           quote: "q",
         },
@@ -72,7 +77,11 @@ describe("verifyAnswer", () => {
       result([{ text: "25 days.", citations: [cite(0)] }], "other"),
       sources
     );
-    expect(out).toEqual({ answer: null, citations: [] });
+    expect(out).toEqual({
+      answer: null,
+      citations: [],
+      droppedSegments: 0,
+    });
   });
 
   it("drops uncited text that is not copied from a section", () => {
@@ -120,5 +129,58 @@ describe("verifyAnswer", () => {
       sources
     );
     expect(out.citations[0].quote).toEqual(`${"a".repeat(300)}…`);
+  });
+
+  it("discards verbatim text when its only citation is invalid", () => {
+    const out = verifyAnswer(
+      result([{ text: "25 days of holiday per year.", citations: [cite(7)] }]),
+      sources
+    );
+    expect(out.answer).toBeNull();
+  });
+
+  it("drops short uncited text and counts it", () => {
+    const out = verifyAnswer(
+      result([
+        { text: "25 days", citations: [] },
+        { text: "Yes.", citations: [cite(0)] },
+      ]),
+      sources
+    );
+    expect(out.answer).toEqual("Yes.");
+    expect(out.droppedSegments).toEqual(1);
+  });
+
+  it("dedupes citations and lets a model citation overwrite a verbatim one", () => {
+    const out = verifyAnswer(
+      result([
+        { text: "25 days of holiday per year.", citations: [] },
+        { text: "Yes.", citations: [cite(0, 0, "model quote")] },
+        { text: "Again.", citations: [cite(0, 0, "second")] },
+      ]),
+      sources
+    );
+    expect(out.citations).toHaveLength(1);
+    expect(out.citations[0].quote).toEqual("second");
+  });
+
+  it("takes the heading from the cited section, not the first", () => {
+    const multi = [source("B", ["# One\nfirst", "# Two\nsecond"])];
+    const out = verifyAnswer(
+      result([{ text: "Second.", citations: [cite(0, 1)] }]),
+      multi
+    );
+    expect(out.citations[0].heading).toEqual("Two");
+  });
+
+  it("abstains when NO_ANSWER appears in any segment, even a dropped one", () => {
+    const out = verifyAnswer(
+      result([
+        { text: "25 days.", citations: [cite(0)] },
+        { text: "NO_ANSWER", citations: [] },
+      ]),
+      sources
+    );
+    expect(out.answer).toBeNull();
   });
 });

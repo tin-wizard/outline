@@ -17,6 +17,11 @@ export interface AnswerResult {
   citations: AnswerCitation[];
 }
 
+/** An answer result plus how many segments the verifier discarded. */
+export interface VerifiedAnswer extends AnswerResult {
+  droppedSegments: number;
+}
+
 const MAX_QUOTE = 300;
 
 /** Shortest uncited text that can be trusted as a verbatim copy of a source. */
@@ -49,10 +54,10 @@ function normalise(text: string): string {
 export function verifyAnswer(
   result: ProviderResult,
   sources: AnswerSource[]
-): AnswerResult {
+): VerifiedAnswer {
   // Anything but a clean finish (refusal, max_tokens, pause_turn, tool_use) may be partial.
   if (result.finishReason !== "stop") {
-    return { answer: null, citations: [] };
+    return { answer: null, citations: [], droppedSegments: 0 };
   }
 
   const normalisedSections = sources.flatMap((source) =>
@@ -65,6 +70,7 @@ export function verifyAnswer(
   const parts: string[] = [];
   const citations = new Map<string, AnswerCitation>();
   let hasModelCitation = false;
+  let droppedSegments = 0;
   for (const segment of result.segments) {
     let backed = false;
     for (const citation of segment.citations) {
@@ -92,10 +98,12 @@ export function verifyAnswer(
 
     const needle = normalise(text);
     if (needle.length < MIN_GROUNDED_LENGTH) {
+      droppedSegments++;
       continue;
     }
     const match = normalisedSections.find((s) => s.text.includes(needle));
     if (!match) {
+      droppedSegments++;
       continue;
     }
     const heading = headingOf(match.section);
@@ -113,8 +121,10 @@ export function verifyAnswer(
   }
 
   const answer = parts.join(" ").trim();
-  if (!answer || answer.includes(NO_ANSWER) || !hasModelCitation) {
-    return { answer: null, citations: [] };
+  // NO_ANSWER anywhere, even in dropped text, means the model abstained.
+  const abstained = result.segments.some((s) => s.text.includes(NO_ANSWER));
+  if (!answer || abstained || !hasModelCitation) {
+    return { answer: null, citations: [], droppedSegments };
   }
-  return { answer, citations: [...citations.values()] };
+  return { answer, citations: [...citations.values()], droppedSegments };
 }

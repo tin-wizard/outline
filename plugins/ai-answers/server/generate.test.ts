@@ -276,3 +276,17 @@ describe("generateAnswerWithUsage", () => {
     expect(out.usage).toEqual({ inputTokens: 120, outputTokens: 7 });
   });
 });
+
+describe("generateAnswerWithUsage without reported usage", () => {
+  it("returns null usage rather than zero", async () => {
+    const create = vi.fn().mockResolvedValue({
+      content: [cited("25 days.", 0)],
+      stop_reason: "end_turn",
+    });
+    const client = { messages: { create } } as unknown as AnswerClient;
+    const out = await generateAnswerWithUsage(client, "How many?", [
+      source("Holidays", ["# Leave\n25 days"]),
+    ]);
+    expect(out.usage).toBeNull();
+  });
+});

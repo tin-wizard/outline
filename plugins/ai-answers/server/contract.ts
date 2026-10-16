@@ -6,6 +6,9 @@ export interface Usage {
   outputTokens: number;
 }
 
+/** Usage for a request that never reached a model. */
+export const ZERO_USAGE: Usage = { inputTokens: 0, outputTokens: 0 };
+
 /** Why generation stopped, normalised across providers. */
 export type FinishReason = "stop" | "other";
 
@@ -34,12 +37,19 @@ export interface AnswerRequest {
 /** What every provider returns for one request, before verification. */
 export interface ProviderResult {
   finishReason: FinishReason;
-  usage: Usage;
+  /** Null when the provider did not report usage; callers must fail closed. */
+  usage: Usage | null;
   segments: ProviderSegment[];
 }
 
 /** A model provider able to answer a question from the supplied sources. */
 export interface AnswerProvider {
+  /**
+   * Sends the request to the model and returns its unverified output.
+   *
+   * @param request the question and the sources to answer from.
+   * @returns generated segments with citations, the finish reason and usage.
+   */
   generate(request: AnswerRequest): Promise<ProviderResult>;
 }
 
