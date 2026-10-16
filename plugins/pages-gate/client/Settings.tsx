@@ -136,7 +136,7 @@ function Pages() {
       <Heading>{t("Pages")}</Heading>
       <Text as="p" type="secondary">
         {t(
-          "Publish gated pages to Cloudflare R2. Visitors need an access code to read them."
+          "Publish pages from your documents to Cloudflare R2. Protected sites need an access code to read them."
         )}
       </Text>
       {!data && !error ? (
@@ -153,7 +153,7 @@ function Pages() {
       ) : sites.length === 0 ? (
         <Text as="p" type="secondary">
           {t(
-            "A gated site is a set of pages from your documents, published outside the workspace behind a single access code. Anyone with the code can read the site, so share it only with the people it is meant for."
+            "A site is a set of pages from your documents, published outside the workspace. A protected site opens with a single access code; anyone with the code can read it, so share it only with the people it is meant for."
           )}
         </Text>
       ) : (

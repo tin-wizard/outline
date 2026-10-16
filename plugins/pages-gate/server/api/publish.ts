@@ -18,11 +18,12 @@ import {
   type User,
 } from "@server/models";
 import { PagesSourceType } from "@server/models/PagesPublication";
-import { PagesSiteStatus } from "@server/models/PagesSite";
+import { PagesSiteKind, PagesSiteStatus } from "@server/models/PagesSite";
 import { authorize, can } from "@server/policies";
 import type { APIContext } from "@server/types";
 import { AuthenticationType } from "@server/types";
 import { RateLimiterStrategy } from "@server/utils/RateLimiter";
+import { createArtifactStore } from "../lib/artifactStore";
 import { makeBeaconDecorator } from "../lib/beacon";
 import { sitePrefix } from "../lib/keys";
 import type { ObjectStore } from "../lib/objectStore";
@@ -80,7 +81,7 @@ export function createPublishRouter(storeFactory: StoreFactory): Router {
     ctx: APIContext<T.PagesPublishReq> | APIContext<T.PagesRotateReq>,
     mode: { rotate: true } | { rotate: false; accessCode?: string }
   ) => {
-    const { id, sources } = ctx.input.body;
+    const { id, sources, newAccessCode } = ctx.input.body;
     const { user } = ctx.state.auth;
 
     const site = await PagesSite.findOne({
@@ -90,6 +91,11 @@ export function createPublishRouter(storeFactory: StoreFactory): Router {
       throw NotFoundError();
     }
     authorize(user, mode.rotate ? "rotate" : "publish", site);
+    if (site.kind === PagesSiteKind.Artifact) {
+      throw ValidationError(
+        "Artifact sites are published with pages.publishArtifact"
+      );
+    }
 
     const requested = dedupe(sources ?? (await storedSources(site.id)));
     if (requested.length === 0) {
@@ -111,6 +117,7 @@ export function createPublishRouter(storeFactory: StoreFactory): Router {
         store: await storeFactory(),
         actorId: user.id,
         ...(mode.rotate ? { rotate: true } : { code: mode.accessCode }),
+        newCode: newAccessCode,
         // Reads the switch from the row publishSite has locked, so a toggle
         // racing this publish cannot leave the pages out of step with it.
         decoratePage: (html, { pageKey, site: locked }) =>
@@ -207,7 +214,7 @@ export function createPublishRouter(storeFactory: StoreFactory): Router {
       }
       authorize(user, "unpublish", site);
 
-      await removeSiteObjects(await storeFactory(), site.slug);
+      await removeSiteObjects(await storeFactory(), site);
       await PagesPublication.destroy({
         where: { siteId: site.id },
         transaction,
@@ -251,7 +258,7 @@ export function createPublishRouter(storeFactory: StoreFactory): Router {
       }
       authorize(user, "delete", site);
 
-      await removeSiteObjects(await storeFactory(), site.slug);
+      await removeSiteObjects(await storeFactory(), site);
       await site.destroy({ transaction });
 
       ctx.body = {
@@ -348,13 +355,22 @@ async function loadSources(
 
 /**
  * Deletes every object of a site, then lists again and refuses to continue
- * unless none remain, since a listing can undercount.
+ * unless none remain, since a listing can undercount. Artifact sites live
+ * under `artifacts/<slug>/`, pages sites under `sites/<slug>/`.
  */
-async function removeSiteObjects(store: ObjectStore, slug: string) {
+async function removeSiteObjects(
+  store: ObjectStore,
+  site: Pick<PagesSite, "slug" | "kind">
+) {
+  if (site.kind === PagesSiteKind.Artifact) {
+    // removeAll verifies by listing again and throws if anything remains.
+    await createArtifactStore(store, site.slug).removeAll();
+    return;
+  }
   const { createGuardedStore } = await libs();
-  const guarded = createGuardedStore(store, slug);
+  const guarded = createGuardedStore(store, site.slug);
   await guarded.removeAll();
-  const remaining = await guarded.list(sitePrefix(slug));
+  const remaining = await guarded.list(sitePrefix(site.slug));
   if (remaining.length > 0) {
     throw InternalError("Some published files could not be removed");
   }
@@ -383,6 +399,12 @@ function toApiError(
   }
   if (err instanceof lib.NothingToRotateError) {
     return fail(409, err.message, "nothing_to_rotate");
+  }
+  if (err instanceof lib.NewCodeNotApplicableError) {
+    return fail(400, err.message, "new_code_not_applicable");
+  }
+  if (err instanceof lib.InvalidCustomCodeError) {
+    return fail(400, err.message, "invalid_access_code");
   }
   if (err instanceof lib.EmptySiteError) {
     return fail(400, err.message, "empty_site");

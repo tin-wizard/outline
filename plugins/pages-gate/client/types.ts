@@ -1,11 +1,17 @@
+import type { PagesGateType } from "../shared/accessCode";
+
 export type SiteStatus = "draft" | "published" | "unpublished";
 
 /** A gated site as presented by the pages API. */
 export interface PagesSiteData {
   id: string;
   slug: string;
+  /** "artifact" for an uploaded interactive artifact, "pages" for gated pages. */
+  kind: "pages" | "artifact";
   title: string;
   status: SiteStatus;
+  /** "code" when readers need an access code, "none" for plain pages. */
+  gateType: PagesGateType;
   measurementEnabled: boolean;
   publishedUrl: string | null;
   pages: { pageKey: string; title: string; publishedAt: string | null }[];
@@ -19,7 +25,10 @@ export interface PublishResult {
   publishedUrl: string | null;
   pageCount: number;
   warnings: string[];
-  /** Present on first publish and rotation only. A one-time secret. */
+  /**
+   * Present only when the first publish or a rotation generated the code. A
+   * one-time secret.
+   */
   accessCode?: string;
 }
 

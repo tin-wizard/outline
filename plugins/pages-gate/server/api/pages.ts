@@ -16,6 +16,7 @@ import { QueryHelper } from "@server/storage/QueryHelper";
 import type { APIContext } from "@server/types";
 import { AuthenticationType } from "@server/types";
 import { RateLimiterStrategy } from "@server/utils/RateLimiter";
+import { PagesGateType } from "../../shared/accessCode";
 import pagesEnv from "../env";
 import {
   InvalidHostnameError,
@@ -29,6 +30,7 @@ import "../policies";
 import { pagesSiteIncludes, presentPagesSite } from "../presenters/pagesSite";
 import { createIngestRouter } from "./ingest";
 import { type StoreFactory, createPublishRouter } from "./publish";
+import { createArtifactPublishRouter } from "./publishArtifact";
 import * as T from "./schema";
 
 const router = new Router();
@@ -152,7 +154,8 @@ router.post(
   validate(T.PagesCreateSchema),
   transaction(),
   async (ctx: APIContext<T.PagesCreateReq>) => {
-    const { slug, title, measurementEnabled, hostname } = ctx.input.body;
+    const { slug, title, measurementEnabled, hostname, gateType } =
+      ctx.input.body;
     const { user } = ctx.state.auth;
     const { transaction } = ctx.state;
 
@@ -187,7 +190,7 @@ router.post(
           title,
           prefix,
           status: PagesSiteStatus.Draft,
-          gateType: "code",
+          gateType: gateType ?? PagesGateType.Code,
           measurementEnabled: measurementEnabled ?? false,
           teamId: user.teamId,
           createdById: user.id,
@@ -282,6 +285,9 @@ export function createPagesRouter(
   pagesRouter.use(router.routes());
   pagesRouter.use(
     createPublishRouter(deps.storeFactory ?? defaultStore).routes()
+  );
+  pagesRouter.use(
+    createArtifactPublishRouter(deps.storeFactory ?? defaultStore).routes()
   );
   // The one route without auth(); every other route declares its own.
   pagesRouter.use(createIngestRouter().routes());
