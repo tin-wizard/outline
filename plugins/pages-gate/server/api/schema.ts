@@ -151,3 +151,17 @@ export const PagesIngestEventSchema = z.object({
 });
 
 export type PagesIngestEvent = z.infer<typeof PagesIngestEventSchema>;
+
+export const PagesPublishArtifactSchema = BaseSchema.extend({
+  body: z.object({
+    documentId: z.uuid(),
+    attachmentId: z.uuid(),
+    title: z.string().trim().min(1).max(255).optional(),
+    /** Checked with assertValidSlug in the route; a random one is generated when omitted. */
+    slug: z.string().optional(),
+  }),
+});
+
+export type PagesPublishArtifactReq = z.infer<
+  typeof PagesPublishArtifactSchema
+>;
