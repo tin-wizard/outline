@@ -60,17 +60,6 @@ describe("createArtifactStore", () => {
     });
   });
 
-  it.each(["../x", "/abs", "a//b", "a%2fb", "a\\b", ""])(
-    "refuses to write path %j and touches nothing",
-    async (p) => {
-      const raw = createMemoryStore();
-      await expect(
-        createArtifactStore(raw, "demo").put(p, "x", opts)
-      ).rejects.toThrow();
-      expect(raw.calls).toEqual([]);
-    }
-  );
-
   it.each(unsafePaths)(
     "refuses to write or delete adversarial path %j and touches nothing",
     async (p) => {
@@ -155,5 +144,54 @@ describe("createArtifactStore", () => {
     ).rejects.toThrow();
     expect(raw.calls).toEqual([]);
     expect(raw.keys()).toEqual(["sites/demo/index.html"]);
+  });
+
+  it.each([
+    { "artifacts/demo/../../sites/x": "1" },
+    {
+      "artifacts/demo/index.html": "1",
+      "artifacts/demo/../../sites/x": "2",
+      "artifacts/demo/js/a.js": "3",
+    },
+    { "artifacts/demo/a%2f..": "1", "artifacts/demo/index.html": "2" },
+  ])(
+    "removeAll deletes nothing when a listed name is unsafe (%j)",
+    async (seed) => {
+      const raw = createMemoryStore(seed);
+      await expect(
+        createArtifactStore(raw, "demo").removeAll()
+      ).rejects.toThrow(
+        "Artifact has files with unsafe names; remove them manually"
+      );
+      expect(raw.calls.filter((c) => c.startsWith("delete"))).toEqual([]);
+      expect(raw.keys()).toEqual(Object.keys(seed).sort());
+    }
+  );
+
+  it("removeAll deletes and counts a folder marker equal to the prefix", async () => {
+    const raw = createMemoryStore({
+      "artifacts/demo/": "",
+      "artifacts/demo/index.html": "1",
+    });
+    expect(await createArtifactStore(raw, "demo").removeAll()).toBe(2);
+    expect(raw.keys()).toEqual([]);
+  });
+
+  it("removeAll counts duplicate listed keys once", async () => {
+    const raw = createMemoryStore({
+      "artifacts/demo/index.html": "1",
+      "artifacts/demo/js/a.js": "2",
+    });
+    const listOnce = raw.list;
+    raw.list = async (prefix) => {
+      const keys = await listOnce(prefix);
+      return [...keys, ...keys];
+    };
+    expect(await createArtifactStore(raw, "demo").removeAll()).toBe(2);
+    expect(raw.calls.filter((c) => c.startsWith("delete"))).toEqual([
+      "delete artifacts/demo/index.html",
+      "delete artifacts/demo/js/a.js",
+    ]);
+    expect(raw.keys()).toEqual([]);
   });
 });

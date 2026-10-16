@@ -65,7 +65,21 @@ export function createArtifactStore(
       await store.delete(`${prefix}${assertSafePath(path)}`);
     },
     async removeAll() {
-      const paths = await list();
+      const paths = [...new Set(await list())];
+      // All-or-nothing: an unsafe name may be read differently at the edge, so
+      // refuse before deleting anything. "" is a folder marker at the prefix.
+      for (const path of paths) {
+        if (path === "") {
+          continue;
+        }
+        try {
+          assertSafePath(path);
+        } catch {
+          throw new Error(
+            "Artifact has files with unsafe names; remove them manually"
+          );
+        }
+      }
       for (const path of paths) {
         await store.delete(`${prefix}${path}`);
       }
