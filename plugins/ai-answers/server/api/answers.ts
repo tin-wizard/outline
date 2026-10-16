@@ -22,13 +22,7 @@ import {
 import env from "../env";
 import { generateAnswerWithUsage, type AnswerResult } from "../generate";
 import { retrieveSources, type AnswerSource } from "../retrieve";
-import {
-  estimateUsage,
-  markUnmetered,
-  recordUsage,
-  reserveModelCall,
-  type UsageEntry,
-} from "../usage";
+import { estimateUsage, record, reserveModelCall } from "../usage";
 import * as T from "./schema";
 
 const router = new Router();
@@ -38,7 +32,7 @@ const router = new Router();
  * on top of the answer deadline. The socket timeout of this route is the
  * deadline plus this headroom.
  */
-const REQUEST_HEADROOM_MS = 15_000;
+export const REQUEST_HEADROOM_MS = 15_000;
 
 const NO_ANSWER_RESULT: AnswerResult = { answer: null, citations: [] };
 
@@ -54,21 +48,6 @@ export function clampDeadline(value: number): number {
     return DEFAULT_DEADLINE_MS;
   }
   return Math.min(Math.max(value, MIN_DEADLINE_MS), CLIENT_TIMEOUT_MS);
-}
-
-/** Records usage; a failure is logged, never allowed to break the response. */
-async function record(entry: UsageEntry) {
-  try {
-    await recordUsage(entry);
-  } catch {
-    Logger.warn("AI answers usage could not be recorded", {
-      outcome: entry.outcome,
-      inputTokens: entry.usage.inputTokens,
-      outputTokens: entry.usage.outputTokens,
-    });
-    // Unrecorded spend breaks the budget: stop calling the model for now.
-    await markUnmetered(entry.teamId);
-  }
 }
 
 /**

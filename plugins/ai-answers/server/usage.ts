@@ -98,6 +98,26 @@ export async function recordUsage(entry: UsageEntry): Promise<number> {
 }
 
 /**
+ * Records usage without ever throwing. When the row cannot be saved, the
+ * workspace is flagged unmetered so unrecorded spend cannot keep growing.
+ *
+ * @param entry what to record; never includes content.
+ */
+export async function record(entry: UsageEntry): Promise<void> {
+  try {
+    await recordUsage(entry);
+  } catch {
+    Logger.warn("AI answers usage could not be recorded", {
+      outcome: entry.outcome,
+      inputTokens: entry.usage.inputTokens,
+      outputTokens: entry.usage.outputTokens,
+    });
+    // Unrecorded spend breaks the budget: stop calling the model for now.
+    await markUnmetered(entry.teamId);
+  }
+}
+
+/**
  * Total spend of a workspace in the current calendar month (UTC).
  *
  * @param teamId the workspace.
