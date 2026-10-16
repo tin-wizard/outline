@@ -5,7 +5,7 @@ import env from "@server/env";
 import Redis from "@server/storage/redis";
 import { buildTeam, buildUser } from "@server/test/factories";
 import { CLIENT_MAX_RETRIES, CLIENT_TIMEOUT_MS } from "./anthropicClient";
-import { MAX_OUTPUT_TOKENS } from "./contract";
+import { MAX_OUTPUT_TOKENS, STRUCTURED_SYSTEM_PROMPT } from "./contract";
 import pluginEnv from "./env";
 import {
   MAX_CONCURRENT_CALLS,
@@ -320,5 +320,11 @@ describe("estimateUsage", () => {
     ]);
     expect(estimate.outputTokens).toEqual(MAX_OUTPUT_TOKENS);
     expect(estimate.inputTokens).toBeGreaterThan(100);
+  });
+
+  it("counts the longer structured prompt", () => {
+    expect(estimateUsage("", []).inputTokens).toBeGreaterThanOrEqual(
+      STRUCTURED_SYSTEM_PROMPT.length / 3
+    );
   });
 });
