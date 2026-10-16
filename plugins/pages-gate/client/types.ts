@@ -6,6 +6,8 @@ export type SiteStatus = "draft" | "published" | "unpublished";
 export interface PagesSiteData {
   id: string;
   slug: string;
+  /** "artifact" for an uploaded interactive artifact, "pages" for gated pages. */
+  kind: "pages" | "artifact";
   title: string;
   status: SiteStatus;
   /** "code" when readers need an access code, "none" for plain pages. */
