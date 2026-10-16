@@ -187,6 +187,58 @@ describe("publish_artifact", () => {
     expect(found.map((node) => node.attrs?.href)).toEqual([out.publishedUrl]);
   });
 
+  it("does not stack a second embed when republishing to the same document", async () => {
+    const { user, accessToken } = await buildOAuthUser({ role: "admin" });
+    const document = await buildDocument({
+      teamId: user.teamId,
+      userId: user.id,
+    });
+    const slug = uniqueSlug("mcp-twice");
+    const first = ok(
+      await callMcpTool(server, accessToken, TOOL, {
+        html: "<p>one</p>",
+        slug,
+        documentId: document.id,
+      })
+    );
+    const second = ok(
+      await callMcpTool(server, accessToken, TOOL, {
+        html: "<p>two</p>",
+        slug,
+        documentId: document.id,
+      })
+    );
+    expect(first.embedAdded).toBe(true);
+    expect(second.embedAdded).toBe(true);
+    expect(second.note).toContain("already embeds this page");
+    const found = await documentEmbeds(document.id);
+    expect(found.map((node) => node.attrs?.href)).toEqual([
+      second.publishedUrl,
+    ]);
+  });
+
+  it("adds no embed and says why when the public Pages URL is not configured", async () => {
+    pagesEnv.PAGES_PUBLIC_BASE_URL = undefined;
+    const { user, accessToken } = await buildOAuthUser({ role: "admin" });
+    const document = await buildDocument({
+      teamId: user.teamId,
+      userId: user.id,
+    });
+    const out = ok(
+      await callMcpTool(server, accessToken, TOOL, {
+        html: "<p>x</p>",
+        slug: uniqueSlug("mcp-nourl"),
+        documentId: document.id,
+      })
+    );
+    expect(out.publishedUrl).toBeNull();
+    expect(out.embedAdded).toBe(false);
+    expect(out.note).toContain(
+      "No embed was added: the public Pages URL is not configured."
+    );
+    expect(await documentEmbeds(document.id)).toEqual([]);
+  });
+
   it("keeps the embed when update_document replaces the document with its markdown", async () => {
     const { user, accessToken } = await buildOAuthUser({ role: "admin" });
     const document = await buildDocument({
@@ -275,16 +327,30 @@ describe("publish_artifact", () => {
   });
 
   it.each([
-    ["neither html nor attachmentId", {}],
+    [
+      "neither html nor attachmentId",
+      {},
+      /exactly one of html or attachmentId/,
+    ],
     [
       "both html and attachmentId",
       { html: "x", attachmentId: "9b6a2d5e-0a3c-4f61-8d8b-6c1f0e1b2a33" },
+      /exactly one of html or attachmentId/,
     ],
-    ["html over 900,000 characters", { html: "a".repeat(900_001) }],
-  ])("refuses %s and writes nothing", async (_label, args) => {
+    [
+      "html over 900,000 characters",
+      { html: "a".repeat(900_001) },
+      /900000|too.?big/i,
+    ],
+    ["empty html", { html: "" }, /too.?small|at least 1/i],
+  ])("refuses %s and writes nothing", async (_label, args, expected) => {
     const { accessToken } = await buildOAuthUser({ role: "admin" });
     const slug = uniqueSlug("bad");
-    refused(await callMcpTool(server, accessToken, TOOL, { ...args, slug }));
+    const message = refused(
+      await callMcpTool(server, accessToken, TOOL, { ...args, slug })
+    );
+    expect(message).toMatch(expected);
+    expect(message).not.toMatch(/authoriz/i);
     expect(store.calls).toEqual([]);
     expect(await PagesSite.count({ where: { slug } })).toBe(0);
   });
@@ -354,7 +420,7 @@ describe("publish_artifact", () => {
           slug,
         })
       );
-      expect(message).toMatch(/not found|authoriz/i);
+      expect(message).toMatch(/not found/i);
       expect(read).not.toHaveBeenCalled();
       expect(store.calls).toEqual([]);
       expect(await PagesSite.count({ where: { slug } })).toBe(0);

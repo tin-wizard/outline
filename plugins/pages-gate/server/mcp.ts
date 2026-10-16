@@ -3,7 +3,7 @@ import { RateLimiterRes } from "rate-limiter-flexible";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import AuthenticationHelper from "@shared/helpers/AuthenticationHelper";
-import { TextEditMode } from "@shared/types";
+import { type ProsemirrorData, TextEditMode } from "@shared/types";
 import { toError } from "@shared/utils/error";
 import documentUpdater from "@server/commands/documentUpdater";
 import env from "@server/env";
@@ -72,6 +72,7 @@ export function pagesMcpTools(
       inputSchema: {
         html: z
           .string()
+          .min(1)
           .max(MAX_HTML_LENGTH)
           .optional()
           .describe(
@@ -145,28 +146,41 @@ export function pagesMcpTools(
 
         let embedAdded = false;
         let note = NOTE;
+        if (documentId && !url) {
+          note = `No embed was added: the public Pages URL is not configured. ${NOTE}`;
+        }
         if (documentId && url) {
           // The page is already public: an embed failure must not hide its URL.
           try {
-            await sequelize.transaction(async (transaction) => {
-              ctx.state.transaction = transaction;
-              ctx.context.transaction = transaction;
+            const alreadyEmbedded = await sequelize.transaction(
+              async (transaction) => {
+                ctx.state.transaction = transaction;
+                ctx.context.transaction = transaction;
 
-              const document = await Document.findByPk(documentId, {
-                userId: user.id,
-                includeState: true,
-                rejectOnEmpty: true,
-                transaction,
-              });
-              authorize(user, "update", document);
+                const document = await Document.findByPk(documentId, {
+                  userId: user.id,
+                  includeState: true,
+                  rejectOnEmpty: true,
+                  transaction,
+                });
+                authorize(user, "update", document);
 
-              return documentUpdater(ctx, {
-                document,
-                text: `[${url}](${url})`,
-                editMode: TextEditMode.Append,
-              });
-            });
+                // The URL is stable per slug, so a republish must not stack embeds.
+                if (hasEmbed(document.content, url)) {
+                  return true;
+                }
+                await documentUpdater(ctx, {
+                  document,
+                  text: `[${url}](${url})`,
+                  editMode: TextEditMode.Append,
+                });
+                return false;
+              }
+            );
             embedAdded = true;
+            if (alreadyEmbedded) {
+              note = `The document already embeds this page. ${NOTE}`;
+            }
           } catch (err) {
             Logger.error("Failed to embed a published artifact", toError(err), {
               documentId,
@@ -195,6 +209,26 @@ export function pagesMcpTools(
       }
     })
   );
+}
+
+/**
+ * Whether a ProseMirror tree contains an embed node pointing at the URL.
+ *
+ * @param node the document content.
+ * @param url the embed href to look for.
+ * @returns true when such an embed exists.
+ */
+function hasEmbed(
+  node: ProsemirrorData | null | undefined,
+  url: string
+): boolean {
+  if (!node) {
+    return false;
+  }
+  if (node.type === "embed" && node.attrs?.href === url) {
+    return true;
+  }
+  return (node.content ?? []).some((child) => hasEmbed(child, url));
 }
 
 /**
