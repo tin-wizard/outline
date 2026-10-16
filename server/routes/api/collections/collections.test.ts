@@ -1614,6 +1614,21 @@ describe("#collections.create", () => {
     expect(body.data.aiExcluded).toBe(true);
   });
 
+  it("should not let a non-admin member create an AI-excluded collection", async () => {
+    const team = await buildTeam({ memberCollectionCreate: true });
+    const member = await buildUser({ teamId: team.id });
+
+    const res = await server.post("/api/collections.create", member, {
+      body: { name: "Test", aiExcluded: true },
+    });
+    expect(res.status).toEqual(403);
+
+    const plain = await server.post("/api/collections.create", member, {
+      body: { name: "Test" },
+    });
+    expect(plain.status).toEqual(200);
+  });
+
   it("should error when index is invalid", async () => {
     const user = await buildUser();
     const res = await server.post("/api/collections.create", user, {
@@ -1956,19 +1971,34 @@ describe("#collections.update", () => {
     expect((await collection.reload()).aiExcluded).toBe(false);
   });
 
-  it("does not let a plain member change aiExcluded", async () => {
+  it("does not let a collection admin who is not a workspace admin change aiExcluded", async () => {
     const team = await buildTeam();
-    const member = await buildUser({ teamId: team.id });
+    const manager = await buildUser({ teamId: team.id });
     const collection = await buildCollection({
       teamId: team.id,
       aiExcluded: true,
     });
+    await UserMembership.create({
+      createdById: manager.id,
+      collectionId: collection.id,
+      userId: manager.id,
+      permission: CollectionPermission.Admin,
+    });
 
-    const res = await server.post("/api/collections.update", member, {
+    const res = await server.post("/api/collections.update", manager, {
       body: { id: collection.id, aiExcluded: false },
     });
     expect(res.status).toEqual(403);
     expect((await collection.reload()).aiExcluded).toBe(true);
+
+    // The edit form sends every value, so an unchanged flag must not block a rename.
+    const rename = await server.post("/api/collections.update", manager, {
+      body: { id: collection.id, name: "Renamed", aiExcluded: true },
+    });
+    expect(rename.status).toEqual(200);
+    await collection.reload();
+    expect(collection.name).toEqual("Renamed");
+    expect(collection.aiExcluded).toBe(true);
   });
 
   it("allows editing non-private collection", async () => {

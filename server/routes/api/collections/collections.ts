@@ -81,6 +81,9 @@ router.post(
 
     const { user } = ctx.state.auth;
     authorize(user, "createCollection", user.team);
+    if (aiExcluded) {
+      authorize(user, "update", user.team);
+    }
 
     const collection = Collection.build({
       name,
@@ -703,7 +706,9 @@ router.post(
       collection.commenting = commenting;
     }
 
-    if (aiExcluded !== undefined) {
+    // Only workspace admins may change it; an unchanged value (sent by the edit form) is fine.
+    if (aiExcluded !== undefined && aiExcluded !== collection.aiExcluded) {
+      authorize(user, "update", user.team);
       collection.aiExcluded = aiExcluded;
     }
 

@@ -24,6 +24,8 @@ export interface AnswerSource {
 
 const MAX_DOCUMENTS = 5;
 // Extra candidates so documents dropped by AI exclusion do not starve results.
+// Fails closed: if 20+ excluded documents outrank every other match, the
+// answer simply has fewer sources.
 const FETCH_LIMIT = MAX_DOCUMENTS * 4;
 const MAX_CHARS_PER_DOCUMENT = 20_000;
 
