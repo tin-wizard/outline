@@ -207,9 +207,13 @@ export async function reserveModelCall(teamId: string): Promise<Reservation> {
   // concurrency cap (3 calls in flight).
   try {
     if (await withTimeout(Redis.defaultClient.exists(unmeteredKey(teamId)))) {
+      Logger.warn("AI answers refused: workspace is flagged unmetered", {
+        teamId,
+      });
       return { ok: false, reason: "unmetered" };
     }
     if (await isOverBudget(teamId)) {
+      Logger.warn("AI answers refused: monthly budget reached", { teamId });
       return { ok: false, reason: "budget" };
     }
     const token = await acquireSlot(teamId);
@@ -227,7 +231,9 @@ export async function reserveModelCall(teamId: string): Promise<Reservation> {
       },
     };
   } catch {
-    Logger.warn("AI answers limiter unavailable; refusing model call");
+    Logger.warn("AI answers limiter unavailable; refusing model call", {
+      teamId,
+    });
     return { ok: false, reason: "unavailable" };
   }
 }

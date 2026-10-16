@@ -83,7 +83,7 @@ const RULES: Rule[] = [
     // Bearer <token>; the token must contain a non-letter so prose is kept.
     cls: "bearer_token",
     pattern:
-      /(\bBearer[ \t]{1,5})(?!\[REDACTED:)(?=[A-Za-z]{0,500}[0-9._~+/=-])[A-Za-z0-9._~+/=-]{16,}/g,
+      /(\bBearer[ \t]{1,5})(?!\[REDACTED:)(?=[A-Za-z]{0,500}[0-9._~+/=-])[A-Za-z0-9._~+/=-]{16,}/gi,
     keepPrefix: true,
   },
   {
@@ -97,9 +97,11 @@ const RULES: Rule[] = [
     // key = value, key: "value"; only the value (8+ chars) is replaced. A key
     // suffix needs a separator (SECRET_KEY_BASE, not Secretary), and an
     // unquoted value needs a non-letter so prose like "Token: authentication" is kept.
+    // camelCase keys (authToken, clientSecret) need explicit alternatives because
+    // the lookbehind blocks a match starting mid-word.
     cls: "assignment",
     pattern:
-      /(?<![A-Za-z0-9])((?:password|passwd|passphrase|secret|api[_-]?key|token|private[_-]key|credentials?)(?:[_-][A-Za-z0-9_-]{0,30})?["']?[ \t]{0,5}[:=][ \t]{0,5})(?!["']?\[REDACTED:)(?:"[^"\n]{8,500}"|'[^'\n]{8,500}'|(?=[A-Za-z]{0,500}[^A-Za-z\s"'`,;])[^\s"'`,;]{8,})/gi,
+      /(?<![A-Za-z0-9])((?:password|passwd|passphrase|secret|api[_-]?key|token|private[_-]?key|(?:auth|access|refresh|client|id)(?:token|secret)|credentials?)(?:[_-][A-Za-z0-9_-]{0,30})?["']?[ \t]{0,5}[:=][ \t]{0,5})(?!["']?\[REDACTED:)(?:"[^"\n]{8,500}"|'[^'\n]{8,500}'|(?=[A-Za-z]{0,500}[^A-Za-z\s"'`,;])[^\s"'`,;]{8,})/gi,
     keepPrefix: true,
   },
 ];

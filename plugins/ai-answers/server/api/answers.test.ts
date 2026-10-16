@@ -16,6 +16,7 @@ import { Transaction } from "sequelize";
 import { sequelize } from "@server/storage/database";
 import Redis from "@server/storage/redis";
 import { requestContext } from "@server/storage/requestContext";
+import { MAX_OUTPUT_TOKENS } from "../contract";
 import env from "../env";
 import { acquireSlot, releaseSlot } from "../usage";
 import { clampDeadline } from "./answers";
@@ -515,7 +516,7 @@ describe("#documents.answerQuestion", () => {
           where: { teamId: user.teamId },
         });
         expect(row.outcome).toEqual("answered");
-        expect(row.outputTokens).toEqual(1024);
+        expect(row.outputTokens).toEqual(MAX_OUTPUT_TOKENS);
         expect(row.inputTokens).toBeGreaterThan(0);
         expect(BigInt(row.costMicroUsd) > 0n).toEqual(true);
       });
@@ -882,6 +883,21 @@ describe("#documents.answerQuestion", () => {
         }
       });
 
+      /** Polls until `condition` holds or `timeoutMs` passes; true when it held. */
+      async function settled(
+        condition: () => boolean | Promise<boolean>,
+        timeoutMs: number
+      ): Promise<boolean> {
+        const end = Date.now() + timeoutMs;
+        while (Date.now() < end) {
+          if (await condition()) {
+            return true;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        return false;
+      }
+
       /** Aborts the client, then lets the request carry on after a pause. */
       async function disconnectDuring(user: User): Promise<unknown> {
         const controller = new AbortController();
@@ -900,6 +916,7 @@ describe("#documents.answerQuestion", () => {
           }
         }
         controller.abort();
+        (globalThis as { __aborted?: boolean }).__aborted = true;
         return request;
       }
 
@@ -910,10 +927,18 @@ describe("#documents.answerQuestion", () => {
         "makes no model call and records nothing when the client leaves during %s",
         async (_, point) => {
           const { user } = await setup();
-          const flag = globalThis as { __inHook?: boolean };
+          const flag = globalThis as {
+            __inHook?: boolean;
+            __aborted?: boolean;
+            __hookDone?: boolean;
+          };
+          // Holds the server in the hook until the client has dropped, then
+          // gives the disconnect a moment to reach the server.
           const pause = async () => {
             flag.__inHook = true;
-            await new Promise((resolve) => setTimeout(resolve, 600));
+            await settled(() => flag.__aborted === true, 5000);
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            flag.__hookDone = true;
           };
           const spy =
             point === "toMarkdown"
@@ -930,8 +955,13 @@ describe("#documents.answerQuestion", () => {
           const upstream = hangingUpstream();
           try {
             flag.__inHook = false;
+            flag.__aborted = false;
+            flag.__hookDone = false;
             await disconnectDuring(user);
-            await new Promise((resolve) => setTimeout(resolve, 900));
+            // Once the hook returns, a wrongly-continuing handler would start
+            // the model call within moments; allow that, then check.
+            await settled(() => flag.__hookDone === true, 5000);
+            await settled(() => upstream.started, 300);
             expect(upstream.started).toEqual(false);
             expect(
               await AIAnswerUsage.count({ where: { teamId: user.teamId } })
@@ -940,6 +970,8 @@ describe("#documents.answerQuestion", () => {
           } finally {
             spy.mockRestore();
             delete flag.__inHook;
+            delete flag.__aborted;
+            delete flag.__hookDone;
           }
         }
       );

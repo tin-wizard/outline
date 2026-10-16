@@ -52,6 +52,8 @@ export async function generateAnswerWithUsage(
  * Asks Claude to answer a question from the given sources.
  * The answer is returned only when at least one citation backs it.
  *
+ * @internal Exported for tests only: it reports no usage and so bypasses
+ * metering. Production code must use `generateAnswerWithUsage`.
  * @param client the Anthropic client.
  * @param question the user's question.
  * @param sources the retrieved sources, in the order they are sent.

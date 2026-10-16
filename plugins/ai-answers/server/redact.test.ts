@@ -87,6 +87,25 @@ describe("redactSecrets", () => {
     expect(result.counts).toEqual({ bearer_token: 1 });
   });
 
+  it("matches Bearer case-insensitively", () => {
+    const token = "abc123" + "._~+/-" + "Q".repeat(20);
+    expect(redactSecrets(`authorization: bearer ${token}`).text).toEqual(
+      "authorization: bearer [REDACTED:bearer_token]"
+    );
+  });
+
+  it.each([
+    "authToken",
+    "clientSecret",
+    "apiKey",
+    "accessToken",
+    "privateKey",
+    "refreshToken",
+  ])("redacts the value of camelCase key %s", (key) => {
+    const result = redactSecrets(`${key}: "${"v1".repeat(8)}" end`);
+    expect(result.text).toEqual(`${key}: "[REDACTED:assignment]" end`);
+  });
+
   it("strips zero-width characters that would split a secret", () => {
     const split = fake.github.slice(0, 10) + "\u200B" + fake.github.slice(10);
     expect(redactSecrets(split).text).toEqual("[REDACTED:vcs_token]");
