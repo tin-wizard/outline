@@ -1,4 +1,9 @@
-import { BlockSplitter, blockToMarkdown, splitBlocks } from "./blocks";
+import {
+  type Block,
+  BlockSplitter,
+  blockToMarkdown,
+  splitBlocks,
+} from "./blocks";
 
 const cite = (sourceIndex: number, quote = "quoted text") => ({
   sourceIndex,
@@ -51,6 +56,17 @@ describe("splitBlocks", () => {
     expect(blocks[4].inlineCode).toEqual(["npm run build"]);
     expect(blocks[6].cells).toEqual(["Basic", "25"]);
     expect(blocks[8].marker).toEqual("bash");
+    expect(blocks.map((b) => b.tableId)).toEqual([
+      0, 0, 0, 0, 0, 1, 1, 1, 0, 0,
+    ]);
+  });
+
+  it("numbers each table", () => {
+    expect(
+      splitBlocks("| a |\n|---|\n| 1 |\n\n| b |\n|---|\n| 2 |").map(
+        (b) => b.tableId
+      )
+    ).toEqual([1, 1, 2, 2]);
   });
 
   it("treats pipe lines without a separator row as a paragraph", () => {
@@ -83,6 +99,33 @@ describe("BlockSplitter", () => {
     expect(splitter.flush()).toEqual([]);
   });
 
+  it("carries citations on whitespace-only chunks to the next block", () => {
+    const splitter = new BlockSplitter();
+    const blocks = [
+      ...splitter.push("Intro.\n"),
+      ...splitter.push("\n", [cite(0)]),
+      ...splitter.push(" ", [cite(1)]),
+      ...splitter.push("Claim.\n\n"),
+      ...splitter.flush(),
+    ];
+    expect(blocks.map((b) => [b.text, b.citations])).toEqual([
+      ["Intro.", []],
+      ["Claim.", [cite(0), cite(1)]],
+    ]);
+  });
+
+  it("attaches citations on fence and separator lines", () => {
+    const splitter = new BlockSplitter();
+    const blocks = [
+      ...splitter.push("| a |\n"),
+      ...splitter.push("|---|\n", [cite(0)]),
+      ...splitter.push("\n```\nyarn build\n"),
+      ...splitter.push("```\n", [cite(1)]),
+      ...splitter.flush(),
+    ];
+    expect(blocks.map((b) => b.citations)).toEqual([[cite(0)], [cite(1)]]);
+  });
+
   it("matches the one-shot split for random chunkings", () => {
     const expected = splitBlocks(SAMPLE);
     let seed = 7;
@@ -92,15 +135,36 @@ describe("BlockSplitter", () => {
     };
     for (let run = 0; run < 200; run++) {
       const splitter = new BlockSplitter();
-      const blocks = [];
+      const blocks: Block[] = [];
+      const cited: number[] = [];
       let at = 0;
+      let chunk = 0;
       while (at < SAMPLE.length) {
+        // Some chunks are newline-only, as between provider content blocks.
         const size = 1 + Math.floor(random() * 12);
-        blocks.push(...splitter.push(SAMPLE.slice(at, at + size)));
-        at += size;
+        const text =
+          SAMPLE[at] === "\n" && random() < 0.5
+            ? SAMPLE.slice(at, (at += 1))
+            : SAMPLE.slice(at, (at += size));
+        blocks.push(...splitter.push(text, [cite(chunk)]));
+        if (SAMPLE.slice(at).trim() || text.trim()) {
+          cited.push(chunk);
+        }
+        chunk++;
       }
       blocks.push(...splitter.flush());
-      expect(blocks).toEqual(expected);
+      const plain = (list: Block[]) =>
+        list.map((b) => ({ ...b, citations: [] }));
+      expect(plain(blocks)).toEqual(plain(expected));
+      // Every chunk followed by more content lands on some block, once per block.
+      const landed = blocks.flatMap((b) =>
+        b.citations.map((c) => c.sourceIndex)
+      );
+      expect([...new Set(landed)].sort((a, b) => a - b)).toEqual(cited);
+      for (const b of blocks) {
+        const ids = b.citations.map((c) => c.sourceIndex);
+        expect(new Set(ids).size).toEqual(ids.length);
+      }
     }
   });
 
@@ -141,7 +205,23 @@ describe("blockToMarkdown", () => {
     const [block] = splitBlocks("Text");
     expect(
       blockToMarkdown({ ...block, text: "```js x\n# y\n- z\n**bold** ok" })
-    ).toEqual("\\```js x\n\\# y\n\\- z\n**bold** ok");
+    ).toEqual("\\`\\`\\`js x\n\\# y\n\\- z\n**bold** ok");
+  });
+
+  it("escapes characters that could form links, images or HTML", () => {
+    const [block] = splitBlocks("Text");
+    expect(
+      blockToMarkdown({
+        ...block,
+        text: "a [b](c) ![d] <e> f\\g `[k](l) <m>` stray `",
+      })
+    ).toEqual("a \\[b\\](c) \\!\\[d\\] \\<e\\> f\\\\g `[k](l) <m>` stray \\`");
+  });
+
+  it("escapes table cells, keeping escaped pipes inside a cell", () => {
+    const [, row] = splitBlocks("| a |\n|---|\n| [x](y) a\\|b |");
+    expect(row.cells).toEqual(["[x](y) a\\|b"]);
+    expect(blockToMarkdown(row)).toEqual("| \\[x\\](y) a\\\\\\|b |");
   });
 
   it("uses a fence longer than any backtick run in the code", () => {

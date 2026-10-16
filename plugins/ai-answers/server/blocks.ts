@@ -27,6 +27,8 @@ export interface Block {
   inlineCode: string[];
   /** Citations the provider attached to any text that formed this block. */
   citations: ProviderCitation[];
+  /** Which table (1, 2, ...) a header or body row belongs to; 0 outside tables. */
+  tableId: number;
 }
 
 /**
@@ -39,21 +41,28 @@ export class BlockSplitter {
    * Adds generated text and the citations attached to it.
    *
    * @param text the next piece of generated text.
-   * @param citations citations for this piece; they attach to every block it touches.
+   * @param citations citations for this piece; they attach to every block it
+   * touches, or to the next block when the piece is only whitespace.
    * @returns the blocks completed by this piece, in order.
    */
   public push(text: string, citations: ProviderCitation[] = []): Block[] {
     const out: Block[] = [];
     const pieces = text.split("\n");
+    let attached = false;
     pieces.forEach((piece, i) => {
-      if (piece) {
-        this.partial += piece;
-        this.partialCitations.push(...citations);
+      this.partial += piece;
+      if (piece.trim()) {
+        this.partialCitations.push(...this.carried, ...citations);
+        this.carried = [];
+        attached = true;
       }
       if (i < pieces.length - 1) {
         this.endLine(out);
       }
     });
+    if (!attached) {
+      this.carried.push(...citations);
+    }
     return out;
   }
 
@@ -76,9 +85,13 @@ export class BlockSplitter {
 
   private partial = "";
   private partialCitations: ProviderCitation[] = [];
+  /** Citations of whitespace-only pieces, waiting for the next content. */
+  private carried: ProviderCitation[] = [];
   private open?: OpenBlock;
   private fence?: { char: string; length: number; info: string } & Lines;
-  private inTable = false;
+  /** The id of the table being read; 0 outside tables. */
+  private inTable = 0;
+  private tables = 0;
 
   private endLine(out: Block[]) {
     const line = this.partial.replace(/\r$/, "");
@@ -96,6 +109,7 @@ export class BlockSplitter {
         close[1][0] === this.fence.char &&
         close[1].length >= this.fence.length
       ) {
+        this.fence.citations.push(...citations);
         out.push(this.codeBlock());
         return;
       }
@@ -107,19 +121,25 @@ export class BlockSplitter {
     const trimmed = raw.trim();
     if (!trimmed) {
       this.close(out);
-      this.inTable = false;
+      this.inTable = 0;
       return;
     }
     if (this.inTable && trimmed.startsWith("|")) {
-      out.push(block("tableRow", cellsOf(trimmed), citations));
+      out.push({
+        ...block("tableRow", cellsOf(trimmed), citations),
+        tableId: this.inTable,
+      });
       return;
     }
-    this.inTable = false;
+    this.inTable = 0;
     if (this.open?.maybeTable && isSeparator(trimmed)) {
       const cells = cellsOf(this.open.lines[0]);
-      out.push(block("tableHeader", cells, this.open.citations));
+      this.inTable = ++this.tables;
+      out.push({
+        ...block("tableHeader", cells, [...this.open.citations, ...citations]),
+        tableId: this.inTable,
+      });
       this.open = undefined;
-      this.inTable = true;
       return;
     }
 
@@ -228,13 +248,13 @@ export function splitBlocks(markdown: string): Block[] {
 export function blockToMarkdown(block: Block): string {
   switch (block.kind) {
     case "heading":
-      return `${"#".repeat(Math.min(Math.max(block.level, 1), 6))} ${block.text}`;
+      return `${"#".repeat(Math.min(Math.max(block.level, 1), 6))} ${escapeInline(block.text)}`;
     case "listItem": {
       const marker = /^\d/.test(block.marker)
         ? `${parseInt(block.marker, 10)}.`
         : "-";
       const indent = " ".repeat(marker.length + 1);
-      return `${marker} ${escapeLineStarts(block.text).split("\n").join(`\n${indent}`)}`;
+      return `${marker} ${escapeLineStarts(escapeInline(block.text)).split("\n").join(`\n${indent}`)}`;
     }
     case "tableHeader":
       return `${row(block.cells)}\n${row(block.cells.map(() => "---"))}`;
@@ -249,7 +269,7 @@ export function blockToMarkdown(block: Block): string {
       return `${fence}${block.marker}\n${block.text}\n${fence}`;
     }
     default:
-      return escapeLineStarts(block.text);
+      return escapeLineStarts(escapeInline(block.text));
   }
 }
 
@@ -281,6 +301,7 @@ function block(
     cells,
     inlineCode: [...text.matchAll(/`([^`]+)`/g)].map((m) => m[1]),
     citations: dedupe(citations),
+    tableId: 0,
   };
 }
 
@@ -315,6 +336,18 @@ function escapeLineStarts(text: string): string {
   );
 }
 
+/**
+ * Backslash-escapes every character that could start a link, image, reference,
+ * autolink or HTML on re-parse, outside inline code spans (which render
+ * literally). Unpaired backticks are escaped so the spans stay as detected.
+ */
+function escapeInline(text: string): string {
+  return text
+    .split(/(`[^`]+`)/)
+    .map((part, i) => (i % 2 ? part : part.replace(/[\\[\]<>!`]/g, "\\$&")))
+    .join("");
+}
+
 function row(cells: string[]): string {
-  return `| ${cells.join(" | ")} |`;
+  return `| ${cells.map((cell) => escapeInline(cell).replace(/\|/g, "\\|")).join(" | ")} |`;
 }
