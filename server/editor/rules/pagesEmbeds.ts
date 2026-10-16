@@ -2,13 +2,45 @@ import type MarkdownIt from "markdown-it";
 import type StateCore from "markdown-it/lib/rules_core/state_core.mjs";
 
 /**
- * The base URL that published Pages artifacts are served from, without a
- * trailing slash, or undefined when Pages is not configured. Read on each
- * parse so the setting is picked up without a restart of the parser.
+ * The parsed base URL that published Pages artifacts are served from, or
+ * undefined when Pages is not configured or the value is not a valid URL.
+ * Read on each parse so the setting is picked up without a restart.
  */
-function artifactsPrefix(): string | undefined {
-  const base = process.env.PAGES_PUBLIC_BASE_URL?.replace(/\/+$/, "");
-  return base ? `${base}/artifacts/` : undefined;
+function pagesBase(): URL | undefined {
+  const value = process.env.PAGES_PUBLIC_BASE_URL;
+  if (!value) {
+    return undefined;
+  }
+  try {
+    return new URL(value);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Whether a URL points at a published artifact on the Pages host. Compares
+ * the parsed origin and the dot-resolved pathname, so `..` segments, lookalike
+ * hosts and userinfo cannot escape the artifacts path.
+ *
+ * @param href the link target.
+ * @param base the parsed Pages base URL.
+ * @return true if the URL is under the base's /artifacts/ path.
+ */
+function isArtifactUrl(href: string, base: URL): boolean {
+  let u: URL;
+  try {
+    u = new URL(href);
+  } catch {
+    return false;
+  }
+  const basePath = base.pathname.replace(/\/+$/, "");
+  return (
+    u.origin === base.origin &&
+    !u.username &&
+    !u.password &&
+    u.pathname.startsWith(`${basePath}/artifacts/`)
+  );
 }
 
 /**
@@ -20,8 +52,8 @@ function artifactsPrefix(): string | undefined {
  * @param state the markdown-it core state.
  */
 function embedArtifactLinks(state: StateCore) {
-  const prefix = artifactsPrefix();
-  if (!prefix) {
+  const base = pagesBase();
+  if (!base) {
     return;
   }
   const tokens = state.tokens;
@@ -44,7 +76,7 @@ function embedArtifactLinks(state: StateCore) {
       continue;
     }
     const href = children[0].attrGet("href") ?? "";
-    if (!href.startsWith(prefix) || children[1].content !== href) {
+    if (children[1].content !== href || !isArtifactUrl(href, base)) {
       continue;
     }
     const token = new state.Token("embed", "a", 0);

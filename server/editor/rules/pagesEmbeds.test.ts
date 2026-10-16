@@ -70,4 +70,40 @@ describe("pagesEmbeds", () => {
       "embed"
     );
   });
+
+  it.each([
+    ["dot segments", `${BASE}/artifacts/../sites/x`],
+    ["encoded dot segments", `${BASE}/artifacts/%2e%2e/sites/x`],
+    ["a lookalike host", "https://pages.example.test.evil.com/artifacts/x"],
+    ["userinfo", "https://user:pw@pages.example.test/artifacts/x"],
+  ])("leaves a link with %s as a link", (_name, u) => {
+    expect(parser.parse(`[${u}](${u})\n`)?.firstChild?.type.name).toBe(
+      "paragraph"
+    );
+  });
+
+  it("turns every matching paragraph into an embed", () => {
+    const doc = parser.parse(`[${URL1}](${URL1})\n\n[${URL1}](${URL1})\n`);
+    expect(doc?.childCount).toBe(2);
+    expect(doc?.child(0).type.name).toBe("embed");
+    expect(doc?.child(1).type.name).toBe("embed");
+  });
+
+  it("supports a base URL with a path prefix", () => {
+    process.env.PAGES_PUBLIC_BASE_URL = `${BASE}/pages`;
+    const inside = `${BASE}/pages/artifacts/abc/index.html`;
+    expect(
+      parser.parse(`[${inside}](${inside})\n`)?.firstChild?.type.name
+    ).toBe("embed");
+    expect(parser.parse(`[${URL1}](${URL1})\n`)?.firstChild?.type.name).toBe(
+      "paragraph"
+    );
+  });
+
+  it("does nothing and does not throw for an invalid base URL", () => {
+    process.env.PAGES_PUBLIC_BASE_URL = "not a url";
+    expect(parser.parse(`[${URL1}](${URL1})\n`)?.firstChild?.type.name).toBe(
+      "paragraph"
+    );
+  });
 });
