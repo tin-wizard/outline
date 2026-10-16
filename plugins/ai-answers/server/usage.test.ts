@@ -78,7 +78,7 @@ describe("recordUsage and spend", () => {
   it("records tokens and cost without content", async () => {
     const team = await buildTeam();
     const user = await buildUser({ teamId: team.id });
-    const cost = await recordUsage({
+    const { cost, id } = await recordUsage({
       teamId: team.id,
       userId: user.id,
       model: "claude-sonnet-5-5",
@@ -89,6 +89,7 @@ describe("recordUsage and spend", () => {
     });
     expect(cost).toEqual(3000);
     const row = await AIAnswerUsage.findOne({ where: { teamId: team.id } });
+    expect(row?.id).toEqual(id);
     expect(row?.inputTokens).toEqual(1000);
     expect(row?.outputTokens).toEqual(100);
     expect(row?.costMicroUsd).toEqual("3000");

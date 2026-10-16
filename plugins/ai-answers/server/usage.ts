@@ -79,11 +79,13 @@ export function monthlyBudgetMicroUsd(): number {
  * Records one request. Cost is derived from the model and token counts.
  *
  * @param entry what to record; never includes content.
- * @returns the cost recorded in micro-USD.
+ * @returns the cost recorded in micro-USD and the id of the created row.
  */
-export async function recordUsage(entry: UsageEntry): Promise<number> {
+export async function recordUsage(
+  entry: UsageEntry
+): Promise<{ cost: number; id: string }> {
   const cost = costMicroUsd(entry.model, entry.usage);
-  await AIAnswerUsage.create({
+  const row = await AIAnswerUsage.create({
     teamId: entry.teamId,
     userId: entry.userId,
     model: entry.model,
@@ -94,7 +96,7 @@ export async function recordUsage(entry: UsageEntry): Promise<number> {
     droppedSegments: entry.droppedSegments ?? 0,
     durationMs: entry.durationMs ?? 0,
   });
-  return cost;
+  return { cost, id: row.id };
 }
 
 /**
@@ -102,10 +104,11 @@ export async function recordUsage(entry: UsageEntry): Promise<number> {
  * workspace is flagged unmetered so unrecorded spend cannot keep growing.
  *
  * @param entry what to record; never includes content.
+ * @returns the id of the usage row, or null when it could not be saved.
  */
-export async function record(entry: UsageEntry): Promise<void> {
+export async function record(entry: UsageEntry): Promise<string | null> {
   try {
-    await recordUsage(entry);
+    return (await recordUsage(entry)).id;
   } catch {
     Logger.warn("AI answers usage could not be recorded", {
       outcome: entry.outcome,
@@ -114,6 +117,7 @@ export async function record(entry: UsageEntry): Promise<void> {
     });
     // Unrecorded spend breaks the budget: stop calling the model for now.
     await markUnmetered(entry.teamId);
+    return null;
   }
 }
 

@@ -414,6 +414,32 @@ describe("#ai.ask", () => {
       expect(rows[0].outputTokens).toEqual(50);
     });
 
+    it("reports the usage row id in done so the answer can be rated", async () => {
+      const { user } = await setup();
+      upstream(() => anthropicEvents([cited]));
+      const events = await askEvents(user);
+      const done = events.at(-1);
+      expect(done?.event).toEqual("done");
+      const rows = await rowsFor(user.teamId, true);
+      expect(rows).toHaveLength(1);
+      expect(done?.data.usageId).toEqual(rows[0].id);
+    });
+
+    it("reports a null usageId in done when the usage row could not be saved", async () => {
+      const { user } = await setup();
+      upstream(() => anthropicEvents([cited]));
+      const spy = vi
+        .spyOn(AIAnswerUsage, "create")
+        .mockRejectedValueOnce(new Error("db down"));
+      try {
+        const events = await askEvents(user);
+        expect(events.at(-1)?.event).toEqual("done");
+        expect(events.at(-1)?.data.usageId).toBeNull();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     it("never compresses the stream", async () => {
       const { user } = await setup();
       upstream(() => anthropicEvents([cited]));

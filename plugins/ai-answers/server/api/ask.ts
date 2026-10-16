@@ -2,13 +2,13 @@ import Router from "koa-router";
 import { safeSlugify } from "@shared/editor/lib/headingToSlug";
 import { TeamPreference } from "@shared/types";
 import { toError } from "@shared/utils/error";
-import { AuthorizationError } from "@server/errors";
+import { AuthorizationError, NotFoundError } from "@server/errors";
 import Logger from "@server/logging/Logger";
 import auth from "@server/middlewares/authentication";
 import { rateLimiter } from "@server/middlewares/rateLimiter";
 import timeout from "@server/middlewares/timeout";
 import validate from "@server/middlewares/validate";
-import { Collection, Document } from "@server/models";
+import { AIAnswerUsage, Collection, Document } from "@server/models";
 import type { AIAnswerOutcome } from "@server/models/AIAnswerUsage";
 import type { User } from "@server/models";
 import type { APIContext } from "@server/types";
@@ -94,6 +94,8 @@ export interface AskEvents {
   };
   done: {
     conversationId: string | null;
+    /** The usage row to rate with `ai.feedback`; null when it could not be saved. */
+    usageId: string | null;
     usage: Usage;
     timings: { retrievalMs: number; firstBlockMs?: number; totalMs: number };
   };
@@ -300,6 +302,7 @@ router.post(
     }
     const stream = openEventStream(ctx);
     let emitted = 0;
+    let usageId: string | null = null;
 
     try {
       // Conversation: an unknown, expired or foreign id starts a new one.
@@ -338,7 +341,7 @@ router.post(
         released: AcceptedBlock[],
         end:
           | { failed: AskFailure }
-          | { done: Omit<AskEvents["done"], "conversationId"> }
+          | { done: Omit<AskEvents["done"], "conversationId" | "usageId"> }
       ) => {
         const stored =
           !!id &&
@@ -351,6 +354,7 @@ router.post(
           stream.send("done", {
             ...end.done,
             conversationId: stored ? id : null,
+            usageId,
           });
         }
       };
@@ -465,7 +469,7 @@ router.post(
         outcome: AIAnswerOutcome;
       }) => {
         recorded = true;
-        await record({
+        usageId = await record({
           ...base,
           ...entry,
           droppedSegments: dropped,
@@ -588,6 +592,38 @@ router.post(
       stream.close();
       ctx.res.off("close", handleClose);
     }
+  }
+);
+
+// Rates one answer. Stores only the rating and its time, never any text. Runs
+// in the request transaction (no model call here), so row-level security
+// applies as well as the explicit team and asker scoping below.
+router.post(
+  "ai.feedback",
+  rateLimiter(RateLimiterStrategy.TenPerMinute),
+  auth(),
+  validate(T.AIFeedbackSchema),
+  async (ctx: APIContext<T.AIFeedbackReq>) => {
+    const { user } = ctx.state.auth;
+    const { usageId, rating } = ctx.input.body;
+
+    if (!user.team.getPreference(TeamPreference.AIAnswers)) {
+      throw AuthorizationError("AI answers are not enabled for this workspace");
+    }
+    if (user.isGuest || user.isViewer) {
+      throw AuthorizationError("AI answers are not available for your role");
+    }
+
+    const feedback = rating === "up" ? 1 : rating === "down" ? -1 : null;
+    const [updated] = await AIAnswerUsage.update(
+      { feedback, feedbackAt: feedback === null ? null : new Date() },
+      { where: { id: usageId, teamId: user.teamId, userId: user.id } }
+    );
+    // Same answer for a missing row and someone else's row.
+    if (updated === 0) {
+      throw NotFoundError();
+    }
+    ctx.body = { success: true };
   }
 );
 

@@ -37,3 +37,14 @@ export const AIAskSchema = BaseSchema.extend({
 });
 
 export type AIAskReq = z.infer<typeof AIAskSchema>;
+
+export const AIFeedbackSchema = BaseSchema.extend({
+  body: z.object({
+    /** The `usageId` of the answer's `done` event. */
+    usageId: z.uuid(),
+    /** "clear" removes an earlier rating. */
+    rating: z.enum(["up", "down", "clear"]),
+  }),
+});
+
+export type AIFeedbackReq = z.infer<typeof AIFeedbackSchema>;
