@@ -7,6 +7,7 @@ import {
   PagesSite,
   PagesViewEvent,
 } from "@server/models";
+import { PagesSiteKind } from "@server/models/PagesSite";
 import { randomString } from "@shared/random";
 
 describe("PagesSite", () => {
@@ -84,5 +85,19 @@ describe("PagesSite", () => {
     expect(await PagesDomain.count({ where })).toBe(0);
     expect(await PagesViewEvent.count({ where })).toBe(0);
     expect(await PagesInsight.count({ where })).toBe(0);
+  });
+});
+
+describe("PagesSite.kind", () => {
+  it("defaults to pages", async () => {
+    const site = await buildPagesSite();
+    expect((await PagesSite.findByPk(site.id))?.kind).toBe(PagesSiteKind.Pages);
+  });
+
+  it("stores an artifact site", async () => {
+    const site = await buildPagesSite({ kind: PagesSiteKind.Artifact });
+    expect((await PagesSite.findByPk(site.id))?.kind).toBe(
+      PagesSiteKind.Artifact
+    );
   });
 });
