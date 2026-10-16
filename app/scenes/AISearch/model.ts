@@ -39,6 +39,8 @@ export interface Turn {
   sources: AskSource[] | null;
   blocks: (BlockInput & { index: number })[];
   problem?: TurnProblem;
+  /** Seconds the server asked us to wait after a 429. */
+  retryAfter?: number;
 }
 
 export interface ChatState {
@@ -50,7 +52,7 @@ export interface ChatState {
 export type ChatAction =
   | { type: "submit"; question: string; scope: Scope }
   | { type: "event"; event: AskEvent }
-  | { type: "requestFailed"; problem: TurnProblem }
+  | { type: "requestFailed"; problem: TurnProblem; retryAfter?: number }
   | { type: "stopped" }
   | { type: "ended" }
   | { type: "reset" };
@@ -77,25 +79,67 @@ export function isActive(turn: Turn | undefined): boolean {
 export function citedSources(turn: Turn): {
   n: number;
   title: string;
-  url: string;
+  /** Distinct section links for this source, in citation order. */
+  urls: string[];
   collectionName?: string;
 }[] {
-  const byNumber = new Map<number, AskCitation>();
+  const byNumber = new Map<number, { first: AskCitation; urls: string[] }>();
   for (const block of turn.blocks) {
     for (const citation of block.citations) {
-      if (!byNumber.has(citation.n)) {
-        byNumber.set(citation.n, citation);
+      const entry = byNumber.get(citation.n);
+      if (!entry) {
+        byNumber.set(citation.n, { first: citation, urls: [citation.url] });
+      } else if (!entry.urls.includes(citation.url)) {
+        entry.urls.push(citation.url);
       }
     }
   }
   return [...byNumber.values()]
-    .sort((a, b) => a.n - b.n)
-    .map((c) => ({
-      n: c.n,
-      title: c.title,
-      url: c.url,
-      collectionName: turn.sources?.find((s) => s.n === c.n)?.collectionName,
+    .sort((a, b) => a.first.n - b.first.n)
+    .map(({ first, urls }) => ({
+      n: first.n,
+      title: first.title,
+      urls,
+      collectionName: turn.sources?.find((s) => s.n === first.n)
+        ?.collectionName,
     }));
+}
+
+const BLOCK_KINDS = [
+  "paragraph",
+  "heading",
+  "listItem",
+  "tableHeader",
+  "tableRow",
+  "code",
+];
+const FAILURES = [
+  "no_answer",
+  "unverified",
+  "budget",
+  "unavailable",
+  "timeout",
+  "cancelled",
+  "error",
+];
+const PHASE_ORDER = ["searching", "generating"];
+
+function validCitation(c: AskCitation): boolean {
+  return (
+    !!c &&
+    typeof c.n === "number" &&
+    typeof c.title === "string" &&
+    typeof c.url === "string"
+  );
+}
+
+function validSource(source: AskSource): boolean {
+  return (
+    !!source &&
+    typeof source.n === "number" &&
+    typeof source.title === "string" &&
+    typeof source.url === "string"
+  );
 }
 
 /**
@@ -142,7 +186,11 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
   switch (action.type) {
     case "requestFailed":
-      return update({ status: "failed", problem: action.problem });
+      return update({
+        status: "failed",
+        problem: action.problem,
+        retryAfter: action.retryAfter,
+      });
     case "stopped":
       return update({ status: "stopped" });
     case "ended":
@@ -150,28 +198,74 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return update({ status: "failed", problem: "error" });
     case "event": {
       const { event } = action;
+      // The payload is trusted JSON from the network; ignore anything off-shape.
+      if (!event || !event.data) {
+        return state;
+      }
       switch (event.event) {
         case "conversation":
-          return update({}, event.data.id);
-        case "status":
-          if (event.data.phase === "notice") {
-            return update({ notice: event.data.message });
+          return typeof event.data.id === "string"
+            ? update({}, event.data.id)
+            : state;
+        case "status": {
+          const { phase, message } = event.data;
+          if (phase === "notice") {
+            return typeof message === "string"
+              ? update({ notice: message })
+              : state;
           }
-          return update({ status: event.data.phase });
+          // Phases only move forward: a late "searching" after blocks is noise.
+          if (
+            PHASE_ORDER.indexOf(phase) < 0 ||
+            PHASE_ORDER.indexOf(phase) < PHASE_ORDER.indexOf(turn.status) ||
+            (phase === "searching" && turn.blocks.length > 0)
+          ) {
+            return state;
+          }
+          return update({ status: phase });
+        }
         case "sources":
-          return update({ sources: event.data });
-        case "block":
-          if (turn.blocks.some((b) => b.index === event.data.index)) {
+          return Array.isArray(event.data)
+            ? update({ sources: event.data.filter(validSource) })
+            : state;
+        case "block": {
+          const { index, kind, markdown, citations } = event.data;
+          if (
+            typeof index !== "number" ||
+            !BLOCK_KINDS.includes(kind) ||
+            typeof markdown !== "string" ||
+            !Array.isArray(citations) ||
+            turn.blocks.some((b) => b.index === index)
+          ) {
             return state;
           }
           return update({
             status: "generating",
-            blocks: [...turn.blocks, event.data],
+            blocks: [
+              ...turn.blocks,
+              {
+                index,
+                kind,
+                markdown,
+                citations: citations.filter(validCitation),
+              },
+            ],
           });
+        }
         case "done":
-          return update({ status: "done" }, event.data.conversationId);
+          return update(
+            { status: "done" },
+            typeof event.data.conversationId === "string"
+              ? event.data.conversationId
+              : null
+          );
         case "failed":
-          return update({ status: "failed", problem: event.data.reason });
+          return update({
+            status: "failed",
+            problem: FAILURES.includes(event.data.reason)
+              ? event.data.reason
+              : "error",
+          });
         default:
           return state;
       }

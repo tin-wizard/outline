@@ -179,6 +179,22 @@ describe("streamFetch", () => {
     expect(err2.message).toBe("bad");
   });
 
+  it("exposes Retry-After seconds on a 429, ignoring invalid values", async () => {
+    mockFetch(
+      new Response("{}", { status: 429, headers: { "Retry-After": "42" } })
+    );
+    const err = await collect(streamFetch("ai.ask", {})).catch((e) => e);
+    expect(err.retryAfter).toBe(42);
+
+    for (const bad of ["soon", "-5", "0", "1.5"]) {
+      mockFetch(
+        new Response("{}", { status: 429, headers: { "Retry-After": bad } })
+      );
+      const e2 = await collect(streamFetch("ai.ask", {})).catch((e) => e);
+      expect(e2.retryAfter).toBeUndefined();
+    }
+  });
+
   it("rejects with NetworkError when fetch fails", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("boom")));
     await expect(collect(streamFetch("ai.ask", {}))).rejects.toBeInstanceOf(

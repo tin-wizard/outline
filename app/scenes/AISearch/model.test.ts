@@ -54,7 +54,7 @@ describe("chatReducer", () => {
     expect(turn.blocks.map((b) => b.index)).toEqual([0, 1]);
     expect(state.conversationId).toBe("c1");
     expect(citedSources(turn)).toEqual([
-      { n: 1, title: "A", url: "/doc/a#h-x", collectionName: "Eng" },
+      { n: 1, title: "A", urls: ["/doc/a#h-x"], collectionName: "Eng" },
     ]);
   });
 
@@ -128,5 +128,121 @@ describe("chatReducer", () => {
         type: "reset",
       })
     ).toEqual(initialChatState);
+  });
+});
+
+describe("chatReducer with malformed events", () => {
+  // The payload is network JSON; cast to simulate what the wire could carry.
+  const wire = (event: string, data: unknown) =>
+    ({ event, data }) as unknown as AskEvent;
+
+  it("never throws and leaves the turn usable", () => {
+    const bad: AskEvent[] = [
+      wire("block", null),
+      wire("block", {}),
+      wire("block", {
+        index: 0,
+        kind: "paragraph",
+        markdown: 5,
+        citations: [],
+      }),
+      wire("block", {
+        index: 0,
+        kind: "paragraph",
+        markdown: "x",
+        citations: null,
+      }),
+      wire("block", { index: 1, kind: "script", markdown: "x", citations: [] }),
+      wire("block", {
+        index: "2",
+        kind: "paragraph",
+        markdown: "x",
+        citations: [],
+      }),
+      wire("status", null),
+      wire("status", { phase: "exploding" }),
+      wire("status", { phase: "notice" }),
+      wire("sources", null),
+      wire("sources", "nope"),
+      wire("conversation", { id: 7 }),
+      wire("conversation", null),
+      wire("mystery", { a: 1 }),
+      wire("done", null),
+    ];
+    const state = run(bad);
+    expect(state.turns[0].status).toBe("searching");
+    expect(state.turns[0].blocks).toHaveLength(0);
+    expect(state.conversationId).toBeNull();
+    // and the page keeps working afterwards
+    const next = chatReducer(state, { type: "event", event: block(0) });
+    expect(next.turns[0].blocks).toHaveLength(1);
+    expect(
+      chatReducer(next, { type: "event", event: done("c") }).turns[0].status
+    ).toBe("done");
+  });
+
+  it("drops invalid citations and sources entries", () => {
+    const state = run([
+      wire("block", {
+        index: 0,
+        kind: "paragraph",
+        markdown: "x",
+        citations: [
+          null,
+          { n: "1" },
+          { n: 1, title: "A", url: "/doc/a", documentId: "d" },
+        ],
+      }),
+      wire("sources", [
+        null,
+        { n: 1 },
+        { n: 2, title: "B", url: "/doc/b", documentId: "d" },
+      ]),
+    ]);
+    expect(state.turns[0].blocks[0].citations).toHaveLength(1);
+    expect(state.turns[0].sources).toHaveLength(1);
+  });
+
+  it("only moves phases forward", () => {
+    const afterBlock = run([
+      { event: "status", data: { phase: "generating" } },
+      block(0),
+      { event: "status", data: { phase: "searching" } },
+    ]);
+    expect(afterBlock.turns[0].status).toBe("generating");
+    const late = run([
+      { event: "status", data: { phase: "generating" } },
+      { event: "status", data: { phase: "searching" } },
+    ]);
+    expect(late.turns[0].status).toBe("generating");
+  });
+
+  it("treats an unknown failure reason as an error and a non-string conversation id as none", () => {
+    const state = run([wire("failed", { reason: "weird", partial: false })]);
+    expect(state.turns[0].problem).toBe("error");
+    const d = run([wire("done", { conversationId: 5 })]);
+    expect(d.conversationId).toBeNull();
+  });
+
+  it("lists every distinct section of a source", () => {
+    const cite = (url: string) => ({ n: 1, documentId: "d", title: "A", url });
+    const state = run([
+      wire("block", {
+        index: 0,
+        kind: "paragraph",
+        markdown: "a",
+        citations: [cite("/doc/a#h-x")],
+      }),
+      wire("block", {
+        index: 1,
+        kind: "paragraph",
+        markdown: "b",
+        citations: [cite("/doc/a#h-y"), cite("/doc/a#h-x")],
+      }),
+    ]);
+    expect(citedSources(state.turns[0])[0].urls).toEqual([
+      "/doc/a#h-x",
+      "/doc/a#h-y",
+    ]);
   });
 });

@@ -3,6 +3,7 @@ import { SparklesIcon } from "outline-icons";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { Redirect } from "react-router-dom";
+import { isUUID } from "validator";
 import styled from "styled-components";
 import { s } from "@shared/styles";
 import Button from "~/components/Button";
@@ -17,6 +18,7 @@ import type { ScopeChip } from "./ScopeChips";
 import { ScopeChips } from "./ScopeChips";
 import type { Scope } from "./model";
 import { useAISearch } from "./useAISearch";
+import { useAutoSubmitQuery } from "./useAutoSubmitQuery";
 
 /**
  * The AI Search page (`/ai`): a conversation with streamed, cited answers
@@ -26,9 +28,14 @@ import { useAISearch } from "./useAISearch";
  *
  * @returns the page, or a redirect to home when AI answers are unavailable.
  */
-function AISearch() {
+const AISearch = observer(function AISearch() {
   const enabled = useAIAnswersEnabled();
   return enabled ? <Page /> : <Redirect to={homePath()} />;
+});
+
+/** Query-string ids are untrusted: only well-formed UUIDs are used as scope. */
+function validId(value: string | null): string | undefined {
+  return value && isUUID(value) ? value : undefined;
 }
 
 const Page = observer(function Page() {
@@ -38,11 +45,10 @@ const Page = observer(function Page() {
   const { state, streaming, ask, stop, reset } = useAISearch();
   const [text, setText] = React.useState(params.get("q") ?? "");
   const [scope, setScope] = React.useState<Scope>(() => ({
-    collectionId: params.get("collectionId") ?? undefined,
-    documentId: params.get("documentId") ?? undefined,
+    collectionId: validId(params.get("collectionId")),
+    documentId: validId(params.get("documentId")),
   }));
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
-  const autoSubmitted = React.useRef(false);
 
   const { collectionId, documentId } = scope;
   React.useEffect(() => {
@@ -72,15 +78,7 @@ const Page = observer(function Page() {
     [ask, scope, streaming]
   );
 
-  React.useEffect(() => {
-    const q = params.get("q")?.trim();
-    if (q && !autoSubmitted.current) {
-      autoSubmitted.current = true;
-      submit(q);
-    }
-    // Runs once for the initial query only.
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  useAutoSubmitQuery(submit);
 
   const handleSubmit = () => submit(text);
 

@@ -65,19 +65,18 @@ export function Composer({
           readOnly={busy}
           aria-disabled={busy}
           aria-label={t("Ask a question about your documents")}
+          aria-keyshortcuts="Escape"
+          aria-describedby={busy ? "ai-composer-hint" : undefined}
           placeholder={t("Ask a question about your documents")}
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={handleKeyDown}
         />
+        {busy && <Hint id="ai-composer-hint">{t("Press Escape to stop")}</Hint>}
         <Counter aria-hidden="true">
           {value.length}/{MAX_QUERY_LENGTH}
         </Counter>
       </Field>
-      <Button
-        type="submit"
-        disabled={busy || !value.trim()}
-        aria-label={t("Send")}
-      >
+      <Button type="submit" disabled={busy || !value.trim()}>
         {t("Send")}
       </Button>
     </Form>
@@ -119,6 +118,14 @@ const Textarea = styled.textarea`
   &[aria-disabled="true"] {
     opacity: 0.6;
   }
+`;
+
+const Hint = styled.span`
+  position: absolute;
+  left: 12px;
+  bottom: 6px;
+  color: ${s("textTertiary")};
+  font-size: 11px;
 `;
 
 const Counter = styled.span`

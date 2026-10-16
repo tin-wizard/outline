@@ -24,17 +24,29 @@ const RETRYABLE: TurnProblem[] = [
   "unavailable",
   "network",
   "cancelled",
+  "rateLimited",
 ];
 
+// Control characters and bidi overrides/isolates have no place in a path.
+const UNSAFE_CHARS =
+  // oxlint-disable-next-line no-control-regex
+  /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/;
+
 /**
- * Whether a server-provided path may be linked. Only in-app document paths
- * are; anything else is shown as text.
+ * Whether a server-provided path may be linked. Only `/doc/<slug>` with an
+ * optional `#anchor` is: no extra segments, query, dot segments, encoded dots,
+ * slashes or backslashes, and no control or bidi characters. Anything else is
+ * shown as text.
  *
  * @param url the path from a source or citation.
- * @returns true for relative `/doc/...` paths.
+ * @returns true for safe relative document paths.
  */
 export function isDocPath(url: string): boolean {
-  return /^\/doc\/[^\s\\]+$/.test(url) && !url.startsWith("//");
+  if (!/^\/doc\/[^\s\\/?#]+(#[^\s]*)?$/.test(url) || UNSAFE_CHARS.test(url)) {
+    return false;
+  }
+  const slug = url.slice("/doc/".length).split("#")[0];
+  return !/^\.+$/.test(slug) && !/%(2e|2f|5c)/i.test(slug);
 }
 
 /**
@@ -83,33 +95,30 @@ export function AnswerTurn({
   return (
     <Section aria-label={turn.question}>
       <Question>{turn.question}</Question>
+      {/* Phase text lives outside the aria-busy answer region so it is announced. */}
+      {active && (
+        <Phase>
+          <span role="status">
+            {turn.status === "searching"
+              ? t("Searching your documents…")
+              : t("Writing answer…")}
+          </span>
+          {isLast && (
+            <Button type="button" neutral onClick={onStop}>
+              {t("Stop")}
+            </Button>
+          )}
+        </Phase>
+      )}
       <Answer aria-live="polite" aria-busy={active}>
         <Heading ref={headingRef} tabIndex={-1}>
           {t("Answer")}
         </Heading>
         {turn.notice && <Muted>{turn.notice}</Muted>}
-        {turn.status === "searching" && (
-          <Status>{t("Searching your documents…")}</Status>
-        )}
-        {turn.status === "generating" && (
-          <Status>
-            {t("Writing answer…")}
-            {isLast && (
-              <Button type="button" neutral onClick={onStop}>
-                {t("Stop")}
-              </Button>
-            )}
-          </Status>
-        )}
-        {turn.status === "searching" && isLast && (
-          <Button type="button" neutral onClick={onStop}>
-            {t("Stop")}
-          </Button>
-        )}
         {!!turn.sources?.length && !cited.length && active && (
           <Details>
             <summary>
-              {t("Sources")} ({turn.sources.length})
+              {t("Sources ({{ count }})", { count: turn.sources.length })}
             </summary>
             <SourceList>
               {turn.sources.map((source) => (
@@ -117,7 +126,7 @@ export function AnswerTurn({
                   <SourceEntry
                     n={source.n}
                     title={source.title}
-                    url={source.url}
+                    urls={[source.url]}
                     collectionName={source.collectionName}
                   />
                 </li>
@@ -159,13 +168,14 @@ export function AnswerTurn({
               ? t("Searched in: {{ scope }}.", {
                   scope: scopeLabels.join(", "),
                 })
-              : t("Searched in: all documents.")}{" "}
+              : t("Searched in: all documents.")}
+            <br />
             {t("Try rephrasing, or widen the search by removing a filter.")}
           </Message>
         )}
         {turn.problem && !noResults && (
-          <Message role="status">
-            {problemMessage(turn.problem, hasBlocks, t)}
+          <Message>
+            {problemMessage(turn, hasBlocks, t)}
             {isLast && RETRYABLE.includes(turn.problem) && (
               <>
                 {" "}
@@ -182,19 +192,19 @@ export function AnswerTurn({
 }
 
 function problemMessage(
-  problem: TurnProblem,
+  turn: Turn,
   partial: boolean,
-  t: (key: string) => string
+  t: (key: string, options?: Record<string, unknown>) => string
 ): string {
-  switch (problem) {
+  switch (turn.problem) {
     case "unverified":
       return partial
-        ? `${t("Couldn't fully verify this answer")}. ${t(
-            "The part shown above was verified, the rest was withheld."
-          )}`
-        : `${t("Couldn't fully verify this answer")}. ${t(
-            "No part of it could be backed by your documents."
-          )}`;
+        ? t(
+            "Couldn't fully verify this answer. The part shown above was verified, the rest was withheld."
+          )
+        : t(
+            "Couldn't fully verify this answer. No part of it could be backed by your documents."
+          );
     case "no_answer":
       return t("The documents don't answer this question.");
     case "budget":
@@ -212,7 +222,11 @@ function problemMessage(
     case "forbidden":
       return t("AI answers aren't available to your account.");
     case "rateLimited":
-      return t("Too many requests, try again in a minute.");
+      return turn.retryAfter
+        ? t("Too many requests, try again in {{ seconds }} seconds.", {
+            seconds: turn.retryAfter,
+          })
+        : t("Too many requests, try again in a minute.");
     case "network":
       return t("Couldn't reach the server. Check your connection.");
     default:
@@ -223,19 +237,36 @@ function problemMessage(
 function SourceEntry({
   n,
   title,
-  url,
+  urls,
   collectionName,
 }: {
   n: number;
   title: string;
-  url: string;
+  urls: string[];
   collectionName?: string;
 }) {
+  const { t } = useTranslation();
+  const [first, ...others] = urls;
   return (
     <>
-      <Number>[{n}]</Number>{" "}
-      {isDocPath(url) ? <Link to={url}>{title}</Link> : <span>{title}</span>}
+      <SourceNumber>[{n}]</SourceNumber>{" "}
+      {first !== undefined && isDocPath(first) ? (
+        <Link to={first}>{title}</Link>
+      ) : (
+        <span>{title}</span>
+      )}
       {collectionName && <Muted as="span"> · {collectionName}</Muted>}
+      {others.map(
+        (url, i) =>
+          isDocPath(url) && (
+            <React.Fragment key={url}>
+              {" · "}
+              <Link to={url}>
+                {t("Section {{ number }}", { number: i + 2 })}
+              </Link>
+            </React.Fragment>
+          )
+      )}
     </>
   );
 }
@@ -278,7 +309,7 @@ const Heading = styled.h2`
   }
 `;
 
-const Status = styled.p`
+const Phase = styled.div`
   display: flex;
   align-items: center;
   gap: 12px;
@@ -333,7 +364,7 @@ const SourceList = styled.ul`
   }
 `;
 
-const Number = styled.span`
+const SourceNumber = styled.span`
   color: ${s("textSecondary")};
   font-variant-numeric: tabular-nums;
 `;

@@ -78,7 +78,9 @@ export class StreamRequestError extends RequestError {
     /** HTTP status of the response. */
     public status: number,
     /** The server's structured error code, if it sent one. */
-    public code?: string
+    public code?: string,
+    /** Seconds from the `Retry-After` header, if the server sent a valid one. */
+    public retryAfter?: number
   ) {
     super(message);
   }
@@ -117,7 +119,14 @@ async function toError(response: Response): Promise<StreamRequestError> {
     status === 429
       ? "Too many requests, try again in a minute."
       : `Error ${status}`;
-  return new StreamRequestError(message || fallback, status, code);
+  const header = response.headers.get("Retry-After");
+  const seconds = header && /^\d+$/.test(header) ? parseInt(header, 10) : NaN;
+  return new StreamRequestError(
+    message || fallback,
+    status,
+    code,
+    Number.isFinite(seconds) && seconds > 0 ? seconds : undefined
+  );
 }
 
 /** Parses one frame (lines between blank lines); returns undefined for comments-only frames. */

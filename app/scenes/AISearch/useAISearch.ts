@@ -30,6 +30,16 @@ export function problemFor(err: unknown): TurnProblem {
 }
 
 /**
+ * Seconds the server asked us to wait, from a 429.
+ *
+ * @param err the thrown error.
+ * @returns the delay in seconds, if known.
+ */
+export function retryAfterFor(err: unknown): number | undefined {
+  return err instanceof StreamRequestError ? err.retryAfter : undefined;
+}
+
+/**
  * Holds the conversation and runs `ai.ask` turns against it.
  *
  * @returns the state, whether a turn is streaming, and the actions.
@@ -80,7 +90,11 @@ export function useAISearch(): {
         }
       } catch (err) {
         if (current()) {
-          dispatch({ type: "requestFailed", problem: problemFor(err) });
+          dispatch({
+            type: "requestFailed",
+            problem: problemFor(err),
+            retryAfter: retryAfterFor(err),
+          });
         }
       }
     })();

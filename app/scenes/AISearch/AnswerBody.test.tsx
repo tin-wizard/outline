@@ -334,4 +334,56 @@ describe("AnswerTurn sources", () => {
     expect(host.textContent).toContain("Writing answer…");
     expect(host.textContent).toContain("Stop");
   });
+
+  it("puts phase text in its own status outside the aria-busy region", () => {
+    const host = render(turn({ status: "searching", blocks: [] }));
+    const status = host.querySelector('[role="status"]');
+    expect(status?.textContent).toBe("Searching your documents…");
+    expect(status?.closest("[aria-live]")).toBeNull();
+    expect(host.querySelector("[aria-live] [role=status]")).toBeNull();
+  });
+
+  it("shows the Retry-After wait and a retry button for rate limiting", () => {
+    const host = render(
+      turn({ status: "failed", problem: "rateLimited", retryAfter: 42 })
+    );
+    expect(host.textContent).toContain(
+      "Too many requests, try again in 42 seconds."
+    );
+    expect(host.textContent).toContain("Try again");
+    const plain = render(turn({ status: "failed", problem: "rateLimited" }));
+    expect(plain.textContent).toContain(
+      "Too many requests, try again in a minute."
+    );
+  });
+
+  it("links every distinct cited section of a source", () => {
+    const host = render(
+      turn({
+        blocks: [
+          {
+            index: 0,
+            kind: "paragraph",
+            markdown: "a",
+            citations: [cite(1, "/doc/a-abc#h-one")],
+          },
+          {
+            index: 1,
+            kind: "paragraph",
+            markdown: "b",
+            citations: [cite(1, "/doc/a-abc#h-two")],
+          },
+        ],
+      })
+    );
+    expect(
+      [...host.querySelectorAll("a")].map((a) => a.getAttribute("href"))
+    ).toEqual(["/doc/a-abc#h-one", "/doc/a-abc#h-two"]);
+  });
+
+  it("shows a retrieved-sources count while streaming, as one translated string", () => {
+    const host = render(turn({ status: "generating", blocks: [] }));
+    expect(host.querySelector("summary")?.textContent).toContain("Sources");
+    expect(host.querySelector("summary")?.textContent).toContain("1");
+  });
 });
