@@ -33,7 +33,7 @@ interface Citation {
 }
 
 interface AnswerResponse {
-  search?: { answer: string | null };
+  answer?: string | null;
   citations?: Citation[];
 }
 
@@ -94,7 +94,7 @@ export function AnswerCard({
       .then((res) => {
         if (!cancelled) {
           setState({
-            answer: res.search?.answer ?? null,
+            answer: res.answer ?? null,
             citations: res.citations ?? [],
           });
         }

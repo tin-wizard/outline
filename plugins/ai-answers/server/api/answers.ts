@@ -64,7 +64,6 @@ router.post(
       query,
       results: documents.length,
       duration: Date.now() - startedAt,
-      answer: answer ?? undefined,
     });
 
     ctx.body = {
@@ -72,6 +71,8 @@ router.post(
         documents.map((document) => presentDocument(ctx, document))
       ),
       policies: presentPolicies(user, documents),
+      // Returned to the client but deliberately not stored on the search row.
+      answer,
       search: presentSearchQuery(search),
       citations,
     };

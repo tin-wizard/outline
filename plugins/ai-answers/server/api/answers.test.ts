@@ -106,7 +106,7 @@ describe("#documents.answerQuestion", () => {
       );
     });
 
-    it("returns a cited answer and records it", async () => {
+    it("returns a cited answer without persisting its text", async () => {
       const { user, document } = await setup();
       create.mockResolvedValue({
         stop_reason: "end_turn",
@@ -135,11 +135,16 @@ describe("#documents.answerQuestion", () => {
       const body = await res.json();
 
       expect(res.status).toEqual(200);
-      expect(body.search.answer).toEqual("Twenty five days.");
+      expect(body.answer).toEqual("Twenty five days.");
       expect(body.citations[0].documentId).toEqual(document.id);
       expect(body.documents[0].id).toEqual(document.id);
+      // The generated text is returned but never persisted.
+      expect(body.search.answer).toBeNull();
       const logged = await SearchQuery.findOne({ where: { userId: user.id } });
-      expect(logged?.answer).toEqual("Twenty five days.");
+      expect(logged?.answer).toBeNull();
+      expect(logged?.query).toEqual("How many days of holiday?");
+      expect(logged?.results).toEqual(1);
+      expect(logged?.duration).toBeGreaterThanOrEqual(0);
     });
 
     it("returns a null answer without calling the model when nothing matches", async () => {
@@ -149,7 +154,7 @@ describe("#documents.answerQuestion", () => {
       });
       const body = await res.json();
       expect(res.status).toEqual(200);
-      expect(body.search.answer).toBeNull();
+      expect(body.answer).toBeNull();
       expect(body.citations).toEqual([]);
       expect(create).not.toHaveBeenCalled();
     });
@@ -165,7 +170,7 @@ describe("#documents.answerQuestion", () => {
 
       expect(create).toHaveBeenCalledTimes(1);
       expect(res.status).toEqual(200);
-      expect(body.search.answer).toBeNull();
+      expect(body.answer).toBeNull();
       expect(body.citations).toEqual([]);
       expect(body.documents.map((d: { id: string }) => d.id)).toContain(
         document.id
