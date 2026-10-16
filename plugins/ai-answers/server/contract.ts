@@ -16,8 +16,10 @@ export type FinishReason = "stop" | "other";
 export interface ProviderCitation {
   /** Index into the `sources` array that was sent. */
   sourceIndex: number;
-  /** Index into that source's `sections`. */
+  /** Index into that source's `sections` where the cited passage starts. */
   sectionIndex: number;
+  /** Exclusive end index; the cited passage is `sections[sectionIndex..endSectionIndex)`. */
+  endSectionIndex: number;
   /** The supporting text as reported by the provider. */
   quote: string;
 }

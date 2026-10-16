@@ -268,11 +268,11 @@ describe("#documents.answerQuestion", () => {
         content: [
           {
             type: "text",
-            text: "Twenty five days.",
+            text: "Holiday tool sync.",
             citations: [
               {
                 type: "search_result_location",
-                cited_text: "Employees receive twenty five days of holiday.",
+                cited_text: "The holiday tool uses",
                 search_result_index: 0,
                 start_block_index: 0,
                 end_block_index: 1,
@@ -288,7 +288,7 @@ describe("#documents.answerQuestion", () => {
       const body = await res.json();
 
       expect(res.status).toEqual(200);
-      expect(body.answer).toEqual("Twenty five days.");
+      expect(body.answer).toEqual("Holiday tool sync.");
       expect(create).toHaveBeenCalledTimes(1);
       const sent = JSON.stringify(create.mock.calls[0][0]);
       expect(sent).toContain("holiday tool uses");

@@ -61,6 +61,7 @@ export function createAnthropicProvider(client: AnswerClient): AnswerProvider {
                   {
                     sourceIndex: c.search_result_index,
                     sectionIndex: c.start_block_index,
+                    endSectionIndex: c.end_block_index,
                     quote: c.cited_text,
                   },
                 ]

@@ -41,10 +41,114 @@ function normalise(text: string): string {
 }
 
 /**
- * Applies the trust rules to a provider result. A segment is kept only when
- * it carries a citation that maps to a real section that was sent, or when it
- * is copied verbatim (at least 25 characters) from a sent section; invented
- * uncited text is dropped. The answer is returned only with at least one real
+ * Share of a segment's content words that must appear in the cited passage.
+ * Deliberately low so honest paraphrases pass; invented sentences carry mostly
+ * new words and fall well below it. Exact tokens (see `findUnsupportedTokens`)
+ * are checked separately and strictly.
+ */
+const MIN_CONTENT_WORD_SUPPORT = 0.5;
+
+/** Words that carry no claim; ignored when measuring paraphrase overlap. */
+const STOPWORDS = new Set(
+  (
+    "a an and are as at be been but by can could did do does for from had has have he her his how i if in into is it its " +
+    "may might more most no not of on or our she should so than that the their them then there these they this those to " +
+    "was we were what when where which who will with would you your also such per via"
+  ).split(" ")
+);
+
+const URL_PATTERN = /https?:\/\/[^\s)>\]"']+/gi;
+const EMAIL_PATTERN = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g;
+const CODE_SPAN_PATTERN = /`([^`]+)`/g;
+const NUMBER_PATTERN = /\d+(?:[.,]\d+)*/g;
+const IDENTIFIER_PATTERNS = [
+  /\b[A-Z][A-Z0-9]+(?:-[A-Z0-9]+)*\b/g, // acronyms and IDs: API, PROJ-123
+  /\b[A-Za-z]+(?:_[A-Za-z0-9]+)+\b/g, // snake_case
+  /\b[a-z]+(?:[A-Z][a-z0-9]+)+\b/g, // camelCase
+];
+
+/** Drops digit-group commas so "1,000" and "1000" compare equal. */
+function ungroup(text: string): string {
+  return text.replace(/(?<=\d),(?=\d)/g, "");
+}
+
+/**
+ * Whether `needle` occurs in `haystack` without being part of a longer token.
+ * Numbers only compare against digits, so "28" matches "28th" but not "128".
+ */
+function containsToken(
+  haystack: string,
+  needle: string,
+  edge = /[\p{L}\p{N}]/u
+): boolean {
+  let from = 0;
+  for (;;) {
+    const at = haystack.indexOf(needle, from);
+    if (at === -1) {
+      return false;
+    }
+    const before = haystack[at - 1];
+    const after = haystack[at + needle.length];
+    if (!(before && edge.test(before)) && !(after && edge.test(after))) {
+      return true;
+    }
+    from = at + 1;
+  }
+}
+
+/**
+ * Whether the segment text is supported by the cited passage: every number,
+ * URL, email, code-like token and acronym/ID in it appears in the passage, and
+ * at least `MIN_CONTENT_WORD_SUPPORT` of its content words do too.
+ */
+function isSupported(text: string, passage: string): boolean {
+  const exact: string[] = [];
+  const collect = (pattern: RegExp, group = 0) => {
+    for (const m of text.matchAll(pattern)) {
+      exact.push(m[group]);
+    }
+  };
+  collect(URL_PATTERN);
+  collect(EMAIL_PATTERN);
+  collect(CODE_SPAN_PATTERN, 1);
+  const prose = text
+    .replace(URL_PATTERN, " ")
+    .replace(EMAIL_PATTERN, " ")
+    .replace(CODE_SPAN_PATTERN, " ");
+  for (const pattern of IDENTIFIER_PATTERNS) {
+    for (const m of prose.matchAll(pattern)) {
+      exact.push(m[0]);
+    }
+  }
+  const haystack = ungroup(passage);
+  const numbers = [...prose.matchAll(NUMBER_PATTERN)].map((m) => m[0]);
+  const urlLike = exact.map((t) => t.replace(/[.,;:!?]+$/, ""));
+  if (
+    urlLike.some((t) => !containsToken(haystack, normalise(t))) ||
+    numbers.some((t) => !containsToken(haystack, ungroup(t), /[\d.]/))
+  ) {
+    return false;
+  }
+
+  const split = (value: string) => normalise(value).split(/[^\p{L}\p{N}]+/u);
+  const passageWords = new Set(split(passage));
+  const words = [
+    ...new Set(split(prose).filter((w) => w && !STOPWORDS.has(w))),
+  ];
+  if (words.length === 0) {
+    return true;
+  }
+  const found = words.filter((w) => passageWords.has(w)).length;
+  return found / words.length >= MIN_CONTENT_WORD_SUPPORT;
+}
+
+/**
+ * Applies the trust rules to a provider result. A citation counts only when it
+ * maps to real sections that were sent and its quote occurs in them. A cited
+ * segment is kept only when its numbers, URLs, emails, code tokens and
+ * acronyms all appear in the cited passage and most of its content words do
+ * too; otherwise it is dropped. Uncited text is kept only when copied
+ * verbatim (at least 25 characters) from a sent section. The answer is returned only with at least one real
  * model citation, and only when the provider finished cleanly.
  *
  * @param result the unverified provider result.
@@ -72,25 +176,51 @@ export function verifyAnswer(
   let hasModelCitation = false;
   let droppedSegments = 0;
   for (const segment of result.segments) {
-    let backed = false;
+    const text = segment.text.trim();
+    const valid: { key: string; entry: AnswerCitation; passage: string }[] = [];
     for (const citation of segment.citations) {
       const source = sources[citation.sourceIndex];
       const section = source?.sections[citation.sectionIndex];
-      if (!source || section === undefined) {
+      if (
+        !source ||
+        section === undefined ||
+        citation.endSectionIndex <= citation.sectionIndex ||
+        citation.endSectionIndex > source.sections.length
+      ) {
+        continue;
+      }
+      const passage = normalise(
+        source.sections
+          .slice(citation.sectionIndex, citation.endSectionIndex)
+          .join("\n")
+      );
+      const quote = normalise(citation.quote);
+      // The provider's quote must really be in the sent sections it points at.
+      if (!quote || !passage.includes(quote)) {
         continue;
       }
       const heading = headingOf(section);
-      citations.set(`${source.document.id}:${heading ?? ""}`, {
-        documentId: source.document.id,
-        title: source.document.title,
-        url: source.document.url,
-        heading,
-        quote: truncate(citation.quote),
+      valid.push({
+        key: `${source.document.id}:${heading ?? ""}`,
+        passage,
+        entry: {
+          documentId: source.document.id,
+          title: source.document.title,
+          url: source.document.url,
+          heading,
+          quote: truncate(citation.quote),
+        },
       });
-      backed = true;
+    }
+    const backed = valid.length > 0;
+    if (backed && !isSupported(text, valid.map((v) => v.passage).join(" "))) {
+      droppedSegments++;
+      continue;
+    }
+    for (const v of valid) {
+      citations.set(v.key, v.entry);
       hasModelCitation = true;
     }
-    const text = segment.text.trim();
     if (backed) {
       parts.push(text);
       continue;
