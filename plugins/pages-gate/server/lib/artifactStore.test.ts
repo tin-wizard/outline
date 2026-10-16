@@ -146,7 +146,7 @@ describe("createArtifactStore", () => {
     expect(raw.keys()).toEqual(["sites/demo/index.html"]);
   });
 
-  it.each([
+  it.each<Record<string, string>>([
     { "artifacts/demo/../../sites/x": "1" },
     {
       "artifacts/demo/index.html": "1",

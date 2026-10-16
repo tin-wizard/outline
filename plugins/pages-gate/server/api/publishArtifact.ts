@@ -15,6 +15,7 @@ import { AuthenticationType } from "@server/types";
 import { RateLimiterStrategy } from "@server/utils/RateLimiter";
 import { PagesGateType } from "../../shared/accessCode";
 import { BUNDLE_LIMITS, BundleError, readBundle } from "../lib/artifactBundle";
+import { assertSafePath } from "../lib/artifactPaths";
 import { artifactPrefix, createArtifactStore } from "../lib/artifactStore";
 import { InvalidSlugError, assertValidSlug } from "../lib/keys";
 import { ReadCapExceededError, readCapped } from "../lib/readCapped";
@@ -70,6 +71,8 @@ export function createArtifactPublishRouter(
         throw NotFoundError();
       }
       authorize(user, "update", document);
+      // Before any slug lookup, so a non-admin cannot probe which are taken.
+      authorize(user, "createPagesSite", user.team);
 
       const attachment = await Attachment.findOne({
         where: {
@@ -93,8 +96,6 @@ export function createArtifactPublishRouter(
       }
       if (site) {
         authorize(user, "publish", site);
-      } else {
-        authorize(user, "createPagesSite", user.team);
       }
 
       // Refuse before loading an oversized upload into memory.
@@ -134,7 +135,11 @@ export function createArtifactPublishRouter(
             teamId: user.teamId,
             createdById: user.id,
             slug: newSlug,
-            title: title ?? attachment.name.replace(/\.(html?|zip)$/i, ""),
+            // A bare ".html" leaves nothing after the extension; never store "".
+            title:
+              title ??
+              (attachment.name.replace(/\.(html?|zip)$/i, "") ||
+                attachment.name),
             kind: PagesSiteKind.Artifact,
             gateType: PagesGateType.None,
             prefix: artifactPrefix(newSlug),
@@ -149,7 +154,21 @@ export function createArtifactPublishRouter(
       }
 
       const files = createArtifactStore(await storeFactory(), site.slug);
-      const before = await files.list();
+      const keep = new Set(bundle.files.map((file) => file.path));
+      // "" is a folder marker at the prefix. Every other leftover is checked
+      // before anything is written, so a bad name never leaves a half-publish.
+      const stale = (await files.list()).filter(
+        (path) => path !== "" && !keep.has(path)
+      );
+      for (const path of stale) {
+        try {
+          assertSafePath(path);
+        } catch {
+          throw new Error(
+            "Artifact has files with unsafe names; remove them manually"
+          );
+        }
+      }
       for (const file of bundle.files) {
         await files.put(file.path, file.body, {
           contentType: file.contentType,
@@ -157,9 +176,8 @@ export function createArtifactPublishRouter(
           cacheControl: "public, max-age=300",
         });
       }
-      const keep = new Set(bundle.files.map((file) => file.path));
-      for (const stale of before.filter((path) => !keep.has(path))) {
-        await files.delete(stale);
+      for (const path of stale) {
+        await files.delete(path);
       }
 
       await site.update({

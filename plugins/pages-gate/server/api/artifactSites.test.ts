@@ -541,4 +541,125 @@ describe("pages.publishArtifact", () => {
     expect(res.status).toBe(200);
     expect(store.text(`artifacts/${slug}/index.html`)).toBe(html);
   });
+
+  it("falls back to the file name when the name is only an extension", async () => {
+    const { admin, document, attachment } = await setup(
+      ".html",
+      Buffer.from("x")
+    );
+    const res = await server.post("/api/pages.publishArtifact", admin, {
+      body: publishBody(document.id, attachment.id, {
+        slug: uniqueSlug("bare-ext"),
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.site.title).toBe(".html");
+  });
+
+  /** An existing published artifact site of the admin's team. */
+  async function existingArtifact(adminId: string, teamId: string) {
+    const slug = uniqueSlug("existing");
+    const site = await buildPagesSite({
+      teamId,
+      createdById: adminId,
+      kind: PagesSiteKind.Artifact,
+      slug,
+      prefix: `artifacts/${slug}/`,
+      status: PagesSiteStatus.Published,
+      gateType: "none",
+      currentVersion: 3,
+    });
+    return { slug, site };
+  }
+
+  it("republishes past a folder marker listed as the bare prefix", async () => {
+    const { admin, document, attachment } = await setup(
+      "demo.html",
+      Buffer.from("new")
+    );
+    const { slug } = await existingArtifact(admin.id, admin.teamId);
+    store = createMemoryStore({
+      [`artifacts/${slug}/`]: "",
+      [`artifacts/${slug}/index.html`]: "old",
+    });
+    holder.store = store;
+    const res = await server.post("/api/pages.publishArtifact", admin, {
+      body: publishBody(document.id, attachment.id, { slug }),
+    });
+    expect(res.status).toBe(200);
+    expect(store.text(`artifacts/${slug}/index.html`)).toBe("new");
+    expect(store.calls.filter((c) => c.startsWith("delete"))).toEqual([]);
+    expect((await PagesSite.findOne({ where: { slug } }))?.currentVersion).toBe(
+      4
+    );
+  });
+
+  it("refuses before writing when a leftover file has an unsafe name", async () => {
+    const { admin, document, attachment } = await setup(
+      "demo.html",
+      Buffer.from("new")
+    );
+    const { slug, site } = await existingArtifact(admin.id, admin.teamId);
+    const seed = {
+      [`artifacts/${slug}/a%2fb`]: "1",
+      [`artifacts/${slug}/index.html`]: "old",
+    };
+    store = createMemoryStore(seed);
+    holder.store = store;
+    const res = await server.post("/api/pages.publishArtifact", admin, {
+      body: publishBody(document.id, attachment.id, { slug }),
+    });
+    expect(res.status).toBeGreaterThanOrEqual(500);
+    expect(store.keys()).toEqual(Object.keys(seed).sort());
+    expect(store.text(`artifacts/${slug}/index.html`)).toBe("old");
+    expect(
+      store.calls.filter((c) => c.startsWith("put") || c.startsWith("delete"))
+    ).toEqual([]);
+    const after = await PagesSite.findByPk(site.id);
+    expect(after?.currentVersion).toBe(3);
+    expect(after?.status).toBe(PagesSiteStatus.Published);
+  });
+
+  it("refuses a non-admin on an existing or foreign slug alike, touching nothing", async () => {
+    const admin = await buildAdmin();
+    const member = await buildUser({ teamId: admin.teamId });
+    const document = await buildDocument({
+      teamId: admin.teamId,
+      userId: member.id,
+    });
+    const attachment = await buildAttachment(
+      {
+        teamId: admin.teamId,
+        userId: member.id,
+        documentId: document.id,
+        size: 1,
+      },
+      "demo.html"
+    );
+    vi.spyOn(FileStorage, "getFileStream").mockImplementation(async () =>
+      Readable.from([Buffer.from("x")])
+    );
+    const { slug, site } = await existingArtifact(admin.id, admin.teamId);
+    const foreign = await buildPagesSite({
+      kind: PagesSiteKind.Artifact,
+      slug: uniqueSlug("foreign"),
+    });
+    const apiKey = await buildApiKey({ userId: member.id });
+    const viaKey = await server.post("/api/pages.publishArtifact", {
+      body: publishBody(document.id, attachment.id, { slug }),
+      headers: { Authorization: `Bearer ${apiKey.value}` },
+    });
+    const viaSession = await server.post("/api/pages.publishArtifact", member, {
+      body: publishBody(document.id, attachment.id, { slug }),
+    });
+    const probe = await server.post("/api/pages.publishArtifact", member, {
+      body: publishBody(document.id, attachment.id, { slug: foreign.slug }),
+    });
+    expect(viaKey.status).toBe(403);
+    expect(viaSession.status).toBe(403);
+    // Same answer as for our own slug, so a taken slug cannot be probed.
+    expect(probe.status).toBe(403);
+    expect(store.calls).toEqual([]);
+    expect((await PagesSite.findByPk(site.id))?.currentVersion).toBe(3);
+  });
 });
