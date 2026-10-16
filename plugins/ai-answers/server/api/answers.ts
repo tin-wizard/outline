@@ -196,7 +196,20 @@ router.post(
     ctx.res.once("close", handleClose);
 
     try {
-      const sources = await retrieveSources(user, ctx.input.body);
+      const sources = await retrieveSources(
+        user,
+        ctx.input.body,
+        clientGone.signal
+      ).catch((error: unknown) => {
+        // The client already left; nobody is waiting for a response.
+        if (clientGone.signal.aborted) {
+          return undefined;
+        }
+        throw error;
+      });
+      if (!sources) {
+        return;
+      }
       const documents = sources.map((source) => source.document);
       // Presenting reads tenant data, so it must run before the release below.
       const presented = await Promise.all(

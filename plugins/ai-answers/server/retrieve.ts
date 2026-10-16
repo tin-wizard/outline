@@ -32,6 +32,7 @@ const FETCH_LIMIT = MAX_DOCUMENTS * 4;
 const MAX_CHARS_PER_DOCUMENT = 20_000;
 // Fewer exact (all-keyword) matches than this widens the query to any keyword.
 const MIN_AND_RESULTS = 2;
+const MAX_TITLE_TERMS = 4;
 
 /**
  * Finds the documents the user may read that best match a question, and cuts
@@ -41,11 +42,13 @@ const MIN_AND_RESULTS = 2;
  *
  * @param user the user asking the question.
  * @param body the validated request body.
+ * @param signal aborts between retrieval stages when the caller goes away.
  * @returns the sources, best match first; empty when nothing matches.
  */
 export async function retrieveSources(
   user: User,
-  body: T.DocumentsAnswerQuestionReq["body"]
+  body: T.DocumentsAnswerQuestionReq["body"],
+  signal?: AbortSignal
 ): Promise<AnswerSource[]> {
   // The raw query never reaches the search provider; markers are not keywords.
   const keywords = toKeywords(
@@ -85,16 +88,27 @@ export async function retrieveSources(
   // Exclusion is applied at every stage so that excluded matches never count
   // towards "enough results" and never reach the model.
   const readable = (documents: Document[]) => dropAIExcluded(user, documents);
-  let documents = await readable(await search(toKeywordAndQuery(keywords)));
+  const andQuery = toKeywordAndQuery(keywords);
+  let documents: Document[] = [];
+  // An empty query would make the provider skip its text filter and return
+  // every readable document, so the AND stage only runs with real terms.
+  if (andQuery) {
+    documents = await readable(await search(andQuery));
+  }
   if (documents.length < MIN_AND_RESULTS) {
-    documents = await readable(await search(toKeywordQuery(keywords)));
+    signal?.throwIfAborted();
+    const wider = await readable(await search(toKeywordQuery(keywords)));
+    const seen = new Set(documents.map((d) => d.id));
+    documents = [...documents, ...wider.filter((d) => !seen.has(d.id))];
   }
   if (documents.length === 0) {
+    signal?.throwIfAborted();
     // Same permission gate as search: the provider's title search for the user.
     documents = await readable(
       await searchTitles(user, keywords, resolvedFilter)
     );
   }
+  signal?.throwIfAborted();
   documents = documents.slice(0, MAX_DOCUMENTS);
 
   const sources: AnswerSource[] = [];
@@ -126,8 +140,15 @@ async function searchTitles(
   filter: Filter | undefined
 ): Promise<Document[]> {
   const provider = SearchProviderManager.getProvider();
+  // Short words ("an", "do") would match inside longer title words, and a
+  // compound only counts when it has no parts to avoid double counting.
+  const long = keywords.filter((keyword) => [...keyword].length >= 3);
+  const parts = long.filter((keyword) => !/[/\-_.]/.test(keyword));
+  const terms = [...(parts.length > 0 ? parts : long)]
+    .sort((a, b) => b.length - a.length)
+    .slice(0, MAX_TITLE_TERMS);
   const found = await Promise.all(
-    keywords.map((keyword) =>
+    terms.map((keyword) =>
       provider.searchTitlesForUser(user, {
         query: keyword,
         filter,
@@ -136,13 +157,13 @@ async function searchTitles(
       })
     )
   );
-  const required = Math.min(2, keywords.length);
+  const required = Math.min(2, terms.length);
   const scored = new Map<string, { document: Document; hits: number }>();
   for (const document of found.flat()) {
     const title = document.title.toLowerCase();
     scored.set(document.id, {
       document,
-      hits: keywords.filter((keyword) => title.includes(keyword)).length,
+      hits: terms.filter((keyword) => title.includes(keyword)).length,
     });
   }
   return [...scored.values()]

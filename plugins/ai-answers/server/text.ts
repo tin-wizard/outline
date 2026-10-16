@@ -60,7 +60,11 @@ const TOKEN_PATTERN = /[\p{L}\p{N}\p{M}]+(?:[/\-_.][\p{L}\p{N}\p{M}]+)*/gu;
 const SEPARATOR_PATTERN = /[/\-_.]/;
 
 // Two-letter words that only matter when shouted ("WHAT IS AI").
-const SHORT_STOP_WORDS = new Set(["is", "of", "to", "in", "on", "at", "by"]);
+const SHORT_STOP_WORDS = new Set(
+  "is of to in on at by it we do be as if my an or up so no us me he am".split(
+    " "
+  )
+);
 
 /**
  * Extracts the significant words of a natural-language question. Slug and path

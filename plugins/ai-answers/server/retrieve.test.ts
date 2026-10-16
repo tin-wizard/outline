@@ -337,3 +337,85 @@ describe("retrieveSources hygiene", () => {
     expect(sources).toEqual([]);
   });
 });
+
+describe("retrieveSources fallback hardening", () => {
+  async function setup() {
+    const team = await buildTeam();
+    const user = await buildUser({ teamId: team.id });
+    const collection = await buildCollection({
+      teamId: team.id,
+      userId: user.id,
+    });
+    const add = (title: string, text: string, collectionId = collection.id) =>
+      buildDocument({
+        teamId: team.id,
+        userId: user.id,
+        collectionId,
+        title,
+        text,
+      });
+    return { team, user, collection, add };
+  }
+
+  it("does not return unrelated documents for a compound-only query", async () => {
+    const { user, add } = await setup();
+    await add("Unrelated one", "# A\nsomething else entirely");
+    await add("Unrelated two", "# B\nnothing to see here");
+
+    expect(await retrieveSources(user, { query: "v1.2.3" })).toEqual([]);
+  });
+
+  it("does not match filler words inside longer title words", async () => {
+    const { user, add } = await setup();
+    await add("Project plan document", "# A\nunrelated");
+
+    expect(
+      await retrieveSources(user, { query: "HOW DO WE GET AN ID" })
+    ).toEqual([]);
+  });
+
+  it("scopes the title fallback to collectionId", async () => {
+    const { team, user, collection, add } = await setup();
+    const other = await buildCollection({ teamId: team.id, userId: user.id });
+    await add("ReleaseChecklist2024", "# Steps\nBring a laptop.");
+    await add("ReleaseChecklist2025", "# Steps\nBring a laptop.", other.id);
+
+    const sources = await retrieveSources(user, {
+      query: "What is the release checklist?",
+      collectionId: collection.id,
+    });
+
+    expect(sources.map((s) => s.document.title)).toEqual([
+      "ReleaseChecklist2024",
+    ]);
+  });
+
+  it("does not count excluded documents towards enough results", async () => {
+    const { team, user, add } = await setup();
+    const excluded = await buildCollection({
+      teamId: team.id,
+      userId: user.id,
+      aiExcluded: true,
+    });
+    await add("Hidden A", "# A\nparking permits visitors", excluded.id);
+    await add("Hidden B", "# B\nparking permits visitors", excluded.id);
+    await add("Open", "# C\nparking is available");
+
+    const sources = await retrieveSources(user, {
+      query: "parking permits visitors",
+    });
+
+    expect(sources.map((s) => s.document.title)).toEqual(["Open"]);
+  });
+
+  it("stops when the signal is aborted", async () => {
+    const { user, add } = await setup();
+    await add("Open", "# C\nparking is available");
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      retrieveSources(user, { query: "parking permits" }, controller.signal)
+    ).rejects.toThrow();
+  });
+});
