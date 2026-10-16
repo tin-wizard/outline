@@ -1,4 +1,4 @@
-import { IsBoolean, IsOptional, IsString } from "class-validator";
+import { IsBoolean, IsNumber, IsOptional, IsString } from "class-validator";
 import { Environment } from "@server/env";
 import { Public } from "@server/utils/decorators/Public";
 import environment from "@server/utils/environment";
@@ -37,6 +37,16 @@ class AIAnswersPluginEnvironment extends Environment {
   @IsString()
   public AI_ANSWERS_MONTHLY_BUDGET_USD =
     this.toOptionalString(environment.AI_ANSWERS_MONTHLY_BUDGET_USD) ?? "25";
+
+  /**
+   * Hard deadline in milliseconds for the whole answer step (limit checks,
+   * model call, metering). When it passes the model call is aborted and the
+   * retrieved documents are returned without an answer. Defaults to 15000.
+   */
+  @IsNumber()
+  @IsOptional()
+  public AI_ANSWERS_DEADLINE_MS =
+    this.toOptionalNumber(environment.AI_ANSWERS_DEADLINE_MS) ?? 15_000;
 }
 
 export default new AIAnswersPluginEnvironment();

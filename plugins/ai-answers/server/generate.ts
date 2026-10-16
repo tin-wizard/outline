@@ -22,12 +22,14 @@ export interface AnswerOutcome extends VerifiedAnswer {
  * @param client the Anthropic client.
  * @param question the user's question.
  * @param sources the retrieved sources, in the order they are sent.
+ * @param signal aborts the model call; the returned promise then rejects.
  * @returns the answer, its citations and token usage; `answer: null` when none was found.
  */
 export async function generateAnswerWithUsage(
   client: AnswerClient,
   question: string,
-  sources: AnswerSource[]
+  sources: AnswerSource[],
+  signal?: AbortSignal
 ): Promise<AnswerOutcome> {
   if (sources.length === 0) {
     return {
@@ -41,6 +43,7 @@ export async function generateAnswerWithUsage(
   const result = await createAnthropicProvider(client).generate({
     question,
     sources,
+    signal,
   });
   return { ...verifyAnswer(result, sources), usage: result.usage };
 }

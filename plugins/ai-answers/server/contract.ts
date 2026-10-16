@@ -37,6 +37,8 @@ export interface ProviderSegment {
 export interface AnswerRequest {
   question: string;
   sources: AnswerSource[];
+  /** Aborts the model call, e.g. when the client disconnects or time runs out. */
+  signal?: AbortSignal;
 }
 
 /** What every provider returns for one request, before verification. */

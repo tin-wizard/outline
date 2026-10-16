@@ -22,32 +22,35 @@ export interface AnswerClient {
  */
 export function createAnthropicProvider(client: AnswerClient): AnswerProvider {
   return {
-    async generate({ question, sources }) {
-      const response = await client.messages.create({
-        model: env.AI_ANSWERS_MODEL,
-        max_tokens: MAX_OUTPUT_TOKENS,
-        system: SYSTEM_PROMPT,
-        messages: [
-          {
-            role: "user",
-            content: [
-              ...sources.map((s) => ({
-                type: "search_result" as const,
-                // Not document.url: it embeds a slug of the unredacted title.
-                source: `/doc/${s.document.urlId}`,
-                title: redactSecrets(s.document.title || "Untitled").text,
-                content: s.sections.map((text) => ({
-                  type: "text" as const,
-                  text,
+    async generate({ question, sources, signal }) {
+      const response = await client.messages.create(
+        {
+          model: env.AI_ANSWERS_MODEL,
+          max_tokens: MAX_OUTPUT_TOKENS,
+          system: SYSTEM_PROMPT,
+          messages: [
+            {
+              role: "user",
+              content: [
+                ...sources.map((s) => ({
+                  type: "search_result" as const,
+                  // Not document.url: it embeds a slug of the unredacted title.
+                  source: `/doc/${s.document.urlId}`,
+                  title: redactSecrets(s.document.title || "Untitled").text,
+                  content: s.sections.map((text) => ({
+                    type: "text" as const,
+                    text,
+                  })),
+                  citations: { enabled: true },
                 })),
-                citations: { enabled: true },
-              })),
-              // A pasted secret in the question must not reach the model either.
-              { type: "text" as const, text: redactSecrets(question).text },
-            ],
-          },
-        ],
-      });
+                // A pasted secret in the question must not reach the model either.
+                { type: "text" as const, text: redactSecrets(question).text },
+              ],
+            },
+          ],
+        },
+        { signal }
+      );
 
       const segments: ProviderSegment[] = [];
       for (const block of response.content) {

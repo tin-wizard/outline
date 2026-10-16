@@ -1,4 +1,4 @@
-import { http, HttpResponse } from "msw";
+import { delay, http, HttpResponse } from "msw";
 import { vi } from "vitest";
 import { TeamPreference } from "@shared/types";
 import { AIAnswerUsage, SearchQuery, Team, type User } from "@server/models";
@@ -13,6 +13,7 @@ import {
 import { server as mswServer } from "@server/test/msw";
 import { getTestServer } from "@server/test/support";
 import Redis from "@server/storage/redis";
+import env from "../env";
 import { acquireSlot, releaseSlot } from "../usage";
 
 // Plugins are loaded with a runtime require, which vi.mock cannot reach, so the
@@ -603,6 +604,152 @@ describe("#documents.answerQuestion", () => {
         });
         expect(row.outcome).toEqual("no_answer");
         expect(row.inputTokens).toEqual(500);
+      });
+    });
+
+    describe("request lifecycle", () => {
+      const originalDeadline = env.AI_ANSWERS_DEADLINE_MS;
+      afterEach(() => {
+        env.AI_ANSWERS_DEADLINE_MS = originalDeadline;
+      });
+
+      /** Upstream that never answers in time and reports whether it was aborted. */
+      function hangingUpstream() {
+        const state = { started: false, aborted: false };
+        mswServer.use(
+          http.post(
+            "https://api.anthropic.com/v1/messages",
+            async ({ request }) => {
+              state.started = true;
+              request.signal.addEventListener("abort", () => {
+                state.aborted = true;
+              });
+              await delay(5000);
+              return HttpResponse.json({ type: "error" }, { status: 500 });
+            }
+          )
+        );
+        return state;
+      }
+
+      async function expectSlotsFree(teamId: string) {
+        const tokens: Array<string | null> = [];
+        for (let i = 0; i < 3; i++) {
+          tokens.push(await acquireSlot(teamId));
+        }
+        expect(tokens.every(Boolean)).toEqual(true);
+        for (const token of tokens) {
+          await releaseSlot(teamId, token as string);
+        }
+      }
+
+      const reply = (
+        document: { url: string; title: string },
+        usage?: object
+      ) => ({
+        stop_reason: "end_turn",
+        ...(usage ? { usage } : {}),
+        content: [
+          {
+            type: "text",
+            text: "Twenty five days.",
+            citations: [
+              {
+                type: "search_result_location",
+                cited_text: "Employees receive twenty five days of holiday.",
+                source: document.url,
+                title: document.title,
+                search_result_index: 0,
+                start_block_index: 0,
+                end_block_index: 1,
+              },
+            ],
+          },
+        ],
+      });
+      const ask = (user: Parameters<typeof server.post>[1]) =>
+        server.post("/api/documents.answerQuestion", user, {
+          body: { query: "How many days of holiday?" },
+        });
+
+      const waitFor = async (condition: () => boolean) => {
+        for (let i = 0; i < 100 && !condition(); i++) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+      };
+
+      it("hits the deadline: 200 with documents, null answer, error row, slot freed", async () => {
+        const { user, document } = await setup();
+        env.AI_ANSWERS_DEADLINE_MS = 300;
+        const upstream = hangingUpstream();
+
+        const startedAt = Date.now();
+        const res = await server.post("/api/documents.answerQuestion", user, {
+          body: { query: "How many days of holiday?" },
+        });
+        const body = await res.json();
+
+        expect(Date.now() - startedAt).toBeLessThan(3000);
+        expect(res.status).toEqual(200);
+        expect(body.answer).toBeNull();
+        expect(body.citations).toEqual([]);
+        expect(body.documents.map((d: { id: string }) => d.id)).toContain(
+          document.id
+        );
+        await waitFor(() => upstream.aborted);
+        expect(upstream.aborted).toEqual(true);
+
+        const rows = await AIAnswerUsage.findAll({
+          where: { teamId: user.teamId },
+        });
+        expect(rows).toHaveLength(1);
+        expect(rows[0].outcome).toEqual("error");
+        expect(BigInt(rows[0].costMicroUsd) > 0n).toEqual(true);
+        await expectSlotsFree(user.teamId);
+      });
+
+      it("aborts the upstream call when the client disconnects, and frees the slot", async () => {
+        const { user } = await setup();
+        const upstream = hangingUpstream();
+        const controller = new AbortController();
+
+        const request = server
+          .post("/api/documents.answerQuestion", user, {
+            body: { query: "How many days of holiday?" },
+            signal: controller.signal,
+          })
+          .catch((error: Error) => error);
+        await waitFor(() => upstream.started);
+        expect(upstream.started).toEqual(true);
+        controller.abort();
+        await request;
+
+        await waitFor(() => upstream.aborted);
+        expect(upstream.aborted).toEqual(true);
+        let rows: AIAnswerUsage[] = [];
+        for (let i = 0; i < 100 && rows.length === 0; i++) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          rows = await AIAnswerUsage.findAll({
+            where: { teamId: user.teamId },
+          });
+        }
+        expect(rows).toHaveLength(1);
+        expect(rows[0].outcome).toEqual("error");
+        expect(BigInt(rows[0].costMicroUsd) > 0n).toEqual(true);
+        await expectSlotsFree(user.teamId);
+      });
+
+      it("leaves the fast path unchanged", async () => {
+        const { user, document } = await setup();
+        create.mockResolvedValue(
+          reply(document, { input_tokens: 10, output_tokens: 5 })
+        );
+        const body = await (await ask(user)).json();
+        expect(body.answer).toEqual("Twenty five days.");
+        const [row] = await AIAnswerUsage.findAll({
+          where: { teamId: user.teamId },
+        });
+        expect(row.outcome).toEqual("answered");
       });
     });
   });
