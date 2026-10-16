@@ -106,7 +106,7 @@ describe("#documents.answerQuestion", () => {
       );
     });
 
-    it("returns a cited answer without persisting its text", async () => {
+    it("returns a cited answer without creating a search query", async () => {
       const { user, document } = await setup();
       create.mockResolvedValue({
         stop_reason: "end_turn",
@@ -129,6 +129,7 @@ describe("#documents.answerQuestion", () => {
         ],
       });
 
+      const before = await SearchQuery.count({ where: { userId: user.id } });
       const res = await server.post("/api/documents.answerQuestion", user, {
         body: { query: "How many days of holiday?" },
       });
@@ -138,13 +139,11 @@ describe("#documents.answerQuestion", () => {
       expect(body.answer).toEqual("Twenty five days.");
       expect(body.citations[0].documentId).toEqual(document.id);
       expect(body.documents[0].id).toEqual(document.id);
-      // The generated text is returned but never persisted.
-      expect(body.search.answer).toBeNull();
-      const logged = await SearchQuery.findOne({ where: { userId: user.id } });
-      expect(logged?.answer).toBeNull();
-      expect(logged?.query).toEqual("How many days of holiday?");
-      expect(logged?.results).toEqual(1);
-      expect(logged?.duration).toBeGreaterThanOrEqual(0);
+      // The call is not logged as a search query at all.
+      expect(body.search).toBeUndefined();
+      expect(await SearchQuery.count({ where: { userId: user.id } })).toEqual(
+        before
+      );
     });
 
     it("returns a null answer without calling the model when nothing matches", async () => {
@@ -175,8 +174,7 @@ describe("#documents.answerQuestion", () => {
       expect(body.documents.map((d: { id: string }) => d.id)).toContain(
         document.id
       );
-      const logged = await SearchQuery.findOne({ where: { userId: user.id } });
-      expect(logged).not.toBeNull();
+      expect(await SearchQuery.count({ where: { userId: user.id } })).toEqual(0);
     });
 
     it("never sends another user's private text to the model", async () => {
