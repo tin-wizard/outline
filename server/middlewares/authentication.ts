@@ -130,9 +130,14 @@ export default function auth(options: AuthenticationOptions = {}) {
       store.transaction = t;
       try {
         await next();
-        await t.commit();
+        // A route may have committed it early (releaseRequestTransaction).
+        if (store.transaction === t) {
+          await t.commit();
+        }
       } catch (err) {
-        await t.rollback().catch(() => undefined);
+        if (store.transaction === t) {
+          await t.rollback().catch(() => undefined);
+        }
         throw err;
       }
       return;

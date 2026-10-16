@@ -12,7 +12,10 @@ import {
 } from "@server/test/factories";
 import { server as mswServer } from "@server/test/msw";
 import { getTestServer } from "@server/test/support";
+import { Transaction } from "sequelize";
+import { sequelize } from "@server/storage/database";
 import Redis from "@server/storage/redis";
+import { requestContext } from "@server/storage/requestContext";
 import env from "../env";
 import { acquireSlot, releaseSlot } from "../usage";
 import { clampDeadline } from "./answers";
@@ -740,6 +743,109 @@ describe("#documents.answerQuestion", () => {
         expect(rows[0].outcome).toEqual("error");
         expect(BigInt(rows[0].costMicroUsd) > 0n).toEqual(true);
         await expectSlotsFree(user.teamId);
+      });
+
+      it("holds no pooled connection during the model call (task 1.2)", async () => {
+        const poolMax = sequelize.config.pool?.max ?? 5;
+        // Stay under the per-workspace cap of three concurrent answers.
+        const users: User[] = [];
+        const documents: Array<{ url: string; title: string }> = [];
+        for (let i = 0; i < poolMax; i++) {
+          if (i % 3 === 0) {
+            const { user, document } = await setup();
+            users.push(user);
+            documents.push(document);
+          } else {
+            const user = await buildUser({
+              teamId: users[users.length - 1].teamId,
+            });
+            users.push(user);
+            documents.push(documents[documents.length - 1]);
+          }
+        }
+
+        // Every model call waits here until the unrelated request has run.
+        let arrived = 0;
+        let openGate: () => void = () => undefined;
+        const gate = new Promise<void>((resolve) => {
+          openGate = resolve;
+        });
+        mswServer.use(
+          http.post("https://api.anthropic.com/v1/messages", async () => {
+            arrived++;
+            await gate;
+            return HttpResponse.json(reply(documents[0]));
+          })
+        );
+
+        try {
+          // Start answers one after another so each is in its model call before
+          // the next begins (retrieval briefly needs a second connection).
+          const answers = [];
+          for (let i = 0; i < poolMax; i++) {
+            answers.push(ask(users[i]));
+            await waitFor(() => arrived > i);
+          }
+          expect(arrived).toEqual(poolMax);
+
+          // The pool is not exhausted: unrelated work stays fast.
+          const startedAt = Date.now();
+          await sequelize.query("SELECT 1");
+          const other = await server.post("/api/auth.info", users[0]);
+          expect(other.status).toEqual(200);
+          expect(Date.now() - startedAt).toBeLessThan(2000);
+
+          openGate();
+          const responses = await Promise.all(answers);
+          const bodies = await Promise.all(responses.map((res) => res.json()));
+          expect(responses.map((res) => res.status)).toEqual(
+            Array(poolMax).fill(200)
+          );
+          for (const body of bodies) {
+            expect(body.answer).toEqual(expect.any(String));
+            expect(body.documents.length).toBeGreaterThan(0);
+          }
+        } finally {
+          openGate();
+        }
+      }, 60_000);
+
+      it("fails closed when the tenant transaction cannot be released", async () => {
+        const { user, document } = await setup();
+        mswServer.use(
+          http.post("https://api.anthropic.com/v1/messages", async () =>
+            HttpResponse.json(reply(document))
+          )
+        );
+        // Fail only the early release: the request's transaction has already
+        // been detached from the context when it is committed. The real commit
+        // still runs so no connection leaks.
+        const commit = Transaction.prototype.commit;
+        const spy = vi
+          .spyOn(Transaction.prototype, "commit")
+          .mockImplementation(async function (this: Transaction) {
+            await commit.call(this);
+            const store = requestContext.getStore();
+            if (store?.tenant && !store.transaction) {
+              throw new Error("commit failed");
+            }
+          });
+        try {
+          const res = await ask(user);
+          const body = await res.json();
+          expect(res.status).toEqual(200);
+          expect(body.answer).toBeNull();
+          expect(body.citations).toEqual([]);
+          expect(body.documents.map((d: { id: string }) => d.id)).toContain(
+            document.id
+          );
+        } finally {
+          spy.mockRestore();
+        }
+        const rows = await AIAnswerUsage.findAll({
+          where: { teamId: user.teamId },
+        });
+        expect(rows).toHaveLength(0);
       });
 
       it.each([

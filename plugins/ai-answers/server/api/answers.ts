@@ -10,6 +10,7 @@ import validate from "@server/middlewares/validate";
 import { presentDocument, presentPolicies } from "@server/presenters";
 import type { User } from "@server/models";
 import type { APIContext } from "@server/types";
+import { releaseRequestTransaction } from "@server/storage/requestContext";
 import { RateLimiterStrategy } from "@server/utils/RateLimiter";
 import { getClient } from "../anthropicClient";
 import {
@@ -197,18 +198,35 @@ router.post(
     try {
       const sources = await retrieveSources(user, ctx.input.body);
       const documents = sources.map((source) => source.document);
+      // Presenting reads tenant data, so it must run before the release below.
+      const presented = await Promise.all(
+        documents.map((document) => presentDocument(ctx, document))
+      );
+      const policies = presentPolicies(user, documents);
+
+      // Return the request's pinned connection before the slow model call
+      // (task 1.2). No tenant-data reads after this point: the queries below
+      // (usage metering) take teamId explicitly and never used the request
+      // transaction. If the release fails, answer with documents only.
+      let released = false;
+      try {
+        await releaseRequestTransaction();
+        released = true;
+      } catch (error) {
+        Logger.warn("AI answers could not release the request transaction", {
+          error: toError(error).message,
+        });
+      }
 
       // Generation is best-effort: fall back to the retrieved documents alone.
       const { answer, citations } =
-        sources.length > 0
+        released && sources.length > 0
           ? await answerWithinLimits(user, query, sources, clientGone.signal)
           : NO_ANSWER_RESULT;
 
       ctx.body = {
-        documents: await Promise.all(
-          documents.map((document) => presentDocument(ctx, document))
-        ),
-        policies: presentPolicies(user, documents),
+        documents: presented,
+        policies,
         // Returned to the client, never persisted; the plain search logs the query.
         answer,
         citations,

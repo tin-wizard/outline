@@ -26,3 +26,25 @@ export const requestContext = new AsyncLocalStorage<{
   tenant?: TenantContext;
   transaction?: Transaction;
 }>();
+
+/**
+ * Commits the current request's tenant-scoped transaction early and detaches
+ * it from the request context, returning its pooled connection before slow
+ * non-database work (such as a model call). Later reads in the request run on
+ * the pool outside any transaction, so row-level security is not forced for
+ * them: callers must not read tenant data after calling this.
+ *
+ * @returns true if a transaction was committed, false if there was none.
+ * @throws if the commit fails; the transaction is still detached.
+ */
+export async function releaseRequestTransaction(): Promise<boolean> {
+  const store = requestContext.getStore();
+  const transaction = store?.transaction;
+  if (!store || !transaction) {
+    return false;
+  }
+  // Detach first so nothing routes through it, even if the commit fails.
+  store.transaction = undefined;
+  await transaction.commit();
+  return true;
+}
