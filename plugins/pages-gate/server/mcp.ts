@@ -14,6 +14,7 @@ import {
 } from "@server/errors";
 import Logger from "@server/logging/Logger";
 import { Attachment, Document, type User } from "@server/models";
+import { DocumentHelper } from "@server/models/helpers/DocumentHelper";
 import { authorize, can } from "@server/policies";
 import { sequelize } from "@server/storage/database";
 import Redis from "@server/storage/redis";
@@ -31,8 +32,11 @@ import { publishArtifact } from "./lib/publishArtifact";
 import "./policies";
 import { publishedUrl } from "./presenters/pagesSite";
 
-/** The longest inline html accepted; larger artifacts go through an attachment. */
-const MAX_HTML_LENGTH = 900_000;
+/**
+ * The longest inline html accepted, in characters. JSON escaping and multi-byte
+ * UTF-8 must still fit the 1 MB /mcp body limit; larger artifacts go through an attachment.
+ */
+export const MAX_HTML_LENGTH = 400_000;
 
 /** The key the per-user publish limiter is registered under. */
 const RATE_LIMIT_KEY = "mcp:publish_artifact";
@@ -41,7 +45,7 @@ const NOTE =
   "Pass the same slug to update this artifact. Unpublish or delete it in Settings -> Pages.";
 
 const DESCRIPTION =
-  "Publishes an interactive HTML artifact (a single self-contained HTML file, or the id of an uploaded .html/.zip attachment) as a PUBLIC web page on the TIN Pages site and returns its public URL. Anyone with the link can open it without logging in: never publish confidential content. Pass `documentId` to also embed the live page in that document. Pass the same `slug` again to update an existing artifact. Requires a Pages administrator. For large artifacts (hundreds of KB) upload the file with create_attachment and pass attachmentId instead of html. External scripts and network requests are blocked on the published page: inline everything.";
+  "Publishes an interactive HTML artifact (a single self-contained HTML file, or the id of an uploaded .html/.zip attachment) as a PUBLIC web page on the TIN Pages site and returns its public URL. Anyone with the link can open it without logging in: never publish confidential content. Pass `documentId` to also embed the live page in that document. Pass the same `slug` again to update an existing artifact. Requires a Pages administrator. Inline html is for artifacts up to about 400 KB; for larger ones upload the file with create_attachment and pass attachmentId instead of html. External scripts and network requests are blocked on the published page: inline everything.";
 
 /**
  * Registers the Pages MCP tools: `publish_artifact`, only for tokens whose
@@ -166,7 +170,10 @@ export function pagesMcpTools(
                 authorize(user, "update", document);
 
                 // The URL is stable per slug, so a republish must not stack embeds.
-                if (hasEmbed(document.content, url)) {
+                // content can be null on older documents, so read the full tree (content, state or text).
+                if (
+                  hasEmbed(DocumentHelper.toProsemirror(document).toJSON(), url)
+                ) {
                   return true;
                 }
                 await documentUpdater(ctx, {

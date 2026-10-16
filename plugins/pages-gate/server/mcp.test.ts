@@ -22,6 +22,7 @@ import {
 import { getTestServer } from "@server/test/support";
 import pagesEnv from "./env";
 import type { ObjectStore } from "./lib/objectStore";
+import { MAX_HTML_LENGTH } from "./mcp";
 import { buildPagesSite } from "./test/factories";
 import { type MemoryStore, createMemoryStore } from "./test/memoryStore";
 
@@ -217,6 +218,40 @@ describe("publish_artifact", () => {
     ]);
   });
 
+  it("does not stack an embed on a document whose content is null and whose text has the embed", async () => {
+    const { user, accessToken } = await buildOAuthUser({ role: "admin" });
+    const slug = uniqueSlug("mcp-legacy");
+    const url = `${BASE}/artifacts/${slug}/index.html`;
+    const document = await buildDocument({
+      teamId: user.teamId,
+      userId: user.id,
+    });
+    // An older document: the body lives only in markdown text.
+    await Document.update(
+      { content: null, state: null, text: `Intro\n\n[${url}](${url})\n` },
+      { where: { id: document.id }, hooks: false }
+    );
+    const legacy = await Document.findByPk(document.id, {
+      rejectOnEmpty: true,
+    });
+    expect(legacy.content).toBeNull();
+    const out = ok(
+      await callMcpTool(server, accessToken, TOOL, {
+        html: "<p>x</p>",
+        slug,
+        documentId: document.id,
+      })
+    );
+    expect(out.publishedUrl).toBe(url);
+    expect(out.embedAdded).toBe(true);
+    expect(out.note).toContain("already embeds this page");
+    const reloaded = await Document.findByPk(document.id, {
+      rejectOnEmpty: true,
+    });
+    const tree = DocumentHelper.toProsemirror(reloaded).toJSON() as Node;
+    expect(embeds(tree).map((node) => node.attrs?.href)).toEqual([url]);
+  });
+
   it("adds no embed and says why when the public Pages URL is not configured", async () => {
     pagesEnv.PAGES_PUBLIC_BASE_URL = undefined;
     const { user, accessToken } = await buildOAuthUser({ role: "admin" });
@@ -338,9 +373,9 @@ describe("publish_artifact", () => {
       /exactly one of html or attachmentId/,
     ],
     [
-      "html over 900,000 characters",
-      { html: "a".repeat(900_001) },
-      /900000|too.?big/i,
+      "html over the inline cap",
+      { html: "a".repeat(MAX_HTML_LENGTH + 1) },
+      new RegExp(`${MAX_HTML_LENGTH}|too.?big`, "i"),
     ],
     ["empty html", { html: "" }, /too.?small|at least 1/i],
   ])("refuses %s and writes nothing", async (_label, args, expected) => {

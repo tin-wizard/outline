@@ -11,6 +11,13 @@ import {
 const hookCalls = await vi.hoisted(async () => {
   const { PluginManager, Hook } = await import("@server/utils/PluginManager");
   const calls: { scopes: string[] }[] = [];
+  // Added first, so the good hook after it proves the loop carries on.
+  PluginManager.add({
+    type: Hook.MCPTools,
+    value: () => {
+      throw new Error("broken plugin hook");
+    },
+  });
   PluginManager.add({
     type: Hook.MCPTools,
     value: (server, scopes) => {
@@ -47,6 +54,23 @@ describe("plugin MCP tools", () => {
     expect(names).toContain("zz_plugin_test_tool");
     expect(hookCalls.length).toBeGreaterThan(0);
     expect(hookCalls[hookCalls.length - 1].scopes.length).toBeGreaterThan(0);
+  });
+
+  it("still serves tools/list when another plugin hook throws", async () => {
+    const { accessToken } = await buildOAuthUser();
+    const { body } = mcpRequest("tools/list");
+    const res = await server.post("/mcp/", {
+      headers: mcpHeaders(accessToken),
+      body,
+    });
+    expect(res.status).toBe(200);
+    const result = (await parseMcpResponse(res)) as {
+      result: { tools: { name: string }[] };
+    };
+    const names = result.result.tools.map((t) => t.name);
+    expect(names).toContain("zz_plugin_test_tool");
+    expect(names).toContain("update_document");
+    expect(names).toContain("fetch");
   });
 
   it("can call the plugin tool", async () => {

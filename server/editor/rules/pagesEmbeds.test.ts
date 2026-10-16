@@ -57,6 +57,26 @@ describe("pagesEmbeds", () => {
     }
   });
 
+  it("leaves a link-only item of a tight list as a link in the list", () => {
+    const doc = parser.parse(`- [${URL1}](${URL1})\n`);
+    const list = doc?.firstChild;
+    expect(doc?.childCount).toBe(1);
+    expect(list?.type.name).toBe("bullet_list");
+    const item = list?.firstChild;
+    expect(item?.childCount).toBe(1);
+    const paragraph = item?.firstChild;
+    expect(paragraph?.type.name).toBe("paragraph");
+    expect(paragraph?.textContent).toBe(URL1);
+    expect(paragraph?.firstChild?.marks.map((mark) => mark.type.name)).toEqual([
+      "link",
+    ]);
+    const types: string[] = [];
+    doc?.descendants((node) => {
+      types.push(node.type.name);
+    });
+    expect(types).not.toContain("embed");
+  });
+
   it("does nothing when PAGES_PUBLIC_BASE_URL is unset", () => {
     delete process.env.PAGES_PUBLIC_BASE_URL;
     expect(parser.parse(`[${URL1}](${URL1})\n`)?.firstChild?.type.name).toBe(

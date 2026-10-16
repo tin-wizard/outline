@@ -61,6 +61,8 @@ function embedArtifactLinks(state: StateCore) {
     const [open, inline, close] = [tokens[i], tokens[i + 1], tokens[i + 2]];
     if (
       open.type !== "paragraph_open" ||
+      // Tight list items wrap their text in hidden paragraphs; leave those as links.
+      open.hidden ||
       inline.type !== "inline" ||
       close.type !== "paragraph_close"
     ) {
