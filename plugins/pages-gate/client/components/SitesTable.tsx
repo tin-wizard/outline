@@ -51,13 +51,18 @@ export function SitesTable({ sites, ...handlers }: Props) {
           <tr key={site.id}>
             <th scope="row">{site.title}</th>
             <td>
-              <Text monospace selectable>{`/sites/${site.slug}/`}</Text>
+              <Text
+                monospace
+                selectable
+              >{`${site.kind === "artifact" ? "/artifacts/" : "/sites/"}${site.slug}/`}</Text>
             </td>
             <td>{statusLabels[site.status] ?? site.status}</td>
             <td>
-              {site.gateType === PagesGateType.None
-                ? t("Public")
-                : t("Protected")}
+              {site.kind === "artifact"
+                ? t("Artifact")
+                : site.gateType === PagesGateType.None
+                  ? t("Public")
+                  : t("Protected")}
             </td>
             <td>{site.measurementEnabled ? t("On") : t("Off")}</td>
             <td>
@@ -84,6 +89,7 @@ function SiteMenu({
   const { t } = useTranslation();
   const isPublished = site.status === "published";
   const isProtected = site.gateType !== PagesGateType.None;
+  const isArtifact = site.kind === "artifact";
   const { publishedUrl } = site;
 
   const actions = useMemo(
@@ -92,19 +98,21 @@ function SiteMenu({
         name: `${isPublished ? t("Republish") : t("Publish")}…`,
         icon: <EditIcon />,
         section: SettingsSection,
+        visible: !isArtifact,
         perform: () => onPublish(site),
       }),
       createAction({
         name: `${t("Rotate code")}…`,
         icon: <EditIcon />,
         section: SettingsSection,
-        visible: isPublished && isProtected,
+        visible: isPublished && isProtected && !isArtifact,
         perform: () => onRotate(site),
       }),
       createAction({
         name: t("Insights"),
         icon: <GlobeIcon />,
         section: SettingsSection,
+        visible: !isArtifact,
         perform: () => onInsights(site),
       }),
       createAction({
@@ -138,6 +146,7 @@ function SiteMenu({
       site,
       isPublished,
       isProtected,
+      isArtifact,
       publishedUrl,
       onPublish,
       onRotate,
