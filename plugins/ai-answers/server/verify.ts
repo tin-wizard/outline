@@ -461,8 +461,8 @@ export interface PreparedSources {
   known: Passage;
   /** Every sent section plus the structural vocabulary, for labels. */
   labels: Passage;
-  /** Per source and section: normalised text with uniform pipes, for verbatim copies. */
-  flat: string[][];
+  /** Per source and section: normalised text with uniform pipes and its line bounds, for verbatim copies. */
+  flat: FlatSection[][];
   /** Per source and section: raw text with trailing whitespace trimmed per line, for code. */
   code: string[][];
 }
@@ -479,7 +479,7 @@ export function prepareSources(sources: AnswerSource[]): PreparedSources {
     sources,
     known: toPassage(sent),
     labels: toPassage(`${sent}\n${STRUCTURAL_WORDS}`),
-    flat: sources.map((s) => s.sections.map(flatten)),
+    flat: sources.map((s) => s.sections.map(flattenLines)),
     code: sources.map((s) => s.sections.map(trimLines)),
   };
 }
@@ -947,17 +947,81 @@ function stripMarkup(text: string): string | { reason: BlockDropReason } {
   return text;
 }
 
-/** An uncited block counts as a source copy when it is long and verbatim. */
+/** A section flattened line by line, remembering where lines start and end. */
+interface FlatSection {
+  text: string;
+  /** Offsets where a line, or a list item's text after its marker, starts. */
+  starts: Set<number>;
+  /** Offsets where a line ends. */
+  ends: Set<number>;
+}
+
+function flattenLines(section: string): FlatSection {
+  let text = "";
+  const starts = new Set<number>();
+  const ends = new Set<number>();
+  for (const line of section.split("\n")) {
+    const flat = flatten(line);
+    if (!flat) {
+      continue;
+    }
+    if (text) {
+      text += " ";
+    }
+    starts.add(text.length);
+    starts.add(text.length + (LIST_MARKER.exec(flat)?.[0].length ?? 0));
+    text += flat;
+    ends.add(text.length);
+  }
+  return { text, starts, ends };
+}
+
+const LIST_MARKER = /^(?:[-+]|\d+[.)])\s+/;
+
+/**
+ * Whether `needle` at `start` is a whole unit of the section: it begins at a
+ * line, list item, table cell or sentence start and ends at a sentence end or
+ * the end of a line or cell. A plain substring could cut a negation away
+ * ("Never run X." -> "Run X.").
+ */
+function isBounded(section: FlatSection, start: number, needle: string) {
+  const end = start + needle.length;
+  const startsWell =
+    start === 0 ||
+    section.starts.has(start) ||
+    /[.!?:;|]$/.test(
+      section.text.slice(Math.max(0, start - 3), start).trimEnd()
+    );
+  const endsWell =
+    end === section.text.length ||
+    section.ends.has(end) ||
+    /[.!?;:]$/.test(needle) ||
+    /^\s*[.!?;|]/.test(section.text.slice(end, end + 3));
+  return startsWell && endsWell;
+}
+
+/** An uncited block counts as a source copy when it is long, verbatim and whole. */
 function findVerbatim(
   text: string,
   ctx: PreparedSources
 ): AnswerCitation | undefined {
-  const needle = flatten(text);
+  const needle = flatten(text).replace(LIST_MARKER, "");
   if (needle.length < MIN_GROUNDED_LENGTH) {
     return undefined;
   }
   for (const [i, source] of ctx.sources.entries()) {
-    const at = ctx.flat[i].findIndex((s) => s.includes(needle));
+    const at = ctx.flat[i].findIndex((section) => {
+      for (
+        let start = section.text.indexOf(needle);
+        start !== -1;
+        start = section.text.indexOf(needle, start + 1)
+      ) {
+        if (isBounded(section, start, needle)) {
+          return true;
+        }
+      }
+      return false;
+    });
     if (at !== -1) {
       return citationFor(source, source.sections[at], text);
     }
@@ -1091,6 +1155,31 @@ function isGapStatement(sentence: string, ctx: PreparedSources): boolean {
   );
 }
 
+/**
+ * Whether code is copied as whole lines (indentation aside) or as one whole
+ * inline code span. A part of a line could drop the comment or flag that
+ * changes what the line does.
+ */
+function isWholeCode(section: string, code: string): boolean {
+  if (!code.includes("\n") && section.includes(`\`${code}\``)) {
+    return true;
+  }
+  for (
+    let start = section.indexOf(code);
+    start !== -1;
+    start = section.indexOf(code, start + 1)
+  ) {
+    const end = start + code.length;
+    if (
+      /(?:^|\n)[ \t]*$/.test(section.slice(0, start)) &&
+      (end === section.length || section[end] === "\n")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** A code block must be copied verbatim from a sent section. */
 function verifyCode(block: Block, ctx: PreparedSources): BlockVerdict {
   const text = trimLines(redactSecrets(block.text).text).replace(
@@ -1112,7 +1201,7 @@ function verifyCode(block: Block, ctx: PreparedSources): BlockVerdict {
     return { ok: false, reason: "code", block: clean };
   }
   for (const [i, source] of ctx.sources.entries()) {
-    const at = ctx.code[i].findIndex((s) => containsToken(s, text));
+    const at = ctx.code[i].findIndex((s) => isWholeCode(s, text));
     if (at !== -1) {
       return {
         ok: true,

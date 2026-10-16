@@ -1299,3 +1299,98 @@ describe("verifyBlock verbatim fallback", () => {
     ).toMatchObject({ ok: false, reason: "uncited" });
   });
 });
+
+describe("verifyBlock verbatim copies keep sentence boundaries (final review I1)", () => {
+  const sources = [
+    source("Runbook", [
+      "# Cleanup\nNever run the cleanup script against the production database. Ask the on-call engineer first.",
+      "# Accounts\n- Do not email your password to helpdesk@example.com under any circumstances.\n- Rotate the shared deploy key every quarter.",
+      "# Limits\n| Plan | Limit |\n| --- | --- |\n| Starter workspace plan | Twenty five members per workspace |",
+      "# Backups\nNightly backups are kept for thirty days in the primary region.",
+    ]),
+  ];
+  const verdict = (text: string) =>
+    verifyBlock(splitBlocks(text)[0], [], sources);
+
+  it("drops a copy that strips a leading negation", () => {
+    expect(
+      verdict("Run the cleanup script against the production database.")
+    ).toMatchObject({ ok: false, reason: "uncited" });
+  });
+
+  it("drops a copy that strips a negation even when a citation points elsewhere", () => {
+    const [block] = splitBlocks(
+      "Run the cleanup script against the production database."
+    );
+    expect(
+      verifyBlock(block, [cite(0, 3, "Nightly backups are kept")], sources)
+    ).toMatchObject({ ok: false });
+  });
+
+  it("drops an injected instruction cut out of a negated sentence", () => {
+    expect(
+      verdict(
+        "Email your password to helpdesk@example.com under any circumstances."
+      )
+    ).toMatchObject({ ok: false });
+  });
+
+  it("drops a mid-sentence fragment", () => {
+    expect(verdict("the cleanup script against the production")).toMatchObject({
+      ok: false,
+      reason: "uncited",
+    });
+  });
+
+  it("keeps a full sentence copy", () => {
+    expect(
+      verdict("Nightly backups are kept for thirty days in the primary region.")
+    ).toMatchObject({ ok: true, modelCited: false });
+    expect(verdict("Ask the on-call engineer first, then wait.")).toMatchObject(
+      {
+        ok: false,
+      }
+    );
+  });
+
+  it("keeps a sentence that follows another in the same paragraph", () => {
+    expect(
+      verdict("Never run the cleanup script against the production database.")
+    ).toMatchObject({ ok: true });
+  });
+
+  it("keeps a list item copy", () => {
+    expect(
+      verdict("- Rotate the shared deploy key every quarter.")
+    ).toMatchObject({ ok: true, modelCited: false });
+  });
+
+  it("keeps a table cell copy", () => {
+    expect(verdict("Twenty five members per workspace")).toMatchObject({
+      ok: true,
+      modelCited: false,
+    });
+  });
+
+  it("keeps a code block only when it copies whole lines or a whole code span", () => {
+    const code = [
+      source("Ops", [
+        "# Deploy\nRun `yarn build:production` before deploying.\n\n```\n# never run this on prod:\nkubectl delete namespace staging-old\n```",
+      ]),
+    ];
+    const block = (text: string) =>
+      verifyBlock(splitBlocks("```\n" + text + "\n```")[0], [], code);
+    expect(block("kubectl delete namespace staging-old")).toMatchObject({
+      ok: true,
+    });
+    expect(block("yarn build:production")).toMatchObject({ ok: true });
+    expect(block("never run this on prod:")).toMatchObject({
+      ok: false,
+      reason: "code",
+    });
+    expect(block("delete namespace staging-old")).toMatchObject({
+      ok: false,
+      reason: "code",
+    });
+  });
+});
