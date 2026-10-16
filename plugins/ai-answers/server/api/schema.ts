@@ -22,3 +22,18 @@ export const DocumentsAnswerQuestionSchema = BaseSchema.extend({
 export type DocumentsAnswerQuestionReq = z.infer<
   typeof DocumentsAnswerQuestionSchema
 >;
+
+export const AIAskSchema = BaseSchema.extend({
+  body: z.object({
+    /** The question, exactly as the user asked it. */
+    query: z.string().trim().min(1).max(500),
+    /** The conversation to continue; unknown or expired ids start a new one. */
+    conversationId: z.uuid().optional(),
+    /** Only use documents in this collection. */
+    collectionId: z.uuid().optional(),
+    /** Only use this document and its children. */
+    documentId: z.uuid().optional(),
+  }),
+});
+
+export type AIAskReq = z.infer<typeof AIAskSchema>;
