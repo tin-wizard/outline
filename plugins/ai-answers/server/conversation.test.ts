@@ -1,12 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { vi } from "vitest";
 import Redis from "@server/storage/redis";
+import { CollectionPermission, DocumentPermission } from "@shared/types";
+import { GroupMembership, User, UserMembership } from "@server/models";
 import {
   buildCollection,
   buildDocument,
+  buildDraftDocument,
+  buildGroup,
+  buildGroupUser,
+  buildGuestUser,
   buildTeam,
   buildUser,
 } from "@server/test/factories";
+import { splitBlocks } from "./blocks";
 import {
   CONVERSATION_TTL_SECONDS,
   HISTORY_TOKEN_BUDGET,
@@ -17,21 +24,48 @@ import {
   deleteConversation,
   historyForModel,
   loadConversation,
-  type ConversationTurn,
+  type TurnInput,
 } from "./conversation";
 import { retrieveSources } from "./retrieve";
+import type { AcceptedBlock } from "./verify";
 
 function key(teamId: string, userId: string, id: string) {
   return `aiconv:${teamId}:${userId}:${id}`;
 }
 
-function turn(overrides: Partial<ConversationTurn> = {}): ConversationTurn {
+/** A released (verified) paragraph citing the given documents. */
+function released(text: string, documentIds: string[]): AcceptedBlock {
   return {
-    question: "What is BOSS API?",
-    answer: "BOSS API is the booking service.",
-    citedDocumentIds: [],
-    at: Date.now(),
-    ...overrides,
+    ok: true,
+    block: splitBlocks(text)[0],
+    citations: documentIds.map((documentId) => ({
+      documentId,
+      title: "t",
+      url: "/doc/t",
+      quote: "q",
+    })),
+    modelCited: documentIds.length > 0,
+  };
+}
+
+/** A turn input as 2.1 would build it from the verifier's released blocks. */
+function turn(
+  overrides: {
+    question?: string;
+    answer?: string | null;
+    citedDocumentIds?: string[];
+  } = {}
+): TurnInput {
+  const answer =
+    overrides.answer === undefined
+      ? "BOSS API is the booking service."
+      : overrides.answer;
+  return {
+    question: overrides.question ?? "What is BOSS API?",
+    released:
+      answer === null
+        ? []
+        : [released(answer, overrides.citedDocumentIds ?? [randomUUID()])],
   };
 }
 
@@ -68,12 +102,15 @@ async function setupScripted() {
   if (!created) {
     throw new Error("conversation not created");
   }
-  await appendTurn(reader, created.id, {
-    question: "What is BOSS API?",
-    answer: "The BOSS API books rooms for guests.",
-    citedDocumentIds: [boss.id],
-    at: Date.now(),
-  });
+  await appendTurn(
+    reader,
+    created.id,
+    turn({
+      question: "What is BOSS API?",
+      answer: "The BOSS API books rooms for guests.",
+      citedDocumentIds: [boss.id],
+    })
+  );
   const loaded = await loadConversation(reader, created.id);
   if (!loaded.conversation) {
     throw new Error("conversation not loaded");
@@ -167,14 +204,108 @@ describe("conversation store", () => {
     expect(turns[2].answer).toEqual(big);
   });
 
-  it("never drops the newest question even when it alone exceeds the budget", async () => {
+  it("drops older whole turns before clearing the newest answer", async () => {
     const { user } = await setupUser();
     const id = (await createConversation(user))?.id ?? "";
-    await appendTurn(user, id, turn({ question: "Q1" }));
-    const huge = "q".repeat(30_000);
-    await appendTurn(user, id, turn({ question: huge, answer: null }));
+    for (let i = 1; i <= 7; i++) {
+      await appendTurn(
+        user,
+        id,
+        turn({ question: `${i}`.padEnd(500, "q"), answer: null })
+      );
+    }
+    const big = "b".repeat(16_000);
+    await appendTurn(user, id, turn({ question: "Last", answer: big }));
     const turns = (await loadConversation(user, id)).conversation?.turns ?? [];
-    expect(turns.map((t) => t.question)).toEqual([huge]);
+    expect(turns.length).toBeLessThan(8);
+    expect(turns.at(-1)?.question).toEqual("Last");
+    expect(turns.at(-1)?.answer).toEqual(big);
+  });
+
+  it("stores the derived answer and deduplicated cited document ids", async () => {
+    const { user } = await setupUser();
+    const id = (await createConversation(user))?.id ?? "";
+    const a = randomUUID();
+    const b = randomUUID();
+    await appendTurn(user, id, {
+      question: "Q",
+      released: [
+        released("First claim.", [a]),
+        released("Second claim.", [a, b]),
+      ],
+    });
+    const stored = (await loadConversation(user, id)).conversation?.turns[0];
+    expect(stored?.answer).toEqual("First claim.\n\nSecond claim.");
+    expect(stored?.citedDocumentIds).toEqual([a, b]);
+  });
+
+  it("stores an abstention as a question with no answer or citations", async () => {
+    const { user } = await setupUser();
+    const id = (await createConversation(user))?.id ?? "";
+    await appendTurn(user, id, { question: "Q", released: [] });
+    const stored = (await loadConversation(user, id)).conversation?.turns[0];
+    expect(stored?.answer).toBeNull();
+    expect(stored?.citedDocumentIds).toEqual([]);
+  });
+
+  it("enforces size limits on stored turns", async () => {
+    const { user } = await setupUser();
+    const id = (await createConversation(user))?.id ?? "";
+    await appendTurn(user, id, turn({ question: "x".repeat(600) }));
+    await appendTurn(user, id, turn({ answer: "y".repeat(18_000) }));
+    await appendTurn(
+      user,
+      id,
+      turn({
+        citedDocumentIds: Array.from({ length: 21 }, () => randomUUID()),
+      })
+    );
+    const turns = (await loadConversation(user, id)).conversation?.turns ?? [];
+    expect(turns[0].question.length).toEqual(500);
+    expect(turns[1].answer).toBeNull();
+    expect(turns[1].citedDocumentIds).toEqual([]);
+    expect(turns[2].answer).toBeNull();
+    expect(turns[2].citedDocumentIds).toEqual([]);
+  });
+
+  it("redacts secrets in the question before storing it", async () => {
+    const { user } = await setupUser();
+    const id = (await createConversation(user))?.id ?? "";
+    const secret = "sk-ant-api03-" + "a".repeat(30);
+    await appendTurn(user, id, turn({ question: `Why does ${secret} fail?` }));
+    const raw = await Redis.defaultClient.get(key(user.teamId, user.id, id));
+    expect(raw).not.toContain(secret);
+    expect(raw).toContain("[REDACTED:");
+  });
+
+  it("does not resurrect a deleted conversation on append", async () => {
+    const { user } = await setupUser();
+    const id = (await createConversation(user))?.id ?? "";
+    await deleteConversation(user, id);
+    expect(await appendTurn(user, id, turn())).toEqual(false);
+    expect(
+      await Redis.defaultClient.exists(key(user.teamId, user.id, id))
+    ).toEqual(0);
+  });
+
+  it("does not resurrect a conversation deleted between read and write", async () => {
+    const { user } = await setupUser();
+    const id = (await createConversation(user))?.id ?? "";
+    const k = key(user.teamId, user.id, id);
+    const multi = Redis.defaultClient.multi.bind(Redis.defaultClient);
+    vi.spyOn(Redis.defaultClient, "multi").mockImplementation(() => {
+      const pipeline = multi();
+      const exec = pipeline.exec.bind(pipeline);
+      vi.spyOn(pipeline, "exec").mockImplementation(async () => {
+        const result = await exec();
+        await Redis.defaultClient.del(k);
+        return result;
+      });
+      return pipeline;
+    });
+    expect(await appendTurn(user, id, turn())).toEqual(false);
+    vi.restoreAllMocks();
+    expect(await Redis.defaultClient.exists(k)).toEqual(0);
   });
 
   it("misses another user's conversation in the same team", async () => {
@@ -255,6 +386,39 @@ describe("conversation store", () => {
       });
     });
 
+    it("load treats corrupt JSON as no conversation without throwing", async () => {
+      const { user } = await setupUser();
+      const id = randomUUID();
+      await Redis.defaultClient.set(
+        key(user.teamId, user.id, id),
+        "{not json",
+        "EX",
+        60
+      );
+      expect(await loadConversation(user, id)).toEqual({
+        conversation: null,
+        unavailable: false,
+      });
+    });
+
+    it("load reports unavailable when a command inside exec fails", async () => {
+      const { user } = await setupUser();
+      const id = (await createConversation(user))?.id ?? "";
+      const multi = Redis.defaultClient.multi.bind(Redis.defaultClient);
+      vi.spyOn(Redis.defaultClient, "multi").mockImplementation(() => {
+        const pipeline = multi();
+        vi.spyOn(pipeline, "exec").mockResolvedValue([
+          [new Error("WRONGTYPE"), null],
+          [null, 1],
+        ]);
+        return pipeline;
+      });
+      expect(await loadConversation(user, id)).toEqual({
+        conversation: null,
+        unavailable: true,
+      });
+    });
+
     it("append returns false without throwing", async () => {
       const { user } = await setupUser();
       const id = (await createConversation(user))?.id ?? "";
@@ -273,6 +437,33 @@ describe("conversation store", () => {
     });
   });
 });
+
+/** Whether `user` still gets the title and prior answer of a turn citing `doc`. */
+async function carriesForward(
+  user: { id: string; teamId: string },
+  doc: { id: string; title: string }
+) {
+  const conversation = {
+    id: randomUUID(),
+    teamId: user.teamId,
+    userId: user.id,
+    turns: [
+      {
+        question: "Tell me more",
+        answer: "Prior answer text.",
+        citedDocumentIds: [doc.id],
+        at: Date.now(),
+      },
+    ],
+  };
+  const fullUser = await User.findByPk(user.id, { rejectOnEmpty: true });
+  const query = await buildStandaloneQuery(fullUser, conversation, "And?");
+  const history = await historyForModel(fullUser, conversation);
+  return {
+    title: query.includes(doc.title),
+    answer: history[0]?.answer === "Prior answer text.",
+  };
+}
 
 describe("buildStandaloneQuery and historyForModel", () => {
   it("resolves a pronoun follow-up to the cited document title", async () => {
@@ -388,5 +579,131 @@ describe("buildStandaloneQuery and historyForModel", () => {
     expect(query).toContain("[REDACTED:");
     const history = await historyForModel(reader, withSecret);
     expect(history[0].question).not.toContain(secret);
+  });
+  describe("re-authorization matches what search returns", () => {
+    async function privateSetup() {
+      const team = await buildTeam();
+      const owner = await buildUser({ teamId: team.id });
+      const reader = await buildUser({ teamId: team.id });
+      const collection = await buildCollection({
+        teamId: team.id,
+        userId: owner.id,
+        permission: null,
+      });
+      const doc = await buildDocument({
+        teamId: team.id,
+        userId: owner.id,
+        collectionId: collection.id,
+        title: "Private spec",
+      });
+      return { team, owner, reader, collection, doc };
+    }
+
+    it("drops a cited document once its author unpublishes it, for others only", async () => {
+      const { owner, reader, boss } = await setupScripted();
+      expect(await carriesForward(reader, boss)).toEqual({
+        title: true,
+        answer: true,
+      });
+      await boss.update({ publishedAt: null });
+      expect(await carriesForward(reader, boss)).toEqual({
+        title: false,
+        answer: false,
+      });
+      expect(await carriesForward(owner, boss)).toEqual({
+        title: true,
+        answer: true,
+      });
+    });
+
+    it("treats another user's draft as unreadable", async () => {
+      const { team, owner, reader, collection } = await setupScripted();
+      const draft = await buildDraftDocument({
+        teamId: team.id,
+        userId: owner.id,
+        collectionId: collection.id,
+        title: "Draft roadmap",
+      });
+      expect(await carriesForward(reader, draft)).toEqual({
+        title: false,
+        answer: false,
+      });
+    });
+
+    it("treats a template as unreadable", async () => {
+      const { team, owner, reader, collection } = await setupScripted();
+      const template = await buildDocument({
+        teamId: team.id,
+        userId: owner.id,
+        collectionId: collection.id,
+        title: "Meeting template",
+        template: true,
+      });
+      expect(await carriesForward(reader, template)).toEqual({
+        title: false,
+        answer: false,
+      });
+    });
+
+    it("drops a document after a direct document membership is revoked", async () => {
+      const { owner, reader, doc } = await privateSetup();
+      const membership = await UserMembership.create({
+        createdById: owner.id,
+        documentId: doc.id,
+        userId: reader.id,
+        permission: DocumentPermission.Read,
+      });
+      expect((await carriesForward(reader, doc)).answer).toEqual(true);
+      await membership.destroy();
+      expect(await carriesForward(reader, doc)).toEqual({
+        title: false,
+        answer: false,
+      });
+    });
+
+    it("drops a document after a group membership is revoked", async () => {
+      const { team, owner, reader, collection, doc } = await privateSetup();
+      const group = await buildGroup({ teamId: team.id, userId: owner.id });
+      await buildGroupUser({
+        teamId: team.id,
+        groupId: group.id,
+        userId: reader.id,
+      });
+      const membership = await GroupMembership.create({
+        createdById: owner.id,
+        collectionId: collection.id,
+        groupId: group.id,
+        permission: CollectionPermission.Read,
+      });
+      expect((await carriesForward(reader, doc)).answer).toEqual(true);
+      await membership.destroy();
+      expect(await carriesForward(reader, doc)).toEqual({
+        title: false,
+        answer: false,
+      });
+    });
+
+    it("treats documents as unreadable for a guest without membership", async () => {
+      const { team, boss } = await setupScripted();
+      const guest = await buildGuestUser({ teamId: team.id });
+      expect(await carriesForward(guest, boss)).toEqual({
+        title: false,
+        answer: false,
+      });
+    });
+
+    it("treats a cited document from another team as unreadable", async () => {
+      const { reader } = await setupScripted();
+      const { doc } = await privateSetup();
+      const otherTeamPublic = await buildDocument({ title: "Foreign doc" });
+      expect(await carriesForward(reader, doc)).toEqual({
+        title: false,
+        answer: false,
+      });
+      expect(await carriesForward(reader, otherTeamPublic)).toEqual({
+        title: false,
+        answer: false,
+      });
+    });
   });
 });

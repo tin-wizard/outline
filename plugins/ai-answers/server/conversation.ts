@@ -5,8 +5,10 @@ import { Document } from "@server/models";
 import type { User } from "@server/models";
 import { can } from "@server/policies";
 import Redis from "@server/storage/redis";
+import { blockToMarkdown } from "./blocks";
 import { redactSecrets } from "./redact";
 import { dropAIExcluded } from "./retrieve";
+import type { AcceptedBlock } from "./verify";
 
 /** One question and its verified answer, written by the server only. */
 export interface ConversationTurn {
@@ -32,6 +34,16 @@ export interface LoadResult {
   conversation: Conversation | null;
   /** True when Redis failed, so the turn runs without history. */
   unavailable: boolean;
+}
+
+/** What 2.1 hands over to store a turn: never free-form model text. */
+export interface TurnInput {
+  /** The user's original question; redacted and truncated before storing. */
+  question: string;
+  /** The verifier's released blocks (`AnswerVerifier.released`); [] to abstain. */
+  released: AcceptedBlock[];
+  /** Epoch milliseconds; defaults to now. */
+  at?: number;
 }
 
 /** A prior turn as it may be shown to the model. */
@@ -110,15 +122,18 @@ export async function loadConversation(
  * Adds a turn to one of the user's conversations, keeping the turn cap and
  * the history budget, and refreshes its expiry.
  *
+ * The answer and cited ids are derived here from the verifier's released
+ * blocks, so only verified text can re-enter a later model context.
+ *
  * @param user the user.
  * @param id the conversation id.
- * @param turn the server-written turn to add.
- * @returns true when stored; false for an unknown conversation or a Redis failure.
+ * @param input the question and the released blocks of the answer.
+ * @returns true when stored; false for an unknown or deleted conversation or a Redis failure.
  */
 export async function appendTurn(
   user: User,
   id: string,
-  turn: ConversationTurn
+  input: TurnInput
 ): Promise<boolean> {
   if (!isUUID(id)) {
     return false;
@@ -134,16 +149,18 @@ export async function appendTurn(
     }
     // shortcut: read-modify-write, so two turns appended at the same moment
     // can lose one; the UI sends one turn at a time. Use a Lua script if not.
-    conversation.turns = trimToBudget([...conversation.turns, turn]);
-    await withTimeout(
+    conversation.turns = trimToBudget([...conversation.turns, toTurn(input)]);
+    // XX: a conversation deleted since it was read stays deleted.
+    const stored = await withTimeout(
       Redis.defaultClient.set(
         conversationKey(user, id),
         JSON.stringify(conversation),
         "EX",
-        CONVERSATION_TTL_SECONDS
+        CONVERSATION_TTL_SECONDS,
+        "XX"
       )
     );
-    return true;
+    return stored === "OK";
   } catch {
     Logger.warn("AI answers could not save a conversation turn");
     return false;
@@ -237,6 +254,43 @@ export async function historyForModel(
 
 const REDIS_TIMEOUT_MS = 2000;
 const MAX_QUERY_TITLES = 3;
+const MAX_QUESTION_CHARS = 500;
+// Below the budget with a full question, so the newest answer always fits.
+const MAX_ANSWER_CHARS = 17_000;
+const MAX_CITED_DOCUMENTS = 20;
+
+/**
+ * Builds the stored turn from verified blocks. An answer that is too long or
+ * cites too many documents to re-check is dropped rather than cut.
+ */
+function toTurn(input: TurnInput): ConversationTurn {
+  const question = [...redactSecrets(input.question).text]
+    .slice(0, MAX_QUESTION_CHARS)
+    .join("");
+  const answer = input.released
+    .map(
+      (r, i) =>
+        // Table rows join their header with a single newline.
+        (i === 0 ? "" : r.block.kind === "tableRow" ? "\n" : "\n\n") +
+        blockToMarkdown(r.block)
+    )
+    .join("");
+  const citedDocumentIds = [
+    ...new Set(
+      input.released.flatMap((r) => r.citations.map((c) => c.documentId))
+    ),
+  ];
+  const keep =
+    answer.trim() !== "" &&
+    answer.length <= MAX_ANSWER_CHARS &&
+    citedDocumentIds.length <= MAX_CITED_DOCUMENTS;
+  return {
+    question,
+    answer: keep ? answer : null,
+    citedDocumentIds: keep ? citedDocumentIds : [],
+    at: input.at ?? Date.now(),
+  };
+}
 
 function conversationKey(user: User, id: string): string {
   return `aiconv:${user.teamId}:${user.id}:${id}`;
@@ -317,8 +371,9 @@ function ownTurns(
 }
 
 /**
- * Applies the turn cap, then the token budget: oldest answers are dropped
- * first, then oldest turns; the newest question is always kept.
+ * Applies the turn cap, then the token budget: older answers are dropped
+ * first, then older turns, and the newest answer only as a last resort; the
+ * newest question is always kept.
  */
 function trimToBudget(turns: ConversationTurn[]): ConversationTurn[] {
   const result = turns.slice(-MAX_TURNS).map((t) => ({ ...t }));
@@ -329,7 +384,7 @@ function trimToBudget(turns: ConversationTurn[]): ConversationTurn[] {
         0
       ) / 3
     );
-  for (const t of result) {
+  for (const t of result.slice(0, -1)) {
     if (tokens() <= HISTORY_TOKEN_BUDGET) {
       return result;
     }
@@ -338,12 +393,17 @@ function trimToBudget(turns: ConversationTurn[]): ConversationTurn[] {
   while (result.length > 1 && tokens() > HISTORY_TOKEN_BUDGET) {
     result.shift();
   }
+  if (tokens() > HISTORY_TOKEN_BUDGET) {
+    result[0].answer = null;
+    result[0].citedDocumentIds = [];
+  }
   return result;
 }
 
 /**
- * The documents among `ids` that the user may read now: not deleted, allowed
- * by the document read policy and not in a collection excluded from AI.
+ * The documents among `ids` that the user may read now, matching what search
+ * returns: not deleted, allowed by the document read policy, not a template,
+ * published (or the user's own draft) and not in a collection excluded from AI.
  * Fails closed: any error means nothing is readable.
  */
 async function readableDocuments(
@@ -361,7 +421,12 @@ async function readableDocuments(
     });
     const allowed = await dropAIExcluded(
       user,
-      found.filter((d) => can(user, "read", d))
+      found.filter(
+        (d) =>
+          can(user, "read", d) &&
+          !d.template &&
+          (!!d.publishedAt || d.createdById === user.id)
+      )
     );
     return new Map(allowed.map((d) => [d.id, d]));
   } catch {
