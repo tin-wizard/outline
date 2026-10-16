@@ -67,6 +67,14 @@ class AIAnswerUsage extends Model<
 
   @Column(DataType.INTEGER)
   durationMs: number;
+
+  /** The asker's rating of the answer: 1 helpful, -1 not helpful, null unrated. */
+  @Column(DataType.SMALLINT)
+  feedback: number | null;
+
+  /** When the rating was last set; null while unrated. */
+  @Column(DataType.DATE)
+  feedbackAt: Date | null;
 }
 
 export default AIAnswerUsage;

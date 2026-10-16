@@ -7,7 +7,7 @@ import { sequelize } from "@server/storage/database";
 import Redis from "@server/storage/redis";
 import { buildTeam, buildUser } from "@server/test/factories";
 import { CLIENT_MAX_RETRIES, CLIENT_TIMEOUT_MS } from "./anthropicClient";
-import { MAX_OUTPUT_TOKENS } from "./contract";
+import { MAX_OUTPUT_TOKENS, STRUCTURED_SYSTEM_PROMPT } from "./contract";
 import pluginEnv from "./env";
 import {
   MAX_CONCURRENT_CALLS,
@@ -80,7 +80,7 @@ describe("recordUsage and spend", () => {
   it("records tokens and cost without content", async () => {
     const team = await buildTeam();
     const user = await buildUser({ teamId: team.id });
-    const cost = await recordUsage({
+    const { cost, id } = await recordUsage({
       teamId: team.id,
       userId: user.id,
       model: "claude-sonnet-5-5",
@@ -91,6 +91,7 @@ describe("recordUsage and spend", () => {
     });
     expect(cost).toEqual(3000);
     const row = await AIAnswerUsage.findOne({ where: { teamId: team.id } });
+    expect(row?.id).toEqual(id);
     expect(row?.inputTokens).toEqual(1000);
     expect(row?.outputTokens).toEqual(100);
     expect(row?.costMicroUsd).toEqual("3000");
@@ -356,5 +357,11 @@ describe("estimateUsage", () => {
     ]);
     expect(estimate.outputTokens).toEqual(MAX_OUTPUT_TOKENS);
     expect(estimate.inputTokens).toBeGreaterThan(100);
+  });
+
+  it("counts the longer structured prompt", () => {
+    expect(estimateUsage("", []).inputTokens).toBeGreaterThanOrEqual(
+      STRUCTURED_SYSTEM_PROMPT.length / 3
+    );
   });
 });

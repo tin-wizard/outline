@@ -35,7 +35,7 @@ import type { PaginationParams, SearchResult } from "~/types";
 import { preventDefault } from "~/utils/events";
 import { searchPath } from "~/utils/routeHelpers";
 import { decodeURIComponentSafe, isTruthyQueryValue } from "~/utils/urls";
-import { AnswerCard } from "./components/AnswerCard";
+import { AskAIButton } from "./components/AskAIButton";
 import CollectionFilter from "./components/CollectionFilter";
 import DateFilter from "./components/DateFilter";
 import { DocumentFilter } from "./components/DocumentFilter";
@@ -393,20 +393,17 @@ function Search() {
                   inForm={false}
                 />
               )}
+              {query ? (
+                <AskAIButton
+                  query={query}
+                  collectionId={collectionId || undefined}
+                  documentId={documentId}
+                />
+              ) : null}
             </Flex>
             {isMobile ? null : sortInput}
           </Filters>
         </form>
-        {query && !titleFilter ? (
-          <AnswerCard
-            query={query}
-            collectionId={collectionId || undefined}
-            documentId={documentId || undefined}
-            userId={userId || undefined}
-            dateFilter={dateFilter || undefined}
-            statusFilter={statusFilter.length ? statusFilter : undefined}
-          />
-        ) : null}
         {isSearchable ? (
           <>
             {error ? (

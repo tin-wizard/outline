@@ -264,6 +264,31 @@ export function newSiblingDocumentPath(params: {
 }
 
 /**
+ * Returns the path to the AI Search screen, optionally prefilled with a
+ * question and scope.
+ *
+ * @param params the question and optional collection or document scope.
+ * @returns the path to the AI Search screen.
+ */
+export function aiPath({
+  query,
+  collectionId,
+  documentId,
+}: {
+  query?: string;
+  collectionId?: string;
+  documentId?: string;
+} = {}): string {
+  const search = queryString.stringify({
+    q: query,
+    collectionId,
+    documentId,
+  });
+
+  return `/ai${search ? `?${search}` : ""}`;
+}
+
+/**
  * Returns the path to the search screen, optionally with a query and filters.
  *
  * @param params the search query and optional filters.

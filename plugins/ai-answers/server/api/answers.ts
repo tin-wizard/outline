@@ -1,7 +1,5 @@
 import Router from "koa-router";
-import { TeamPreference } from "@shared/types";
 import { toError } from "@shared/utils/error";
-import { AuthorizationError } from "@server/errors";
 import Logger from "@server/logging/Logger";
 import auth from "@server/middlewares/authentication";
 import { rateLimiter } from "@server/middlewares/rateLimiter";
@@ -12,6 +10,7 @@ import type { User } from "@server/models";
 import type { APIContext } from "@server/types";
 import { releaseRequestTransaction } from "@server/storage/requestContext";
 import { RateLimiterStrategy } from "@server/utils/RateLimiter";
+import { assertAIAnswersAllowed } from "../access";
 import { getClient } from "../anthropicClient";
 import {
   CLIENT_TIMEOUT_MS,
@@ -22,13 +21,7 @@ import {
 import env from "../env";
 import { generateAnswerWithUsage, type AnswerResult } from "../generate";
 import { retrieveSources, type AnswerSource } from "../retrieve";
-import {
-  estimateUsage,
-  markUnmetered,
-  recordUsage,
-  reserveModelCall,
-  type UsageEntry,
-} from "../usage";
+import { estimateUsage, record, reserveModelCall } from "../usage";
 import * as T from "./schema";
 
 const router = new Router();
@@ -38,7 +31,7 @@ const router = new Router();
  * on top of the answer deadline. The socket timeout of this route is the
  * deadline plus this headroom.
  */
-const REQUEST_HEADROOM_MS = 15_000;
+export const REQUEST_HEADROOM_MS = 15_000;
 
 const NO_ANSWER_RESULT: AnswerResult = { answer: null, citations: [] };
 
@@ -54,21 +47,6 @@ export function clampDeadline(value: number): number {
     return DEFAULT_DEADLINE_MS;
   }
   return Math.min(Math.max(value, MIN_DEADLINE_MS), CLIENT_TIMEOUT_MS);
-}
-
-/** Records usage; a failure is logged, never allowed to break the response. */
-async function record(entry: UsageEntry) {
-  try {
-    await recordUsage(entry);
-  } catch {
-    Logger.warn("AI answers usage could not be recorded", {
-      outcome: entry.outcome,
-      inputTokens: entry.usage.inputTokens,
-      outputTokens: entry.usage.outputTokens,
-    });
-    // Unrecorded spend breaks the budget: stop calling the model for now.
-    await markUnmetered(entry.teamId);
-  }
 }
 
 /**
@@ -174,15 +152,7 @@ router.post(
     const { user } = ctx.state.auth;
     const { query } = ctx.input.body;
 
-    if (!user.team.getPreference(TeamPreference.AIAnswers)) {
-      throw AuthorizationError("AI answers are not enabled for this workspace");
-    }
-
-    // Owner decision D8: members and admins only. Guests and viewers still get
-    // normal search, just no AI answers.
-    if (user.isGuest || user.isViewer) {
-      throw AuthorizationError("AI answers are not available for your role");
-    }
+    assertAIAnswersAllowed(user);
 
     // Abort the model call when the client goes away before the response is
     // written, so it stops billing and frees its concurrency slot.
@@ -194,9 +164,26 @@ router.post(
     };
     // `res` close, not `req`: req emits "close" once the body is read, res only when the connection ends or the response finishes.
     ctx.res.once("close", handleClose);
+    // A close before the listener was attached is never emitted again.
+    if (ctx.res.destroyed || ctx.req.socket.destroyed) {
+      clientGone.abort();
+    }
 
     try {
-      const sources = await retrieveSources(user, ctx.input.body);
+      const sources = await retrieveSources(
+        user,
+        ctx.input.body,
+        clientGone.signal
+      ).catch((error: unknown) => {
+        // The client already left; nobody is waiting for a response.
+        if (clientGone.signal.aborted) {
+          return undefined;
+        }
+        throw error;
+      });
+      if (!sources) {
+        return;
+      }
       const documents = sources.map((source) => source.document);
       // Presenting reads tenant data, so it must run before the release below.
       const presented = await Promise.all(
