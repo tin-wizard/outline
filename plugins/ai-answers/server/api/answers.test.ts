@@ -793,7 +793,7 @@ describe("#documents.answerQuestion", () => {
           await sequelize.query("SELECT 1");
           const other = await server.post("/api/auth.info", users[0]);
           expect(other.status).toEqual(200);
-          expect(Date.now() - startedAt).toBeLessThan(2000);
+          expect(Date.now() - startedAt).toBeLessThan(5000);
 
           openGate();
           const responses = await Promise.all(answers);

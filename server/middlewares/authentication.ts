@@ -131,6 +131,8 @@ export default function auth(options: AuthenticationOptions = {}) {
       try {
         await next();
         // A route may have committed it early (releaseRequestTransaction).
+        // Assumes one auth() per request: a nested auth() would replace
+        // store.transaction and this guard would skip the outer commit.
         if (store.transaction === t) {
           await t.commit();
         }
