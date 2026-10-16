@@ -668,5 +668,48 @@ describe("Authentication middleware", () => {
       expect(spies.commit).toHaveBeenCalledTimes(1);
       expect(spies.rollback).not.toHaveBeenCalled();
     });
+
+    it("commits both transactions once when auth() is nested", async () => {
+      // api.batch dispatches each sub-request through its own auth() inside
+      // the parent's, so each auth() must settle the transaction it created.
+      const user = await buildUser();
+      const ctx = () => ({
+        request: {
+          get: vi.fn(() => `Bearer ${user.getSessionToken()}`),
+        },
+        state: {} as DefaultState,
+        cache: {},
+      });
+      const commits: MockInstance<Transaction["commit"]>[] = [];
+      const rollbacks: MockInstance<Transaction["rollback"]>[] = [];
+      const spyOnCurrent = () => {
+        const t = requestContext.getStore()?.transaction;
+        expect(t).toBeDefined();
+        if (t) {
+          commits.push(vi.spyOn(t, "commit"));
+          rollbacks.push(vi.spyOn(t, "rollback"));
+        }
+      };
+      const store = { req: new IncomingMessage(new Socket()) };
+
+      await requestContext.run(store, () =>
+        // @ts-expect-error mock request
+        auth()(ctx(), async () => {
+          spyOnCurrent();
+          // @ts-expect-error mock request
+          await auth()(ctx(), async () => {
+            spyOnCurrent();
+          });
+        })
+      );
+
+      expect(commits).toHaveLength(2);
+      for (const commit of commits) {
+        expect(commit).toHaveBeenCalledTimes(1);
+      }
+      for (const rollback of rollbacks) {
+        expect(rollback).not.toHaveBeenCalled();
+      }
+    });
   });
 });

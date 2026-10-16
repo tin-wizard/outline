@@ -45,6 +45,23 @@ export async function releaseRequestTransaction(): Promise<boolean> {
   }
   // Detach first so nothing routes through it, even if the commit fails.
   store.transaction = undefined;
+  releasedTransactions.add(transaction);
   await transaction.commit();
   return true;
 }
+
+/**
+ * Returns whether a request transaction was already committed early by
+ * releaseRequestTransaction, so the auth() middleware that created it must not
+ * commit or roll it back again.
+ *
+ * @param transaction the transaction created by an auth() middleware.
+ * @returns true if the transaction was released early.
+ */
+export function isTransactionReleased(transaction: Transaction): boolean {
+  return releasedTransactions.has(transaction);
+}
+
+// Tracked per transaction rather than by comparing store.transaction, which a
+// nested auth() (api.batch sub-requests) overwrites.
+const releasedTransactions = new WeakSet<Transaction>();
