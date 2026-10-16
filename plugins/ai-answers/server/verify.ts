@@ -1,6 +1,5 @@
 import type { Block } from "./blocks";
 import {
-  NO_ANSWER,
   type FinishReason,
   type ProviderCitation,
   type ProviderResult,
@@ -149,7 +148,8 @@ const STOPWORDS = new Set(
 );
 
 const URL_PATTERN = /https?:\/\/[^\s)>\]"']+/gi;
-const EMAIL_PATTERN = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g;
+// Bounded so a long run of word characters cannot make matching quadratic.
+const EMAIL_PATTERN = /[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,10}/g;
 const CODE_SPAN_PATTERN = /`([^`]+)`/g;
 const NUMBER_PATTERN = /\p{Nd}+(?:[.,]\p{Nd}+)*/gu;
 const IDENTIFIER_PATTERNS = [
@@ -242,27 +242,51 @@ function proseIfExactTokensIn(
  * @returns true when the text is supported.
  */
 export function isTextSupported(text: string, passage: string): boolean {
-  passage = foldNumberWords(normalise(passage));
-  const prose = proseIfExactTokensIn(text, passage);
-  if (prose === undefined) {
-    return false;
-  }
+  return (
+    (supportRatio(text, toPassage(passage)) ?? 0) >= MIN_CONTENT_WORD_SUPPORT
+  );
+}
 
-  const split = (value: string) =>
-    foldNumberWords(normalise(value)).split(/[^\p{L}\p{N}]+/u);
-  const passageWords = new Set(split(passage).map(stem));
+/** Source text prepared once for repeated support checks. */
+export interface Passage {
+  /** Normalised text. */
+  text: string;
+  /** Normalised text with number words folded to digits. */
+  folded: string;
+  /** Stemmed words of the text. */
+  words: Set<string>;
+}
+
+function splitWords(value: string): string[] {
+  return foldNumberWords(normalise(value)).split(/[^\p{L}\p{N}]+/u);
+}
+
+function toPassage(raw: string): Passage {
+  const text = normalise(raw);
+  const folded = foldNumberWords(text);
+  return { text, folded, words: new Set(splitWords(folded).map(stem)) };
+}
+
+/**
+ * Share of the text's content words found in the passage, or undefined when
+ * a number, URL, email, code span or acronym/ID in it is missing there.
+ */
+function supportRatio(text: string, passage: Passage): number | undefined {
+  const prose = proseIfExactTokensIn(text, passage.folded);
+  if (prose === undefined) {
+    return undefined;
+  }
   const words = [
     ...new Set(
-      split(prose)
+      splitWords(prose)
         .filter((w) => w && !STOPWORDS.has(w))
         .map(stem)
     ),
   ];
   if (words.length === 0) {
-    return true;
+    return 1;
   }
-  const found = words.filter((w) => passageWords.has(w)).length;
-  return found / words.length >= MIN_CONTENT_WORD_SUPPORT;
+  return words.filter((w) => passage.words.has(w)).length / words.length;
 }
 
 /**
@@ -354,7 +378,7 @@ export function verifyAnswer(
 
   const answer = parts.join(" ").trim();
   // NO_ANSWER anywhere, even in dropped text, means the model abstained.
-  const abstained = result.segments.some((s) => s.text.includes(NO_ANSWER));
+  const abstained = result.segments.some((s) => SENTINEL_PATTERN.test(s.text));
   if (!answer || abstained || !hasModelCitation) {
     return { answer: null, citations: [], droppedSegments, abstained };
   }
@@ -368,6 +392,7 @@ export function verifyAnswer(
 
 /** Why `verifyBlock` did not release a block. */
 export type BlockDropReason =
+  | "long"
   | "empty"
   | "sentinel"
   | "html"
@@ -378,16 +403,20 @@ export type BlockDropReason =
   | "code"
   | "structure"
   | "unsupported"
-  | "uncited";
+  | "uncited"
+  | "table";
 
 /** A block that may be released, with its sanitised content. */
 export interface AcceptedBlock {
   ok: true;
   /** The sanitised block: secrets redacted, model-written links reduced to their text. */
   block: Block;
-  /** Sources backing the block; empty for structural blocks. */
+  /** Sources backing the block; empty for structural blocks and gap statements. */
   citations: AnswerCitation[];
-  /** True when a valid provider citation backs the block (counts for `verifyFinal`). */
+  /**
+   * True only when a sentence (or table row) passed the support check against
+   * a valid provider citation; this is what `verifyFinal` counts.
+   */
   modelCited: boolean;
 }
 
@@ -395,7 +424,7 @@ export interface AcceptedBlock {
 export interface DroppedBlock {
   ok: false;
   reason: BlockDropReason;
-  /** The block with secrets redacted; never show it to the user. */
+  /** The block with secrets redacted (emptied when over the length cap); never show it. */
   block: Block;
 }
 
@@ -407,8 +436,8 @@ export interface FinalState {
   finishReason: FinishReason;
   /** Everything the model generated, released or not. */
   text: string;
-  /** The blocks that `verifyBlock` accepted. */
-  released: Pick<AcceptedBlock, "modelCited">[];
+  /** The verdicts of the released blocks. */
+  released: AcceptedBlock[];
 }
 
 /** Why a finished answer failed the final gate. */
@@ -417,36 +446,80 @@ export type FinalFailure = "unfinished" | "abstained" | "empty" | "uncited";
 /** The outcome of the final gate. */
 export type FinalVerdict = { ok: true } | { ok: false; reason: FinalFailure };
 
+/** The sent sources, normalised once so each block can be checked cheaply. */
+export interface PreparedSources {
+  sources: AnswerSource[];
+  /** Every sent section, normalised. */
+  known: Passage;
+  /** Every sent section plus the structural vocabulary, for labels. */
+  labels: Passage;
+  /** Per source and section: normalised text with uniform pipes, for verbatim copies. */
+  flat: string[][];
+  /** Per source and section: raw text with trailing whitespace trimmed per line, for code. */
+  code: string[][];
+}
+
 /**
- * Decides whether one Markdown block may be released. Every block is
- * redacted, loses model-written link syntax (only the visible text is kept)
- * and is dropped for HTML, images, the abstention sentinel or URLs/emails not
- * in the sent sections. Then, by kind:
+ * Normalises the sent sources once for `verifyBlock`.
  *
- * - paragraph, list item, table body row: every sentence (every cell for a
- *   row) must be supported by the passages of valid provider citations, as in
- *   `verifyAnswer`; without a valid citation the block must be a verbatim copy
- *   (at least 25 characters) of a sent section. Paragraphs and list items may
- *   also be a short lead-in ending with a colon, or plain statements of what
- *   the documents do not cover.
- * - heading, table header row: at most 80 characters, no URL or email, every
- *   number, identifier and code-like token present in the sent sections, and
- *   most words from the sent sections or a small structural vocabulary.
- * - code block: a verbatim substring of a sent section, ignoring trailing
- *   whitespace on each line.
+ * @param sources the sources that were sent, in order.
+ * @returns the prepared sources.
+ */
+export function prepareSources(sources: AnswerSource[]): PreparedSources {
+  const sent = sources.flatMap((s) => s.sections).join("\n");
+  return {
+    sources,
+    known: toPassage(sent),
+    labels: toPassage(`${sent}\n${STRUCTURAL_WORDS}`),
+    flat: sources.map((s) => s.sections.map(flatten)),
+    code: sources.map((s) => s.sections.map(trimLines)),
+  };
+}
+
+/**
+ * Decides whether one Markdown block may be released. Every block must be at
+ * most 4000 characters and is dropped for the abstention sentinel. Non-code
+ * blocks are redacted, lose model-written link syntax (only the visible text is
+ * kept) and are dropped for images, leftover link/reference syntax, HTML, or
+ * URLs, bare domains or emails not in the sent sections. Then, by kind:
+ *
+ * - paragraph, list item: every sentence must be supported by the passage of
+ *   one valid provider citation (content words, exact tokens and code-like
+ *   tokens), or be a plain statement of what the documents do not cover.
+ *   Without a valid citation the block must be a verbatim copy (at least 25
+ *   characters) of a sent section, a short lead-in ending with a colon whose
+ *   words all come from the sources, or only gap statements.
+ * - table body row: every cell and the whole row must be supported by one
+ *   cited passage, including yes/no words; or a verbatim copy.
+ * - heading, table header row: at most 80 characters, no URL or email, all
+ *   numbers, identifiers and code-like tokens in the sent sections, and at
+ *   least 80% of words from the sent sections or a structural vocabulary.
+ * - code block: at least 8 characters and a verbatim substring of a sent
+ *   section, ignoring trailing whitespace on each line.
  *
  * @param block the block, as produced by `BlockSplitter`.
  * @param citations the provider citations attached to the block, normally `block.citations`.
- * @param sources the sources that were sent, in order.
+ * @param sources the sources that were sent, in order, raw or from `prepareSources`.
  * @returns the sanitised block and its citations, or the reason it was dropped.
  */
 export function verifyBlock(
   block: Block,
   citations: ProviderCitation[],
-  sources: AnswerSource[]
+  sources: AnswerSource[] | PreparedSources
 ): BlockVerdict {
+  const ctx = Array.isArray(sources) ? prepareSources(sources) : sources;
+  if (
+    block.text.length > MAX_BLOCK_LENGTH ||
+    block.cells.join("").length > MAX_BLOCK_LENGTH
+  ) {
+    return {
+      ok: false,
+      reason: "long",
+      block: { ...block, text: "", cells: [], inlineCode: [] },
+    };
+  }
   if (block.kind === "code") {
-    return verifyCode(block, sources);
+    return verifyCode(block, ctx);
   }
 
   const redact = (value: string) => redactSecrets(value).text;
@@ -460,45 +533,42 @@ export function verifyBlock(
     reason,
     block: redacted,
   });
+  if (SENTINEL_PATTERN.test(redacted.text)) {
+    return drop("sentinel");
+  }
 
-  const parts = block.kind.startsWith("table")
-    ? redacted.cells
-    : [redacted.text];
+  const table = block.kind === "tableHeader" || block.kind === "tableRow";
   const cleaned: string[] = [];
-  for (const part of parts) {
+  for (const part of table ? redacted.cells : [redacted.text]) {
     const result = stripMarkup(part);
     if (typeof result !== "string") {
       return drop(result.reason);
     }
     cleaned.push(result);
   }
-  const text = block.kind.startsWith("table")
-    ? cleaned.join(" | ")
-    : cleaned[0];
+  const text = table ? cleaned.join(" | ") : cleaned[0];
   const clean: Block = {
     ...redacted,
     text,
-    cells: block.kind.startsWith("table") ? cleaned : [],
+    cells: table ? cleaned : [],
     inlineCode: [...text.matchAll(CODE_SPAN_PATTERN)].map((m) => m[1]),
   };
 
   if (!/[\p{L}\p{N}]/u.test(text)) {
     return drop("empty");
   }
-  if (text.includes(NO_ANSWER)) {
-    return drop("sentinel");
-  }
-  const sent = sources.flatMap((s) => s.sections).join("\n");
-  const known = normalise(sent);
   const structural = block.kind === "heading" || block.kind === "tableHeader";
+  const found = addressesIn(text);
   const isNovel = (token: string) =>
-    structural ||
-    !containsToken(known, normalise(token.replace(/[.,;:!?]+$/, "")));
-  if ((text.match(ANY_URL_PATTERN) ?? []).some(isNovel)) {
+    !containsToken(ctx.known.text, normalise(token.replace(/[.,;:!?]+$/, "")));
+  if (found.urls.some((url) => structural || isNovel(url))) {
     return drop("url");
   }
-  if ((text.match(EMAIL_PATTERN) ?? []).some(isNovel)) {
+  if (found.emails.some((email) => structural || isNovel(email))) {
     return drop("email");
+  }
+  if (found.domains.some(isNovel)) {
+    return drop("url");
   }
   const accept = (
     backing: AnswerCitation[],
@@ -511,40 +581,49 @@ export function verifyBlock(
   });
 
   if (structural) {
-    return isStructural(text, sent, known)
+    return isLabel(text, ctx, MIN_HEADING_SUPPORT)
       ? accept([], false)
       : drop("structure");
   }
 
   const valid = citations.flatMap((c) => {
-    const resolved = resolveCitation(c, sources);
+    const resolved = resolveCitation(c, ctx.sources);
     return resolved ? [resolved] : [];
   });
-  const prose = block.kind !== "tableRow";
   if (valid.length > 0) {
-    const passage = valid.map((v) => v.passage).join(" ");
-    const units = prose ? sentencesOf(text) : cleaned.filter((c) => c.trim());
-    const supported = units.every(
-      (unit) =>
-        isTextSupported(unit, passage) ||
-        (prose && isGapStatement(unit, sent, known))
+    const passages = valid.map((v) => toPassage(v.passage));
+    let backed = false;
+    if (block.kind === "tableRow") {
+      backed = passages.some((p) => isRowSupported(cleaned, p));
+    } else {
+      for (const sentence of sentencesOf(text)) {
+        if (passages.some((p) => isClaimSupported(sentence, p))) {
+          backed = true;
+        } else if (!isGapStatement(sentence, ctx)) {
+          return drop("unsupported");
+        }
+      }
+    }
+    if (!backed) {
+      // Only gap statements: releasable, but they back nothing.
+      return block.kind === "tableRow"
+        ? drop("unsupported")
+        : accept([], false);
+    }
+    return accept(
+      valid.map((v) => v.entry),
+      true
     );
-    return supported
-      ? accept(
-          valid.map((v) => v.entry),
-          true
-        )
-      : drop("unsupported");
   }
 
-  const copied = findVerbatim(text, sources);
+  const copied = findVerbatim(text, ctx);
   if (copied) {
     return accept([copied], false);
   }
   if (
-    prose &&
-    (isLeadIn(text, sent, known) ||
-      sentencesOf(text).every((s) => isGapStatement(s, sent, known)))
+    block.kind !== "tableRow" &&
+    (isLeadIn(text, ctx) ||
+      sentencesOf(text).every((s) => isGapStatement(s, ctx)))
   ) {
     return accept([], false);
   }
@@ -563,7 +642,7 @@ export function verifyFinal(state: FinalState): FinalVerdict {
   if (state.finishReason !== "stop") {
     return { ok: false, reason: "unfinished" };
   }
-  if (state.text.includes(NO_ANSWER)) {
+  if (SENTINEL_PATTERN.test(state.text)) {
     return { ok: false, reason: "abstained" };
   }
   if (state.released.length === 0) {
@@ -575,11 +654,78 @@ export function verifyFinal(state: FinalState): FinalVerdict {
   return { ok: true };
 }
 
+/**
+ * Verifies the blocks of one streamed answer in order, remembering what was
+ * released: a table row is dropped (reason "table") unless its header was
+ * released, and `finish` runs the final gate over the released blocks.
+ */
+export class AnswerVerifier {
+  /** The verdicts of every block released so far, in order. */
+  public released: AcceptedBlock[] = [];
+
+  /**
+   * @param sources the sources that were sent, in order.
+   */
+  public constructor(sources: AnswerSource[]) {
+    this.prepared = prepareSources(sources);
+  }
+
+  /**
+   * Verifies the next block.
+   *
+   * @param block the block, as produced by `BlockSplitter`.
+   * @param citations the provider citations for the block.
+   * @returns the verdict; release `blockToMarkdown(verdict.block)` only when ok.
+   */
+  public verify(
+    block: Block,
+    citations: ProviderCitation[] = block.citations
+  ): BlockVerdict {
+    const verdict = verifyBlock(block, citations, this.prepared);
+    if (block.kind === "tableRow" && !this.tables.has(block.tableId)) {
+      return { ok: false, reason: "table", block: verdict.block };
+    }
+    if (verdict.ok) {
+      if (block.kind === "tableHeader") {
+        this.tables.add(block.tableId);
+      }
+      this.released.push(verdict);
+    }
+    return verdict;
+  }
+
+  /**
+   * Runs the final gate over the released blocks.
+   *
+   * @param finishReason why generation stopped.
+   * @param text everything the model generated, released or not.
+   * @returns ok, or the reason the answer failed.
+   */
+  public finish(finishReason: FinishReason, text: string): FinalVerdict {
+    return verifyFinal({ finishReason, text, released: this.released });
+  }
+
+  private prepared: PreparedSources;
+  private tables = new Set<number>();
+}
+
+/** Matches the abstention sentinel, also when Markdown-escaped. */
+const SENTINEL_PATTERN = /NO\\?_ANSWER/;
+
+/** Longest block verified; longer ones are dropped before any pattern runs. */
+const MAX_BLOCK_LENGTH = 4000;
+
 /** Longest uncited heading, table header or lead-in. */
 const MAX_STRUCTURAL_LENGTH = 80;
 
+/** Share of a heading's words that must come from the sources or the structural vocabulary. */
+const MIN_HEADING_SUPPORT = 0.8;
+
 /** Longest statement of what the documents do not cover. */
 const MAX_GAP_LENGTH = 160;
+
+/** Shortest code block released; shorter ones match almost anywhere. */
+const MIN_CODE_LENGTH = 8;
 
 /**
  * Words a heading or lead-in may use without them being in the sources;
@@ -594,19 +740,34 @@ const STRUCTURAL_WORDS = (
   "sources source cover covered mention answer follow run next first then finally limitations known issues"
 ).replace(/\s+/g, " ");
 
-/** Scheme URLs, www. hosts and scheme-less host/path addresses. */
+/**
+ * Scheme URLs, protocol-relative //host, script and data schemes, www. hosts
+ * and scheme-less host/path addresses. Quantifiers are bounded.
+ */
 const ANY_URL_PATTERN =
-  /\b(?:[a-z][a-z0-9+.-]*:\/\/|www\.|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}\/)[^\s<>()[\]"'`]*/gi;
+  /(?:\b[a-z][a-z0-9+.-]{0,30}:\/\/|(?<![\w/:])\/\/(?=[\w-])|\b(?:javascript|data|vbscript|file):|\bwww\.|\b[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63}){0,10}\.[a-z]{2,24}\/)[^\s<>()[\]"'`]{0,2000}/gi;
+
+/** Host names without a scheme or path, such as evil.example.com. */
+const BARE_DOMAIN_PATTERN =
+  /\b[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63}){0,10}\.[a-z]{2,24}\b/gi;
 
 /** Tokens that look like code: paths, flags, calls, member access, assignments. */
 const CODE_LIKE_PATTERN = /[/\\{}$<>=~]|\w\.\w|--|::|\(\)/;
 
-const GAP_PATTERN =
-  /^(?:the\s+)?(?:provided\s+|available\s+)?(?:documents?|sources?|search results|knowledge base)\s+(?:provided\s+)?(?:do|does)\s*(?:not|n['’]t)\s+(?:cover|mention|say|state|describe|specify|include|contain|explain|address|discuss|list|provide|detail)\b[^,;:()]*$/i;
+/** Abbreviations that look like member access but are prose. */
+const PROSE_ABBREVIATIONS = /^(?:e\.g|i\.e|etc)\.?$/i;
 
-/** Words that would let a gap statement carry a claim of its own. */
+/** Words whose presence flips or asserts a table cell; they must be in the passage. */
+const POLARITY_WORDS = new Set(
+  "no not yes none never true false".split(" ").map(stem)
+);
+
+const GAP_PATTERN =
+  /^(?:the\s+)?(?:provided\s+|available\s+)?(?:documents?|sources?|search results|knowledge base)\s+(?:provided\s+)?(?:do|does)\s*(?:not|n['’]t)\s+(?:cover|mention|say|state|describe|specify|include|contain|explain|address|discuss|list|provide|detail)(?:\s+[\p{L}\p{N}'’-]+){1,6}\.?$/iu;
+
+/** Words that would let a gap statement carry a claim or an instruction. */
 const GAP_BLOCKERS =
-  /\b(?:but|however|although|though|instead|yet|because|since|while|whereas|therefore|so|that|which|and\s+(?:is|are|was|were|it|they))\b/i;
+  /\b(?:but|however|although|though|instead|yet|because|since|while|whereas|therefore|so|that|which|and|or|nor|as|if|when|then|unless|until|before|after|should|must|need|can|is|are|was|were|tell|use|email|contact|disable|enable|set|run)\b|[—–,;:`]/i;
 
 /** Accepts a citation only when it maps to sent sections and its quote is in them. */
 function resolveCitation(
@@ -663,13 +824,41 @@ function sentencesOf(text: string): string[] {
   return text.split(/(?<=[.!?])\s+|\n+/).filter((sentence) => sentence.trim());
 }
 
-/** Reduces model-written links to their text; rejects images, link definitions and HTML. */
+/** Normalised text with uniform spacing around table pipes. */
+function flatten(value: string): string {
+  return normalise(value).replace(/\s*\|\s*/g, " | ");
+}
+
+function trimLines(value: string): string {
+  return value
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .join("\n");
+}
+
+/** URLs, emails and bare domains, after folding look-alike dots (。．｡) to ".". */
+function addressesIn(text: string): {
+  urls: string[];
+  emails: string[];
+  domains: string[];
+} {
+  const probe = text.normalize("NFKC").replace(/[。．｡]/g, ".");
+  const urls: string[] = probe.match(ANY_URL_PATTERN) ?? [];
+  const emails: string[] = probe.match(EMAIL_PATTERN) ?? [];
+  const rest = urls
+    .concat(emails)
+    .reduce((left, token) => left.replace(token, " "), probe);
+  return { urls, emails, domains: rest.match(BARE_DOMAIN_PATTERN) ?? [] };
+}
+
+/**
+ * Reduces model-written links to their text; rejects images, HTML, and any
+ * link, image or reference syntax left over (nested or escaped brackets).
+ */
 function stripMarkup(text: string): string | { reason: BlockDropReason } {
-  if (/!\[[^\]]*\]\s*[([]/.test(text)) {
+  const outsideCode = (value: string) => value.replace(CODE_SPAN_PATTERN, " ");
+  if (/!\[/.test(outsideCode(text))) {
     return { reason: "image" };
-  }
-  if (/^\s*\[[^\]]+\]:/m.test(text)) {
-    return { reason: "link" };
   }
   // Bounded: each pass removes at least one pair of brackets.
   for (let previous = ""; previous !== text;) {
@@ -677,6 +866,9 @@ function stripMarkup(text: string): string | { reason: BlockDropReason } {
     text = text
       .replace(/\[([^[\]]*)\]\((?:[^()]|\([^()]*\))*\)/g, "$1")
       .replace(/\[([^[\]]*)\]\[[^\]]*\]/g, "$1");
+  }
+  if (/\][([:]/.test(outsideCode(text))) {
+    return { reason: "link" };
   }
   if (/<[A-Za-z/!?]/.test(text)) {
     return { reason: "html" };
@@ -687,77 +879,100 @@ function stripMarkup(text: string): string | { reason: BlockDropReason } {
 /** An uncited block counts as a source copy when it is long and verbatim. */
 function findVerbatim(
   text: string,
-  sources: AnswerSource[]
+  ctx: PreparedSources
 ): AnswerCitation | undefined {
-  // Table rows are compared with uniform spacing around the pipes.
-  const flat = (value: string) => normalise(value).replace(/\s*\|\s*/g, " | ");
-  const needle = flat(text);
+  const needle = flatten(text);
   if (needle.length < MIN_GROUNDED_LENGTH) {
     return undefined;
   }
-  for (const source of sources) {
-    const section = source.sections.find((s) => flat(s).includes(needle));
-    if (section !== undefined) {
-      return citationFor(source, section, text);
+  for (const [i, source] of ctx.sources.entries()) {
+    const at = ctx.flat[i].findIndex((s) => s.includes(needle));
+    if (at !== -1) {
+      return citationFor(source, source.sections[at], text);
     }
   }
   return undefined;
 }
 
-/** Whether every code-like token in the text appears in the sent sections. */
-function codeLikeTokensKnown(text: string, known: string): boolean {
+/** Whether every code-like token in the text appears in the normalised passage. */
+function codeLikeTokensKnown(text: string, passage: string): boolean {
   return text
     .split(/\s+/)
-    .map((token) => token.replace(/^[("'`*]+|[)"'`*.,;:!?]+$/g, ""))
-    .filter((token) => CODE_LIKE_PATTERN.test(token))
-    .every((token) => containsToken(known, normalise(token)));
+    .map((token) => token.replace(/^[[("'`*]+|[\])"'`*.,;:!?]+$/g, ""))
+    .filter(
+      (token) =>
+        CODE_LIKE_PATTERN.test(token) && !PROSE_ABBREVIATIONS.test(token)
+    )
+    .every((token) => containsToken(passage, normalise(token)));
+}
+
+/** A claim sentence supported by one cited passage. */
+function isClaimSupported(sentence: string, passage: Passage): boolean {
+  return (
+    (supportRatio(sentence, passage) ?? 0) >= MIN_CONTENT_WORD_SUPPORT &&
+    codeLikeTokensKnown(sentence, passage.text)
+  );
+}
+
+/** A table row whose cells and whole row are supported by one cited passage. */
+function isRowSupported(cells: string[], passage: Passage): boolean {
+  const filled = cells.filter((c) => c.trim());
+  const row = filled.join(" ");
+  return (
+    filled.every((cell) => isClaimSupported(cell, passage)) &&
+    isClaimSupported(row, passage) &&
+    splitWords(row)
+      .map(stem)
+      .filter((w) => POLARITY_WORDS.has(w))
+      .every((w) => passage.words.has(w))
+  );
 }
 
 /** A short label that carries no claim the sources do not make. */
-function isStructural(text: string, sent: string, known: string): boolean {
+function isLabel(
+  text: string,
+  ctx: PreparedSources,
+  minSupport: number
+): boolean {
+  const found = addressesIn(text);
   return (
     text.length <= MAX_STRUCTURAL_LENGTH &&
-    !text.match(ANY_URL_PATTERN) &&
-    !text.match(EMAIL_PATTERN) &&
-    codeLikeTokensKnown(text, known) &&
-    isTextSupported(text, `${sent}\n${STRUCTURAL_WORDS}`)
+    found.urls.length === 0 &&
+    found.emails.length === 0 &&
+    codeLikeTokensKnown(text, ctx.known.text) &&
+    (supportRatio(text, ctx.labels) ?? 0) >= minSupport
   );
 }
 
-/** A one-line structural lead-in to a list, table or code block. */
-function isLeadIn(text: string, sent: string, known: string): boolean {
+/** A one-line lead-in to a list, table or code block, every word from the sources. */
+function isLeadIn(text: string, ctx: PreparedSources): boolean {
   return (
     text.endsWith(":") &&
     sentencesOf(text).length === 1 &&
-    isStructural(text, sent, known)
+    isLabel(text, ctx, 1)
   );
 }
 
-/** A plain statement of what the sources do not cover, with no claim of its own. */
-function isGapStatement(
-  sentence: string,
-  sent: string,
-  known: string
-): boolean {
+/**
+ * A plain statement of what the sources do not cover: a fixed lead and a
+ * short object with no digits, addresses, code, clauses or instructions.
+ */
+function isGapStatement(sentence: string, ctx: PreparedSources): boolean {
   const text = sentence.trim();
+  const found = addressesIn(text);
   return (
     text.length <= MAX_GAP_LENGTH &&
     GAP_PATTERN.test(text) &&
     !GAP_BLOCKERS.test(text) &&
-    !text.match(ANY_URL_PATTERN) &&
-    !text.match(EMAIL_PATTERN) &&
-    codeLikeTokensKnown(text, known) &&
-    proseIfExactTokensIn(text, foldNumberWords(normalise(sent))) !== undefined
+    !/\p{N}/u.test(text) &&
+    found.urls.length + found.emails.length + found.domains.length === 0 &&
+    !text.split(/\s+/).some((t) => CODE_LIKE_PATTERN.test(t)) &&
+    proseIfExactTokensIn(text, ctx.known.folded) !== undefined
   );
 }
 
 /** A code block must be copied verbatim from a sent section. */
-function verifyCode(block: Block, sources: AnswerSource[]): BlockVerdict {
-  const trimLines = (value: string) =>
-    value
-      .split("\n")
-      .map((line) => line.trimEnd())
-      .join("\n");
+function verifyCode(block: Block, ctx: PreparedSources): BlockVerdict {
   const text = trimLines(redactSecrets(block.text).text).replace(
     /^\n+|\n+$/g,
     ""
@@ -770,18 +985,19 @@ function verifyCode(block: Block, sources: AnswerSource[]): BlockVerdict {
   if (!text.trim()) {
     return { ok: false, reason: "empty", block: clean };
   }
-  if (text.includes(NO_ANSWER)) {
+  if (SENTINEL_PATTERN.test(text)) {
     return { ok: false, reason: "sentinel", block: clean };
   }
-  for (const source of sources) {
-    const section = source.sections.find((s) =>
-      containsToken(trimLines(s), text)
-    );
-    if (section !== undefined) {
+  if (text.trim().length < MIN_CODE_LENGTH) {
+    return { ok: false, reason: "code", block: clean };
+  }
+  for (const [i, source] of ctx.sources.entries()) {
+    const at = ctx.code[i].findIndex((s) => containsToken(s, text));
+    if (at !== -1) {
       return {
         ok: true,
         block: clean,
-        citations: [citationFor(source, section, text)],
+        citations: [citationFor(source, source.sections[at], text)],
         modelCited: false,
       };
     }
