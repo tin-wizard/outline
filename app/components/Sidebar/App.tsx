@@ -1,5 +1,5 @@
 import { observer } from "mobx-react";
-import { SearchIcon, HomeIcon, SidebarIcon } from "outline-icons";
+import { SearchIcon, HomeIcon, SidebarIcon, SparklesIcon } from "outline-icons";
 import { useEffect, useState, useCallback, useRef } from "react";
 import {
   DragActiveProvider,
@@ -13,13 +13,14 @@ import { metaDisplay } from "@shared/utils/keyboard";
 import Scrollable from "~/components/Scrollable";
 import { navigateToImport } from "~/actions/definitions/navigation";
 import { inviteUser } from "~/actions/definitions/users";
+import useAIAnswersEnabled from "~/hooks/useAIAnswersEnabled";
 import useCurrentTeam from "~/hooks/useCurrentTeam";
 import useCurrentUser from "~/hooks/useCurrentUser";
 import usePolicy from "~/hooks/usePolicy";
 import useStores from "~/hooks/useStores";
 import TeamMenu from "~/menus/TeamMenu";
 import * as Scenes from "~/routes/scenes";
-import { homePath, searchPath } from "~/utils/routeHelpers";
+import { aiPath, homePath, searchPath } from "~/utils/routeHelpers";
 import TeamLogo from "../TeamLogo";
 import Tooltip from "../Tooltip";
 import Sidebar from "./Sidebar";
@@ -47,6 +48,7 @@ function AppSidebar() {
   const team = useCurrentTeam();
   const user = useCurrentUser();
   const can = usePolicy(team);
+  const aiEnabled = useAIAnswersEnabled();
   const history = useHistory();
   const isMobile = useMobile();
 
@@ -136,6 +138,15 @@ function AppSidebar() {
               onClick={handleSearchClick}
               onClickIntent={Scenes.Search.preload}
             />
+            {aiEnabled && (
+              <SidebarLink
+                to={aiPath()}
+                icon={<SparklesIcon />}
+                label={t("AI Search")}
+                exact={false}
+                onClickIntent={Scenes.AISearch.preload}
+              />
+            )}
             {can.createDocument && <DraftsLink />}
           </Section>
         </Overflow>

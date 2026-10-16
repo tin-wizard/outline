@@ -5,6 +5,7 @@ import { createLazyComponent as lazy } from "~/components/LazyLoad";
  * route definitions so that components such as the sidebar can preload a
  * scene's chunk without importing the routes themselves.
  */
+export const AISearch = lazy(() => import("~/scenes/AISearch"));
 export const Archive = lazy(() => import("~/scenes/Archive"));
 export const Collection = lazy(() => import("~/scenes/Collection"));
 export const Document = lazy(() => import("~/scenes/Document"));
