@@ -1,9 +1,17 @@
 name: "CodeQL"
 
 on:
-  # Scans pull requests and weekly; not on every merge to main.
+  # Scans pull requests that touch code or dependencies, and weekly; not on
+  # every merge to main. Not a required check, so a path filter is safe here.
   pull_request:
     branches: [main]
+    paths:
+      - "server/**"
+      - "shared/**"
+      - "app/**"
+      - "plugins/**"
+      - "package.json"
+      - "yarn.lock"
   schedule:
     - cron: "28 15 * * 2"
 

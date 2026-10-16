@@ -3,6 +3,9 @@ name: CI
 on:
   # Runs on pull requests before merge and on demand. It deliberately does not
   # run again on every merge to main: the image build is a separate workflow.
+  # The workflow still starts on every pull request so the required `ci` check
+  # always reports, but the heavy jobs below only run when the change touches
+  # code, dependencies or CI config (see the `changes` job).
   pull_request:
   workflow_dispatch:
 
@@ -23,6 +26,7 @@ jobs:
     outputs:
       code: ${{ steps.filter.outputs.code }}
       config: ${{ steps.filter.outputs.config }}
+      workflows: ${{ steps.filter.outputs.workflows }}
       server: ${{ steps.filter.outputs.server }}
       app: ${{ steps.filter.outputs.app }}
       deps: ${{ steps.filter.outputs.deps }}
@@ -32,27 +36,35 @@ jobs:
         id: filter
         with:
           filters: |
+            # Sensitive paths only: docs, plans, public assets and translation
+            # files never start lint or type-check.
             code:
-              - '**'
-              - '!**/*.md'
-              - '!docs/**'
-              - '!public/**'
+              - 'server/**'
+              - 'shared/**'
+              - 'app/**'
+              - 'plugins/**'
+              - 'package.json'
+              - 'yarn.lock'
+              - '.yarnrc.yml'
               - '!shared/i18n/locales/**'
             config:
-              - '.github/**'
               - 'vite.config.ts'
               - 'vitest.config.ts'
+            workflows:
+              - '.github/**'
             server:
               - 'server/**'
               - 'shared/**'
               - 'plugins/**'
               - 'package.json'
               - 'yarn.lock'
+              - '!shared/i18n/locales/**'
             app:
               - 'app/**'
               - 'shared/**'
               - 'package.json'
               - 'yarn.lock'
+              - '!shared/i18n/locales/**'
             deps:
               - 'package.json'
               - 'yarn.lock'
@@ -69,7 +81,7 @@ jobs:
 
   actionlint:
     needs: changes
-    if: ${{ needs.changes.outputs.config == 'true' }}
+    if: ${{ needs.changes.outputs.workflows == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
