@@ -82,4 +82,4 @@ Provable in tests: follow-up resolution, permission re-authorization, stop cance
 
 ## Rollback
 
-Flag off hides the page and entries; old endpoint remains; no new migrations planned in M2 (Redis only).
+Flag off hides the page and entries; the old endpoint remains. Conversations live only in Redis (60-min expiry). M2 adds one additive migration, `server/migrations/20261016140000-add-feedback-to-ai-answer-usages.js` (feedback columns on `ai_answer_usages`); its `down` drops those columns and loses every stored rating, so roll the code back first and run `down` only if the columns must go.
