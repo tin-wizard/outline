@@ -31,8 +31,13 @@ function truncate(text: string): string {
   return text.length > MAX_QUOTE ? `${text.slice(0, MAX_QUOTE)}…` : text;
 }
 
-/** Lowercases and strips markdown markers and extra whitespace for comparison. */
-function normalise(text: string): string {
+/**
+ * Lowercases and strips markdown markers and extra whitespace for comparison.
+ *
+ * @param text the text to normalise.
+ * @returns the normalised text.
+ */
+export function normalise(text: string): string {
   return text
     .toLowerCase()
     .replace(/[*_`#>]/g, "")
@@ -97,11 +102,16 @@ function containsToken(
 }
 
 /**
- * Whether the segment text is supported by the cited passage: every number,
- * URL, email, code-like token and acronym/ID in it appears in the passage, and
- * at least `MIN_CONTENT_WORD_SUPPORT` of its content words do too.
+ * Whether the text is supported by the passage: every number, URL, email,
+ * code-like token and acronym/ID in it appears in the passage, and at least
+ * `MIN_CONTENT_WORD_SUPPORT` of its content words do too.
+ *
+ * @param text the generated text to check.
+ * @param passage the source text it must be supported by.
+ * @returns true when the text is supported.
  */
-function isSupported(text: string, passage: string): boolean {
+export function isTextSupported(text: string, passage: string): boolean {
+  passage = normalise(passage);
   const exact: string[] = [];
   const collect = (pattern: RegExp, group = 0) => {
     for (const m of text.matchAll(pattern)) {
@@ -213,7 +223,10 @@ export function verifyAnswer(
       });
     }
     const backed = valid.length > 0;
-    if (backed && !isSupported(text, valid.map((v) => v.passage).join(" "))) {
+    if (
+      backed &&
+      !isTextSupported(text, valid.map((v) => v.passage).join(" "))
+    ) {
       droppedSegments++;
       continue;
     }
