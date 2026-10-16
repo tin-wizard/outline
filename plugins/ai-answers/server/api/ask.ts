@@ -1,8 +1,7 @@
 import Router from "koa-router";
 import { safeSlugify } from "@shared/editor/lib/headingToSlug";
-import { TeamPreference } from "@shared/types";
 import { toError } from "@shared/utils/error";
-import { AuthorizationError, NotFoundError } from "@server/errors";
+import { NotFoundError } from "@server/errors";
 import Logger from "@server/logging/Logger";
 import auth from "@server/middlewares/authentication";
 import { rateLimiter } from "@server/middlewares/rateLimiter";
@@ -14,6 +13,7 @@ import type { User } from "@server/models";
 import type { APIContext } from "@server/types";
 import { releaseRequestTransaction } from "@server/storage/requestContext";
 import { RateLimiterStrategy } from "@server/utils/RateLimiter";
+import { assertAIAnswersAllowed } from "../access";
 import { getClient } from "../anthropicClient";
 import {
   BlockSplitter,
@@ -59,6 +59,9 @@ export type AskFailure =
   | "cancelled"
   | "error";
 
+/** Why a `notice` status was sent. */
+export type AskNotice = "history_unavailable" | "conversation_new";
+
 /** A retrieved document as the client may show it. */
 export interface AskSource {
   /** 1-based number, referenced by block citations. */
@@ -83,7 +86,13 @@ export interface AskCitation {
 /** The events of the `ai.ask` stream and their `data` payloads. */
 export interface AskEvents {
   conversation: { id: string };
-  status: { phase: "searching" | "generating" | "notice"; message?: string };
+  status: {
+    phase: "searching" | "generating" | "notice";
+    /** Stable code of a notice; map it to localised text on the client. */
+    notice?: AskNotice;
+    /** Fixed English text of a notice, not localised; prefer `notice`. */
+    message?: string;
+  };
   sources: AskSource[];
   block: {
     index: number;
@@ -277,13 +286,7 @@ router.post(
     const { user } = ctx.state.auth;
     const { query, conversationId, collectionId, documentId } = ctx.input.body;
 
-    if (!user.team.getPreference(TeamPreference.AIAnswers)) {
-      throw AuthorizationError("AI answers are not enabled for this workspace");
-    }
-    // Owner decision D8: members and admins only.
-    if (user.isGuest || user.isViewer) {
-      throw AuthorizationError("AI answers are not available for your role");
-    }
+    assertAIAnswersAllowed(user);
 
     const startedAt = Date.now();
     const clientGone = new AbortController();
@@ -324,12 +327,14 @@ router.post(
       if (unavailable) {
         stream.send("status", {
           phase: "notice",
+          notice: "history_unavailable",
           message:
             "Conversation history is unavailable, so this answer does not use earlier questions.",
         });
       } else if (conversationId && id !== conversationId) {
         stream.send("status", {
           phase: "notice",
+          notice: "conversation_new",
           message:
             "The earlier conversation has expired. A new one was started.",
         });
@@ -455,6 +460,18 @@ router.post(
         return;
       }
 
+      // Freed as soon as the model call is over, before billing (DB) and
+      // storing the turn (Redis), so slow writes cannot hold the slot.
+      const releaseReservation = reservation.release;
+      let held = true;
+      const freeSlot = async () => {
+        if (held) {
+          held = false;
+          limits.stop();
+          await releaseReservation();
+        }
+      };
+
       let allText = "";
       let finishReason: FinishReason = "other";
       let refused = false;
@@ -496,6 +513,7 @@ router.post(
       try {
         // Aborted while reserving: no request was sent, so nothing was billed.
         if (signal.aborted) {
+          await freeSlot();
           await finish([], { failed: aborted() });
           return;
         }
@@ -520,12 +538,14 @@ router.post(
               usage = event.usage;
             }
           }
+          await freeSlot();
           release(splitter.flush());
         } catch (error) {
           Logger.warn("AI answers stream failed", {
             error: toError(error).message,
             aborted: signal.aborted,
           });
+          await freeSlot();
           await bill({ usage: streamedUsage(), outcome: "error" });
           await finish([], { failed: signal.aborted ? aborted() : "error" });
           return;
@@ -575,13 +595,13 @@ router.post(
         });
       } catch (error) {
         // A billed call must be metered even when the code after it throws.
+        await freeSlot();
         if (sent && !recorded) {
           await bill({ usage: usage ?? streamedUsage(), outcome: "error" });
         }
         throw error;
       } finally {
-        limits.stop();
-        await reservation.release();
+        await freeSlot();
       }
     } catch (error) {
       Logger.warn("AI answers request failed", {
@@ -607,12 +627,7 @@ router.post(
     const { user } = ctx.state.auth;
     const { usageId, rating } = ctx.input.body;
 
-    if (!user.team.getPreference(TeamPreference.AIAnswers)) {
-      throw AuthorizationError("AI answers are not enabled for this workspace");
-    }
-    if (user.isGuest || user.isViewer) {
-      throw AuthorizationError("AI answers are not available for your role");
-    }
+    assertAIAnswersAllowed(user);
 
     const feedback = rating === "up" ? 1 : rating === "down" ? -1 : null;
     const [updated] = await AIAnswerUsage.update(

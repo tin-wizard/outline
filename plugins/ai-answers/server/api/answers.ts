@@ -1,7 +1,5 @@
 import Router from "koa-router";
-import { TeamPreference } from "@shared/types";
 import { toError } from "@shared/utils/error";
-import { AuthorizationError } from "@server/errors";
 import Logger from "@server/logging/Logger";
 import auth from "@server/middlewares/authentication";
 import { rateLimiter } from "@server/middlewares/rateLimiter";
@@ -12,6 +10,7 @@ import type { User } from "@server/models";
 import type { APIContext } from "@server/types";
 import { releaseRequestTransaction } from "@server/storage/requestContext";
 import { RateLimiterStrategy } from "@server/utils/RateLimiter";
+import { assertAIAnswersAllowed } from "../access";
 import { getClient } from "../anthropicClient";
 import {
   CLIENT_TIMEOUT_MS,
@@ -153,15 +152,7 @@ router.post(
     const { user } = ctx.state.auth;
     const { query } = ctx.input.body;
 
-    if (!user.team.getPreference(TeamPreference.AIAnswers)) {
-      throw AuthorizationError("AI answers are not enabled for this workspace");
-    }
-
-    // Owner decision D8: members and admins only. Guests and viewers still get
-    // normal search, just no AI answers.
-    if (user.isGuest || user.isViewer) {
-      throw AuthorizationError("AI answers are not available for your role");
-    }
+    assertAIAnswersAllowed(user);
 
     // Abort the model call when the client goes away before the response is
     // written, so it stops billing and frees its concurrency slot.

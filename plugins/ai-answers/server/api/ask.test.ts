@@ -24,6 +24,7 @@ import {
 } from "../contract";
 import { createConversation } from "../conversation";
 import env from "../env";
+import * as usage from "../usage";
 import { acquireSlot, releaseSlot, SLOT_TTL_MS } from "../usage";
 import * as verify from "../verify";
 import {
@@ -668,17 +669,53 @@ describe("#ai.ask", () => {
       await expectSlotsFree(user.teamId);
     });
 
-    it("is not cut by the old endpoint's 15 s answer deadline", async () => {
+    it("arms its own limits, not the old endpoint's answer deadline", async () => {
       const { user } = await setup();
       env.AI_ANSWERS_DEADLINE_MS = 1000;
-      mswServer.use(
-        http.post(ANTHROPIC, async () => {
-          await new Promise((resolve) => setTimeout(resolve, 1500));
-          return sseResponse(anthropicEvents([cited]));
-        })
-      );
-      const events = await askEvents(user);
-      expect(events.at(-1)?.event).toEqual("done");
+      env.AI_ASK_DEADLINE_MS = 20_000;
+      env.AI_ASK_IDLE_MS = 7_000;
+      upstream(() => anthropicEvents([cited]));
+      const spy = vi.spyOn(globalThis, "setTimeout");
+      try {
+        const events = await askEvents(user);
+        expect(events.at(-1)?.event).toEqual("done");
+        const delays = spy.mock.calls.map(([, ms]) => ms);
+        expect(delays).toContain(20_000);
+        expect(delays).toContain(7_000);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("frees the slot before the usage row is written", async () => {
+      const { user } = await setup();
+      upstream(() => anthropicEvents([cited]));
+      const original = usage.record;
+      let freeWhileBilling: boolean | undefined;
+      const spy = vi
+        .spyOn(usage, "record")
+        .mockImplementationOnce(async (entry) => {
+          // A slow insert must not hold the slot.
+          const tokens = [];
+          for (let i = 0; i < 3; i++) {
+            tokens.push(await acquireSlot(user.teamId));
+          }
+          freeWhileBilling = tokens.every(Boolean);
+          for (const token of tokens) {
+            if (token) {
+              await releaseSlot(user.teamId, token);
+            }
+          }
+          return original(entry);
+        });
+      try {
+        const events = await askEvents(user);
+        expect(events.at(-1)?.event).toEqual("done");
+      } finally {
+        spy.mockRestore();
+      }
+      expect(freeWhileBilling).toEqual(true);
+      expect(await rowsFor(user.teamId)).toHaveLength(1);
     });
 
     it("fails with timeout and partial when the provider goes idle mid-stream", async () => {
@@ -708,18 +745,36 @@ describe("#ai.ask", () => {
       // The pinned transaction is opened by auth, right before the handler:
       // disconnect there and let the server see the close first.
       const original = sequelize.transaction.bind(sequelize);
+      let finished = false;
       const spy = vi
         .spyOn(sequelize, "transaction")
         .mockImplementationOnce(async () => {
           controller.abort();
-          await new Promise((resolve) => setTimeout(resolve, 300));
-          return original();
+          // Let the server see the close before the handler runs.
+          await waitFor(
+            () => requestContext.getStore()?.req.socket.destroyed === true
+          );
+          await new Promise((resolve) => setImmediate(resolve));
+          const transaction = await original();
+          // Auth commits (or rolls back) once the handler has returned.
+          for (const method of ["commit", "rollback"] as const) {
+            const real = transaction[method].bind(transaction);
+            transaction[method] = async () => {
+              try {
+                await real();
+              } finally {
+                finished = true;
+              }
+            };
+          }
+          return transaction;
         });
       try {
         await ask(user, undefined, { signal: controller.signal }).catch(
           () => undefined
         );
-        await new Promise((resolve) => setTimeout(resolve, 500));
+        await waitFor(() => finished);
+        expect(finished).toEqual(true);
       } finally {
         spy.mockRestore();
       }
@@ -999,6 +1054,7 @@ describe("#ai.ask", () => {
         expect(events.some((e) => e.event === "conversation")).toEqual(false);
         expect(events[0].event).toEqual("status");
         expect(events[0].data.phase).toEqual("notice");
+        expect(events[0].data.notice).toEqual("history_unavailable");
         expect(events.at(-1)?.event).toEqual("done");
         expect(events.at(-1)?.data.conversationId).toBeNull();
       } finally {
@@ -1021,6 +1077,7 @@ describe("#ai.ask", () => {
       expect(events[0].event).toEqual("conversation");
       expect(events[0].data.id).not.toEqual(foreign?.id);
       expect(events[1].data.phase).toEqual("notice");
+      expect(events[1].data.notice).toEqual("conversation_new");
       expect(events.at(-1)?.data.conversationId).toEqual(events[0].data.id);
     });
   });
