@@ -84,20 +84,24 @@ export function AnswerCard({
       return;
     }
 
-    let cancelled = false;
+    const controller = new AbortController();
     client
-      .post<AnswerResponse>("/documents.answerQuestion", {
-        query,
-        collectionId,
-        documentId,
-        userId,
-        dateFilter,
-        statusFilter: statusKey
-          ? (statusKey.split(",") as StatusFilter[])
-          : undefined,
-      })
+      .post<AnswerResponse>(
+        "/documents.answerQuestion",
+        {
+          query,
+          collectionId,
+          documentId,
+          userId,
+          dateFilter,
+          statusFilter: statusKey
+            ? (statusKey.split(",") as StatusFilter[])
+            : undefined,
+        },
+        { signal: controller.signal }
+      )
       .then((res) => {
-        if (!cancelled) {
+        if (!controller.signal.aborted) {
           setState({
             answer: res.answer ?? null,
             citations: res.citations ?? [],
@@ -105,11 +109,13 @@ export function AnswerCard({
         }
       })
       .catch(() => {
-        // An answer is a bonus; search results stay usable without it.
+        // An answer is a bonus; search results stay usable without it. This
+        // includes the AbortError thrown when the request is cancelled.
       });
 
     return () => {
-      cancelled = true;
+      // Aborting lets the server stop the model call when the user moves on.
+      controller.abort();
     };
   }, [enabled, query, collectionId, documentId, userId, dateFilter, statusKey]);
 
