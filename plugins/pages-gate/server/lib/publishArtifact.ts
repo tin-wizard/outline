@@ -12,6 +12,8 @@ import { assertSafePath } from "./artifactPaths";
 import { artifactPrefix, createArtifactStore } from "./artifactStore";
 import { InvalidSlugError, assertValidSlug } from "./keys";
 
+const TAKEN = "That address is already taken";
+
 /** What `publishArtifact` needs; the caller has already checked access to the upload's source. */
 export interface PublishArtifactInput {
   user: User;
@@ -28,6 +30,11 @@ export interface PublishArtifactInput {
 /**
  * Publishes one HTML file or a zip of a static site to the public bucket
  * under `artifacts/<slug>/`, creating the artifact site or republishing it.
+ *
+ * Does NOT check access to the upload's source: the caller must first
+ * authorize the user's access to whatever `readBytes` reads (for example the
+ * document with "update" and the attachment, scoped to `user.team`); this
+ * function only enforces Pages-admin, slug ownership and "publish".
  *
  * @param input the acting user, address, upload and store.
  * @returns the published site and the number of files written.
@@ -136,5 +143,3 @@ export async function publishArtifact(
 
   return { site, fileCount: bundle.files.length };
 }
-
-const TAKEN = "That address is already taken";

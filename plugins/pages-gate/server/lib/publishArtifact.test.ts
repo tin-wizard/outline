@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { ValidationError } from "@server/errors";
 import { PagesSite } from "@server/models";
 import { PagesSiteKind, PagesSiteStatus } from "@server/models/PagesSite";
 import { buildAdmin, buildTeam, buildUser } from "@server/test/factories";
@@ -182,6 +183,24 @@ describe("publishArtifact", () => {
     ).rejects.toMatchObject({ status: 400 });
     expect(store.keys()).toEqual([]);
     expect(await PagesSite.count({ where: { slug } })).toBe(0);
+  });
+
+  it("writes nothing when reading the upload fails", async () => {
+    const admin = await buildAdmin();
+    const slug = uniqueSlug("fn-read-fail");
+    await expect(
+      publishArtifact({
+        user: admin,
+        slug,
+        fileName: "demo.html",
+        readBytes: async () => {
+          throw ValidationError("The file is too large");
+        },
+        storeFactory,
+      })
+    ).rejects.toMatchObject({ status: 400 });
+    expect(await PagesSite.count({ where: { slug } })).toBe(0);
+    expect(store.calls).toEqual([]);
   });
 
   it("leaves a draft site when a put fails", async () => {
