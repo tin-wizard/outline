@@ -15,6 +15,9 @@ import { getTestServer } from "@server/test/support";
 import Redis from "@server/storage/redis";
 import env from "../env";
 import { acquireSlot, releaseSlot } from "../usage";
+import { clampDeadline } from "./answers";
+import net from "node:net";
+import { DocumentHelper } from "@server/models/helpers/DocumentHelper";
 
 // Plugins are loaded with a runtime require, which vi.mock cannot reach, so the
 // model is stubbed at the HTTP layer. `create` receives the request body.
@@ -738,6 +741,102 @@ describe("#documents.answerQuestion", () => {
         expect(BigInt(rows[0].costMicroUsd) > 0n).toEqual(true);
         await expectSlotsFree(user.teamId);
       });
+
+      it.each([
+        [-5, 1000],
+        [0, 1000],
+        [999_999, 30_000],
+        [20_000, 20_000],
+      ])("clamps a deadline of %s to %s", (value, expected) => {
+        expect(clampDeadline(value)).toEqual(expected);
+      });
+
+      it("falls back to the default for NaN", () => {
+        expect(clampDeadline(NaN)).toEqual(15_000);
+      });
+
+      it("raises the socket timeout only after authentication", async () => {
+        const spy = vi.spyOn(net.Socket.prototype, "setTimeout");
+        try {
+          const res = await server.post("/api/documents.answerQuestion", {
+            body: { query: "holiday policy" },
+          });
+          expect(res.status).toEqual(401);
+          const raised = (ms: unknown) => Number(ms) > 10_000;
+          expect(spy.mock.calls.some(([ms]) => raised(ms))).toEqual(false);
+
+          const { user } = await setup();
+          create.mockResolvedValue({ stop_reason: "end_turn", content: [] });
+          await server.post("/api/documents.answerQuestion", user, {
+            body: { query: "How many days of holiday?" },
+          });
+          expect(spy.mock.calls.some(([ms]) => raised(ms))).toEqual(true);
+        } finally {
+          spy.mockRestore();
+        }
+      });
+
+      /** Aborts the client, then lets the request carry on after a pause. */
+      async function disconnectDuring(user: User): Promise<unknown> {
+        const controller = new AbortController();
+        let armed = true;
+        const request = server
+          .post("/api/documents.answerQuestion", user, {
+            body: { query: "How many days of holiday?" },
+            signal: controller.signal,
+          })
+          .catch((error: Error) => error);
+        // Wait until the server is inside the hook, then drop the client.
+        for (let i = 0; i < 100 && armed; i++) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          if ((globalThis as { __inHook?: boolean }).__inHook) {
+            armed = false;
+          }
+        }
+        controller.abort();
+        return request;
+      }
+
+      it.each([
+        ["retrieval", "toMarkdown"],
+        ["the limit checks", "sum"],
+      ])(
+        "makes no model call and records nothing when the client leaves during %s",
+        async (_, point) => {
+          const { user } = await setup();
+          const flag = globalThis as { __inHook?: boolean };
+          const pause = async () => {
+            flag.__inHook = true;
+            await new Promise((resolve) => setTimeout(resolve, 600));
+          };
+          const spy =
+            point === "toMarkdown"
+              ? vi
+                  .spyOn(DocumentHelper, "toMarkdown")
+                  .mockImplementation(async () => {
+                    await pause();
+                    return "Employees receive twenty five days of holiday.";
+                  })
+              : vi.spyOn(AIAnswerUsage, "sum").mockImplementation(async () => {
+                  await pause();
+                  return 0;
+                });
+          const upstream = hangingUpstream();
+          try {
+            flag.__inHook = false;
+            await disconnectDuring(user);
+            await new Promise((resolve) => setTimeout(resolve, 900));
+            expect(upstream.started).toEqual(false);
+            expect(
+              await AIAnswerUsage.count({ where: { teamId: user.teamId } })
+            ).toEqual(0);
+            await expectSlotsFree(user.teamId);
+          } finally {
+            spy.mockRestore();
+            delete flag.__inHook;
+          }
+        }
+      );
 
       it("leaves the fast path unchanged", async () => {
         const { user, document } = await setup();

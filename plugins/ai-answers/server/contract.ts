@@ -6,6 +6,15 @@ export interface Usage {
   outputTokens: number;
 }
 
+/** Per-request timeout of the Anthropic client; also the longest allowed answer deadline. */
+export const CLIENT_TIMEOUT_MS = 30_000;
+
+/** Shortest allowed answer deadline. */
+export const MIN_DEADLINE_MS = 1_000;
+
+/** Answer deadline used when the configured one is missing or invalid. */
+export const DEFAULT_DEADLINE_MS = 15_000;
+
 /** Usage for a request that never reached a model. */
 export const ZERO_USAGE: Usage = { inputTokens: 0, outputTokens: 0 };
 

@@ -12,7 +12,12 @@ import type { User } from "@server/models";
 import type { APIContext } from "@server/types";
 import { RateLimiterStrategy } from "@server/utils/RateLimiter";
 import { getClient } from "../anthropicClient";
-import { ZERO_USAGE } from "../contract";
+import {
+  CLIENT_TIMEOUT_MS,
+  DEFAULT_DEADLINE_MS,
+  MIN_DEADLINE_MS,
+  ZERO_USAGE,
+} from "../contract";
 import env from "../env";
 import { generateAnswerWithUsage, type AnswerResult } from "../generate";
 import { retrieveSources, type AnswerSource } from "../retrieve";
@@ -35,6 +40,20 @@ const router = new Router();
 const REQUEST_HEADROOM_MS = 15_000;
 
 const NO_ANSWER_RESULT: AnswerResult = { answer: null, citations: [] };
+
+/**
+ * The configured answer deadline, clamped so a bad value can never throw or
+ * abort instantly.
+ *
+ * @param value the configured deadline in milliseconds.
+ * @returns a deadline between the minimum and the client timeout.
+ */
+export function clampDeadline(value: number): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_DEADLINE_MS;
+  }
+  return Math.min(Math.max(value, MIN_DEADLINE_MS), CLIENT_TIMEOUT_MS);
+}
 
 /** Records usage; a failure is logged, never allowed to break the response. */
 async function record(entry: UsageEntry) {
@@ -67,10 +86,12 @@ async function answerWithinLimits(
   if (clientGone.aborted) {
     return NO_ANSWER_RESULT;
   }
-  // Aborts on disconnect or when the hard deadline for the answer step passes.
+  // Aborts on disconnect or when the hard deadline for the model call passes.
+  // CLIENT_MAX_RETRIES must stay 0: this abort/billing path assumes exactly one
+  // billed call per request.
   const signal = AbortSignal.any([
     clientGone,
-    AbortSignal.timeout(env.AI_ANSWERS_DEADLINE_MS),
+    AbortSignal.timeout(clampDeadline(env.AI_ANSWERS_DEADLINE_MS)),
   ]);
   const base = {
     teamId: user.teamId,
@@ -82,6 +103,12 @@ async function answerWithinLimits(
     if (reservation.reason === "budget") {
       await record({ ...base, usage: ZERO_USAGE, outcome: "budget_blocked" });
     }
+    return NO_ANSWER_RESULT;
+  }
+
+  // Aborted while reserving: no request was sent, so nothing was billed.
+  if (signal.aborted) {
+    await reservation.release();
     return NO_ANSWER_RESULT;
   }
 
@@ -137,9 +164,10 @@ async function answerWithinLimits(
 //   server/storage/database.ts:76) is unaffected and still bounds each query.
 router.post(
   "documents.answerQuestion",
-  timeout(env.AI_ANSWERS_DEADLINE_MS + REQUEST_HEADROOM_MS),
   rateLimiter(RateLimiterStrategy.TenPerMinute),
   auth(),
+  // After auth so unauthenticated and rate-limited requests keep the default window.
+  timeout(clampDeadline(env.AI_ANSWERS_DEADLINE_MS) + REQUEST_HEADROOM_MS),
   validate(T.DocumentsAnswerQuestionSchema),
   async (ctx: APIContext<T.DocumentsAnswerQuestionReq>) => {
     const { user } = ctx.state.auth;
@@ -163,6 +191,7 @@ router.post(
         clientGone.abort();
       }
     };
+    // `res` close, not `req`: req emits "close" once the body is read, res only when the connection ends or the response finishes.
     ctx.res.once("close", handleClose);
 
     try {

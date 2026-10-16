@@ -1,8 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { CLIENT_TIMEOUT_MS } from "./contract";
 import env from "./env";
 
-/** Per-request timeout of the Anthropic client. */
-export const CLIENT_TIMEOUT_MS = 30_000;
+export { CLIENT_TIMEOUT_MS };
 
 /**
  * No retries: a call is billed and metered exactly once, and a slot's TTL
