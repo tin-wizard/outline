@@ -21,7 +21,17 @@ import {
   type Block,
   type BlockKind,
 } from "../blocks";
-import { ZERO_USAGE, type FinishReason, type Usage } from "../contract";
+import {
+  ASK_DEFAULT_DEADLINE_MS,
+  ASK_DEFAULT_IDLE_MS,
+  ASK_MAX_DEADLINE_MS,
+  ASK_MAX_IDLE_MS,
+  ASK_MIN_DEADLINE_MS,
+  ASK_MIN_IDLE_MS,
+  ZERO_USAGE,
+  type FinishReason,
+  type Usage,
+} from "../contract";
 import {
   appendTurn,
   buildStandaloneQuery,
@@ -31,12 +41,12 @@ import {
   type Conversation,
 } from "../conversation";
 import env from "../env";
-import { streamAnswer } from "../providers/anthropic";
+import { streamAnswer, type StreamProgress } from "../providers/anthropic";
 import { redactSecrets } from "../redact";
 import { retrieveSources, type AnswerSource } from "../retrieve";
 import { estimateUsage, record, reserveModelCall } from "../usage";
 import { AnswerVerifier, type AcceptedBlock } from "../verify";
-import { clampDeadline, REQUEST_HEADROOM_MS } from "./answers";
+import { REQUEST_HEADROOM_MS } from "./answers";
 import * as T from "./schema";
 
 /** Why an answer ended without `done`. */
@@ -92,6 +102,62 @@ export interface AskEvents {
 
 /** Comment line that keeps proxies and the socket idle timeout from closing a quiet stream. */
 export const HEARTBEAT_MS = 10_000;
+
+/**
+ * The configured total cap of a streamed answer, clamped so a bad value can
+ * never throw, abort instantly or outlive the concurrency slot.
+ *
+ * @param value the configured cap in milliseconds.
+ * @returns a cap between 10 and 50 seconds.
+ */
+export function clampAskDeadline(value: number): number {
+  if (!Number.isFinite(value)) {
+    return ASK_DEFAULT_DEADLINE_MS;
+  }
+  return Math.min(Math.max(value, ASK_MIN_DEADLINE_MS), ASK_MAX_DEADLINE_MS);
+}
+
+/**
+ * The configured idle limit of a streamed answer, clamped like the cap.
+ *
+ * @param value the configured limit in milliseconds.
+ * @returns a limit between 1 and 30 seconds.
+ */
+export function clampAskIdle(value: number): number {
+  if (!Number.isFinite(value)) {
+    return ASK_DEFAULT_IDLE_MS;
+  }
+  return Math.min(Math.max(value, ASK_MIN_IDLE_MS), ASK_MAX_IDLE_MS);
+}
+
+/**
+ * An abort signal that fires when `touch` is not called for `idleMs`, or
+ * `totalMs` after creation, whichever comes first.
+ *
+ * @param idleMs the longest allowed gap between events.
+ * @param totalMs the longest allowed total time.
+ * @returns the signal, `touch` to restart the idle timer, and `stop`.
+ */
+export function streamLimits(idleMs: number, totalMs: number) {
+  const controller = new AbortController();
+  let idle: ReturnType<typeof setTimeout> | undefined;
+  const total = setTimeout(() => controller.abort(), totalMs);
+  const touch = () => {
+    clearTimeout(idle);
+    if (!controller.signal.aborted) {
+      idle = setTimeout(() => controller.abort(), idleMs);
+    }
+  };
+  touch();
+  return {
+    signal: controller.signal,
+    touch,
+    stop() {
+      clearTimeout(idle);
+      clearTimeout(total);
+    },
+  };
+}
 
 const router = new Router();
 
@@ -204,7 +270,7 @@ router.post(
   auth(),
   validate(T.AIAskSchema),
   // After auth so unauthenticated and rate-limited requests keep the default window.
-  timeout(clampDeadline(env.AI_ANSWERS_DEADLINE_MS) + REQUEST_HEADROOM_MS),
+  timeout(clampAskDeadline(env.AI_ASK_DEADLINE_MS) + REQUEST_HEADROOM_MS),
   async (ctx: APIContext<T.AIAskReq>) => {
     const { user } = ctx.state.auth;
     const { query, conversationId, collectionId, documentId } = ctx.input.body;
@@ -226,6 +292,12 @@ router.post(
     };
     // `res` close, not `req`: req emits "close" once the body is read.
     ctx.res.once("close", handleClose);
+    // A close before the listener was attached is never emitted again.
+    if (ctx.res.destroyed || ctx.req.socket.destroyed) {
+      ctx.res.off("close", handleClose);
+      ctx.respond = false;
+      return;
+    }
     const stream = openEventStream(ctx);
     let emitted = 0;
 
@@ -264,15 +336,22 @@ router.post(
       /** Stores the turn (only verified blocks; [] on failure), then ends the stream. */
       const finish = async (
         released: AcceptedBlock[],
-        end: { failed: AskFailure } | { done: AskEvents["done"] }
+        end:
+          | { failed: AskFailure }
+          | { done: Omit<AskEvents["done"], "conversationId"> }
       ) => {
-        if (id && !clientGone.signal.aborted) {
-          await appendTurn(user, id, { question: query, released });
-        }
+        const stored =
+          !!id &&
+          !clientGone.signal.aborted &&
+          (await appendTurn(user, id, { question: query, released }));
         if ("failed" in end) {
           stream.send("failed", { reason: end.failed, partial: emitted > 0 });
         } else {
-          stream.send("done", end.done);
+          // Only claim a conversation the turn was really stored in.
+          stream.send("done", {
+            ...end.done,
+            conversationId: stored ? id : null,
+          });
         }
       };
 
@@ -318,28 +397,47 @@ router.post(
       if (clientGone.signal.aborted) {
         return;
       }
-      // CLIENT_MAX_RETRIES must stay 0: one billed call per request.
-      const deadline = AbortSignal.timeout(
-        clampDeadline(env.AI_ANSWERS_DEADLINE_MS)
-      );
-      const signal = AbortSignal.any([clientGone.signal, deadline]);
       const base = {
         teamId: user.teamId,
         userId: user.id,
         model: env.AI_ANSWERS_MODEL,
       };
-      // Worst case for a call whose usage is unknown, history included.
+      // Worst-case input for a call whose usage is unknown, history included.
       const estimate = estimateUsage(
         [query, ...history.flatMap((t) => [t.question, t.answer ?? ""])].join(
           "\n"
         ),
         sources
       );
+      const progress: StreamProgress = { inputTokens: null, outputChars: 0 };
+      // A call cut short is billed for what it produced: input from
+      // message_start (else the estimate) and the streamed text at 3 chars per
+      // token, never the full output ceiling.
+      const streamedUsage = (): Usage => ({
+        inputTokens: progress.inputTokens ?? estimate.inputTokens,
+        outputTokens: Math.max(1, Math.ceil(progress.outputChars / 3)),
+      });
+      // Built before the slot is taken, so a failure here cannot leak it.
+      const verifier = new AnswerVerifier(sources);
+      const splitter = new BlockSplitter();
+      // CLIENT_MAX_RETRIES must stay 0: one billed call per request.
+      const limits = streamLimits(
+        clampAskIdle(env.AI_ASK_IDLE_MS),
+        clampAskDeadline(env.AI_ASK_DEADLINE_MS)
+      );
+      const signal = AbortSignal.any([clientGone.signal, limits.signal]);
       const aborted = (): AskFailure =>
         clientGone.signal.aborted ? "cancelled" : "timeout";
 
-      const reservation = await reserveModelCall(user.teamId);
+      let reservation: Awaited<ReturnType<typeof reserveModelCall>>;
+      try {
+        reservation = await reserveModelCall(user.teamId);
+      } catch (error) {
+        limits.stop();
+        throw error;
+      }
       if (!reservation.ok) {
+        limits.stop();
         if (reservation.reason === "budget") {
           await record({
             ...base,
@@ -353,13 +451,27 @@ router.post(
         return;
       }
 
-      const verifier = new AnswerVerifier(sources);
-      const splitter = new BlockSplitter();
       let allText = "";
       let finishReason: FinishReason = "other";
+      let refused = false;
       let usage: Usage | null = null;
       let dropped = 0;
       let firstBlockMs: number | undefined;
+      let sent = false;
+      let recorded = false;
+      const modelStartedAt = Date.now();
+      const bill = async (entry: {
+        usage: Usage;
+        outcome: AIAnswerOutcome;
+      }) => {
+        recorded = true;
+        await record({
+          ...base,
+          ...entry,
+          droppedSegments: dropped,
+          durationMs: Date.now() - modelStartedAt,
+        });
+      };
       const release = (blocks: Block[]) => {
         for (const block of blocks) {
           const verdict = verifier.verify(block);
@@ -377,7 +489,6 @@ router.post(
         }
       };
 
-      const modelStartedAt = Date.now();
       try {
         // Aborted while reserving: no request was sent, so nothing was billed.
         if (signal.aborted) {
@@ -385,18 +496,23 @@ router.post(
           return;
         }
         stream.send("status", { phase: "generating" });
+        limits.touch();
         try {
+          sent = true;
           for await (const event of streamAnswer(getClient(), {
             question: query,
             sources,
             history,
             signal,
+            onEvent: limits.touch,
+            progress,
           })) {
             if (event.type === "text") {
               allText += event.text;
               release(splitter.push(event.text, event.citations));
             } else {
               finishReason = event.finishReason;
+              refused = event.refused;
               usage = event.usage;
             }
           }
@@ -406,66 +522,63 @@ router.post(
             error: toError(error).message,
             aborted: signal.aborted,
           });
-          // Billing for a failed or aborted call is unknown: assume the worst case.
-          await record({
-            ...base,
-            usage: estimate,
-            outcome: "error",
-            droppedSegments: dropped,
-            durationMs: Date.now() - modelStartedAt,
-          });
+          await bill({ usage: streamedUsage(), outcome: "error" });
           await finish([], { failed: signal.aborted ? aborted() : "error" });
           return;
         }
-      } finally {
-        await reservation.release();
-      }
 
-      const verdict = verifier.finish(finishReason, allText);
-      let outcome: AIAnswerOutcome = "answered";
-      let failure: AskFailure | undefined;
-      if (!verdict.ok) {
-        if (verdict.reason === "abstained") {
+        const verdict = verifier.finish(finishReason, allText);
+        let outcome: AIAnswerOutcome = "answered";
+        let failure: AskFailure | undefined;
+        if (refused) {
           outcome = "no_answer";
           failure = "no_answer";
-        } else if (verdict.reason === "unfinished") {
-          outcome = "error";
-          failure = "error";
-        } else {
-          // Text was written but not enough of it could be verified.
-          const unverified = dropped > 0 || emitted > 0;
-          outcome = unverified ? "dropped" : "no_answer";
-          failure = unverified ? "unverified" : "no_answer";
+        } else if (!verdict.ok) {
+          if (verdict.reason === "abstained") {
+            outcome = "no_answer";
+            failure = "no_answer";
+          } else if (verdict.reason === "unfinished") {
+            // max_tokens, pause_turn or a stream cut before its end.
+            outcome = "error";
+            failure = "error";
+          } else {
+            // Text was written but not enough of it could be verified.
+            const unverified = dropped > 0 || emitted > 0;
+            outcome = unverified ? "dropped" : "no_answer";
+            failure = unverified ? "unverified" : "no_answer";
+          }
         }
-      }
-      if (!usage) {
-        Logger.warn("AI answers stream lacked usage; recording an estimate");
-      }
-      const billed = usage ?? estimate;
-      await record({
-        ...base,
-        usage: billed,
+        if (!usage) {
+          Logger.warn("AI answers stream lacked usage; recording an estimate");
+        }
+        const billed = usage ?? streamedUsage();
         // A stream cut before its final usage is labelled as an error.
-        outcome: usage ? outcome : "error",
-        droppedSegments: dropped,
-        durationMs: Date.now() - modelStartedAt,
-      });
+        await bill({ usage: billed, outcome: usage ? outcome : "error" });
 
-      if (failure) {
-        await finish([], { failed: failure });
-        return;
-      }
-      await finish(verifier.released, {
-        done: {
-          conversationId: id,
-          usage: billed,
-          timings: {
-            retrievalMs,
-            ...(firstBlockMs !== undefined ? { firstBlockMs } : {}),
-            totalMs: Date.now() - startedAt,
+        if (failure) {
+          await finish([], { failed: failure });
+          return;
+        }
+        await finish(verifier.released, {
+          done: {
+            usage: billed,
+            timings: {
+              retrievalMs,
+              ...(firstBlockMs !== undefined ? { firstBlockMs } : {}),
+              totalMs: Date.now() - startedAt,
+            },
           },
-        },
-      });
+        });
+      } catch (error) {
+        // A billed call must be metered even when the code after it throws.
+        if (sent && !recorded) {
+          await bill({ usage: usage ?? streamedUsage(), outcome: "error" });
+        }
+        throw error;
+      } finally {
+        limits.stop();
+        await reservation.release();
+      }
     } catch (error) {
       Logger.warn("AI answers request failed", {
         error: toError(error).message,

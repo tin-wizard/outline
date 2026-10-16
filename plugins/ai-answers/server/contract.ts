@@ -15,6 +15,24 @@ export const MIN_DEADLINE_MS = 1_000;
 /** Answer deadline used when the configured one is missing or invalid. */
 export const DEFAULT_DEADLINE_MS = 15_000;
 
+/** Default total cap of one streamed `ai.ask` answer. */
+export const ASK_DEFAULT_DEADLINE_MS = 45_000;
+
+/** Shortest allowed total cap of a streamed answer. */
+export const ASK_MIN_DEADLINE_MS = 10_000;
+
+/** Longest allowed total cap; stays below the concurrency slot lifetime (60 s). */
+export const ASK_MAX_DEADLINE_MS = 50_000;
+
+/** Default time a streamed answer may go without any provider event. */
+export const ASK_DEFAULT_IDLE_MS = 15_000;
+
+/** Shortest allowed idle limit. */
+export const ASK_MIN_IDLE_MS = 1_000;
+
+/** Longest allowed idle limit. */
+export const ASK_MAX_IDLE_MS = 30_000;
+
 /** Usage for a request that never reached a model. */
 export const ZERO_USAGE: Usage = { inputTokens: 0, outputTokens: 0 };
 

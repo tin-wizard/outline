@@ -27,14 +27,28 @@ export type ProviderStreamEvent =
   | {
       type: "end";
       finishReason: FinishReason;
+      /** True when the model declined to answer (stop reason `refusal`). */
+      refused: boolean;
       /** Null when the stream did not report final usage; callers must fail closed. */
       usage: Usage | null;
     };
+
+/** What a stream has produced so far, for billing a call that is cut short. */
+export interface StreamProgress {
+  /** Billed input tokens from `message_start`; null until it arrives. */
+  inputTokens: number | null;
+  /** Characters of answer text received so far. */
+  outputChars: number;
+}
 
 /** A streamed answer request: the original question plus prior turns. */
 export interface StreamRequest extends AnswerRequest {
   /** Earlier turns, sent as quoted reference data, never as instructions. */
   history: HistoryTurn[];
+  /** Called for every provider event, e.g. to reset an idle timer. */
+  onEvent?: () => void;
+  /** Updated as events arrive. */
+  progress?: StreamProgress;
 }
 
 /** The part of the SDK client this module needs; lets tests pass a fake. */
@@ -142,10 +156,15 @@ export async function* streamAnswer(
   let stopReason: string | null = null;
   let text = "";
   let citations: ProviderCitation[] = [];
+  const progress = request.progress;
   for await (const event of stream) {
+    request.onEvent?.();
     switch (event.type) {
       case "message_start":
         inputTokens = billedInput(event.message.usage);
+        if (progress) {
+          progress.inputTokens = inputTokens;
+        }
         break;
       case "content_block_start":
         text =
@@ -158,6 +177,9 @@ export async function* streamAnswer(
       case "content_block_delta":
         if (event.delta.type === "text_delta") {
           text += event.delta.text;
+          if (progress) {
+            progress.outputChars += event.delta.text.length;
+          }
         } else if (event.delta.type === "citations_delta") {
           citations.push(...toCitations([event.delta.citation]));
         }
@@ -184,6 +206,7 @@ export async function* streamAnswer(
   yield {
     type: "end",
     finishReason: stopReason === "end_turn" ? "stop" : "other",
+    refused: stopReason === "refusal",
     // Output is only final once a message_delta arrived; a cut stream is unknown.
     usage:
       inputTokens !== null && outputTokens !== null

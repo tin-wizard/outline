@@ -16,10 +16,22 @@ import { getTestServer } from "@server/test/support";
 import { sequelize } from "@server/storage/database";
 import Redis from "@server/storage/redis";
 import { requestContext } from "@server/storage/requestContext";
+import { validate } from "class-validator";
+import {
+  ASK_DEFAULT_DEADLINE_MS,
+  ASK_DEFAULT_IDLE_MS,
+  ASK_MAX_DEADLINE_MS,
+} from "../contract";
 import { createConversation } from "../conversation";
 import env from "../env";
-import { acquireSlot, releaseSlot } from "../usage";
-import { HEARTBEAT_MS } from "./ask";
+import { acquireSlot, releaseSlot, SLOT_TTL_MS } from "../usage";
+import * as verify from "../verify";
+import {
+  clampAskDeadline,
+  clampAskIdle,
+  HEARTBEAT_MS,
+  streamLimits,
+} from "./ask";
 
 const server = getTestServer();
 const ANTHROPIC = "https://api.anthropic.com/v1/messages";
@@ -209,17 +221,46 @@ async function rowsFor(teamId: string, wait = false) {
   return rows;
 }
 
+/** Waits until all three slots can be taken (the release may trail the last event). */
 async function expectSlotsFree(teamId: string) {
-  const tokens: Array<string | null> = [];
-  for (let i = 0; i < 3; i++) {
-    tokens.push(await acquireSlot(teamId));
-  }
-  expect(tokens.every(Boolean)).toEqual(true);
-  for (const token of tokens) {
-    if (token) {
-      await releaseSlot(teamId, token);
+  let free = false;
+  for (let attempt = 0; attempt < 50 && !free; attempt++) {
+    const tokens: Array<string | null> = [];
+    for (let i = 0; i < 3; i++) {
+      tokens.push(await acquireSlot(teamId));
+    }
+    free = tokens.every(Boolean);
+    for (const token of tokens) {
+      if (token) {
+        await releaseSlot(teamId, token);
+      }
+    }
+    if (!free) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
   }
+  expect(free).toEqual(true);
+}
+
+/** Records heartbeat timers so a test can check each one is cleared. */
+function watchHeartbeat() {
+  const set = vi.spyOn(globalThis, "setInterval");
+  const clear = vi.spyOn(globalThis, "clearInterval");
+  return {
+    expectCleared() {
+      const handles = set.mock.calls.flatMap(([, ms], i) =>
+        ms === HEARTBEAT_MS ? [set.mock.results[i].value] : []
+      );
+      expect(handles.length).toBeGreaterThan(0);
+      for (const handle of handles) {
+        expect(clear.mock.calls.some(([h]) => h === handle)).toEqual(true);
+      }
+    },
+    restore() {
+      set.mockRestore();
+      clear.mockRestore();
+    },
+  };
 }
 
 async function enable(user: User) {
@@ -457,6 +498,16 @@ describe("#ai.ask", () => {
       });
     });
 
+    it("reports a refusal as no_answer", async () => {
+      const { user } = await setup();
+      upstream(() => anthropicEvents([], { stop: "refusal" }));
+      const events = await askEvents(user);
+      expect(events.at(-1)).toEqual({
+        event: "failed",
+        data: { reason: "no_answer", partial: false },
+      });
+    });
+
     it("never writes a heartbeat after the stream has ended, and writes one while it is open", async () => {
       const { user } = await setup();
       const spy = vi.spyOn(globalThis, "setInterval");
@@ -544,9 +595,15 @@ describe("#ai.ask", () => {
   });
 
   describe("request lifecycle", () => {
-    const originalDeadline = env.AI_ANSWERS_DEADLINE_MS;
+    const original = {
+      deadline: env.AI_ANSWERS_DEADLINE_MS,
+      askDeadline: env.AI_ASK_DEADLINE_MS,
+      idle: env.AI_ASK_IDLE_MS,
+    };
     afterEach(() => {
-      env.AI_ANSWERS_DEADLINE_MS = originalDeadline;
+      env.AI_ANSWERS_DEADLINE_MS = original.deadline;
+      env.AI_ASK_DEADLINE_MS = original.askDeadline;
+      env.AI_ASK_IDLE_MS = original.idle;
     });
 
     const firstBlock = () =>
@@ -578,12 +635,29 @@ describe("#ai.ask", () => {
       expect(rows).toHaveLength(1);
       expect(rows[0].outcome).toEqual("error");
       expect(BigInt(rows[0].costMicroUsd) > 0n).toEqual(true);
+      // Billed for what was streamed, not the 4096-token ceiling: input from
+      // message_start, output from the streamed characters / 3.
+      expect(rows[0].inputTokens).toEqual(100);
+      expect(rows[0].outputTokens).toEqual(Math.ceil(`${FACT}\n\n`.length / 3));
       await expectSlotsFree(user.teamId);
     });
 
-    it("fails with timeout and partial when the deadline passes mid-stream", async () => {
+    it("is not cut by the old endpoint's 15 s answer deadline", async () => {
       const { user } = await setup();
       env.AI_ANSWERS_DEADLINE_MS = 1000;
+      mswServer.use(
+        http.post(ANTHROPIC, async () => {
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          return sseResponse(anthropicEvents([cited]));
+        })
+      );
+      const events = await askEvents(user);
+      expect(events.at(-1)?.event).toEqual("done");
+    });
+
+    it("fails with timeout and partial when the provider goes idle mid-stream", async () => {
+      const { user } = await setup();
+      env.AI_ASK_IDLE_MS = 1000;
       const state = hangingUpstream(firstBlock());
       const startedAt = Date.now();
       const events = await askEvents(user);
@@ -599,6 +673,133 @@ describe("#ai.ask", () => {
       expect(rows).toHaveLength(1);
       expect(rows[0].outcome).toEqual("error");
       await expectSlotsFree(user.teamId);
+    });
+
+    it("does nothing when the client is gone before the handler runs", async () => {
+      const { user } = await setup();
+      const bodies = upstream(() => anthropicEvents([cited]));
+      const controller = new AbortController();
+      // The pinned transaction is opened by auth, right before the handler:
+      // disconnect there and let the server see the close first.
+      const original = sequelize.transaction.bind(sequelize);
+      const spy = vi
+        .spyOn(sequelize, "transaction")
+        .mockImplementationOnce(async () => {
+          controller.abort();
+          await new Promise((resolve) => setTimeout(resolve, 300));
+          return original();
+        });
+      try {
+        await ask(user, undefined, { signal: controller.signal }).catch(
+          () => undefined
+        );
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      } finally {
+        spy.mockRestore();
+      }
+      expect(bodies).toHaveLength(0);
+      expect(await rowsFor(user.teamId)).toHaveLength(0);
+      expect(
+        await Redis.defaultClient.keys(`aiconv:${user.teamId}:${user.id}:*`)
+      ).toEqual([]);
+      await expectSlotsFree(user.teamId);
+    });
+
+    it("frees the slot and never calls the model when the verifier cannot be built", async () => {
+      const { user } = await setup();
+      const bodies = upstream(() => anthropicEvents([cited]));
+      const spy = vi
+        .spyOn(verify, "AnswerVerifier")
+        .mockImplementation(function () {
+          throw new Error("boom");
+        });
+      try {
+        const events = await askEvents(user);
+        expect(events.at(-1)).toEqual({
+          event: "failed",
+          data: { reason: "error", partial: false },
+        });
+      } finally {
+        spy.mockRestore();
+      }
+      expect(bodies).toHaveLength(0);
+      await expectSlotsFree(user.teamId);
+    });
+
+    it("records the billed call and frees the slot when verification throws mid-stream", async () => {
+      const { user } = await setup();
+      upstream(() => anthropicEvents([cited]));
+      const spy = vi
+        .spyOn(verify.AnswerVerifier.prototype, "verify")
+        .mockImplementation(() => {
+          throw new Error("boom");
+        });
+      try {
+        const events = await askEvents(user);
+        expect(events.at(-1)?.data).toEqual({
+          reason: "error",
+          partial: false,
+        });
+      } finally {
+        spy.mockRestore();
+      }
+      const rows = await rowsFor(user.teamId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].outcome).toEqual("error");
+      await expectSlotsFree(user.teamId);
+    });
+
+    it("still records usage when the final gate throws", async () => {
+      const { user } = await setup();
+      upstream(() => anthropicEvents([cited]));
+      const spy = vi
+        .spyOn(verify.AnswerVerifier.prototype, "finish")
+        .mockImplementation(() => {
+          throw new Error("boom");
+        });
+      try {
+        const events = await askEvents(user);
+        expect(events.at(-1)?.data).toEqual({
+          reason: "error",
+          partial: true,
+        });
+      } finally {
+        spy.mockRestore();
+      }
+      const rows = await rowsFor(user.teamId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].outcome).toEqual("error");
+      expect(rows[0].inputTokens).toEqual(100);
+      expect(rows[0].outputTokens).toEqual(50);
+      await expectSlotsFree(user.teamId);
+    });
+
+    it("clears the heartbeat on done, failed and disconnect", async () => {
+      const { user } = await setup();
+      const heartbeat = watchHeartbeat();
+      try {
+        upstream(() => anthropicEvents([cited]));
+        await askEvents(user);
+        await askEvents(user, { query: "zebra quokka" });
+        const state = hangingUpstream(firstBlock());
+        const controller = new AbortController();
+        const res = await ask(user, undefined, { signal: controller.signal });
+        try {
+          for await (const chunk of res.body) {
+            if (chunk.toString().includes("event: block")) {
+              controller.abort();
+            }
+          }
+        } catch {
+          // Disconnect.
+        }
+        await waitFor(() => state.aborted);
+        await rowsFor(user.teamId, true);
+        await expectSlotsFree(user.teamId);
+        heartbeat.expectCleared();
+      } finally {
+        heartbeat.restore();
+      }
     });
 
     it("holds no pooled connection during the model call (task 1.2)", async () => {
@@ -731,6 +932,55 @@ describe("#ai.ask", () => {
       expect(sent).not.toContain("twenty five");
     });
 
+    it("returns a null conversationId when the turn could not be stored", async () => {
+      const { user } = await setup();
+      upstream(() => anthropicEvents([cited]));
+      const first = await askEvents(user);
+      const id = first[0].data.id;
+      // The follow-up loads with MULTI; its only SET is the append.
+      const spy = vi
+        .spyOn(Redis.defaultClient, "set")
+        .mockRejectedValueOnce(new Error("redis down"));
+      try {
+        const events = await askEvents(user, {
+          query: "How many days of holiday?",
+          conversationId: id,
+        });
+        expect(events[0]).toEqual({ event: "conversation", data: { id } });
+        expect(events.at(-1)?.event).toEqual("done");
+        expect(events.at(-1)?.data.conversationId).toBeNull();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("answers without history when Redis is down for the whole turn", async () => {
+      const { user } = await setup();
+      upstream(() => anthropicEvents([cited]));
+      const set = vi
+        .spyOn(Redis.defaultClient, "set")
+        .mockRejectedValue(new Error("redis down"));
+      const multi = vi
+        .spyOn(Redis.defaultClient, "multi")
+        .mockImplementation(() => {
+          throw new Error("redis down");
+        });
+      try {
+        const events = await askEvents(user, {
+          query: "How many days of holiday?",
+          conversationId: "6f1c1c55-7a4e-4a43-9a8e-0d6b8f5f2c11",
+        });
+        expect(events.some((e) => e.event === "conversation")).toEqual(false);
+        expect(events[0].event).toEqual("status");
+        expect(events[0].data.phase).toEqual("notice");
+        expect(events.at(-1)?.event).toEqual("done");
+        expect(events.at(-1)?.data.conversationId).toBeNull();
+      } finally {
+        set.mockRestore();
+        multi.mockRestore();
+      }
+    });
+
     it("starts a new conversation for another user's id", async () => {
       const { user } = await setup();
       upstream(() => anthropicEvents([cited]));
@@ -782,5 +1032,88 @@ describe("#ai.ask", () => {
       expect(text).not.toContain(secret);
     }
     expect(text.toLowerCase()).not.toContain("wq7wq7wq7");
+  });
+});
+
+describe("ai.ask limits", () => {
+  it("keeps the longest total cap below the slot lifetime", () => {
+    expect(SLOT_TTL_MS).toBeGreaterThan(ASK_MAX_DEADLINE_MS);
+  });
+
+  it.each([
+    [-5, 10_000],
+    [NaN, ASK_DEFAULT_DEADLINE_MS],
+    [999_999, 50_000],
+    [20_000, 20_000],
+  ])("clamps a total cap of %s to %s", (value, expected) => {
+    expect(clampAskDeadline(value)).toEqual(expected);
+  });
+
+  it.each([
+    [-5, 1_000],
+    [NaN, ASK_DEFAULT_IDLE_MS],
+    [999_999, 30_000],
+  ])("clamps an idle limit of %s to %s", (value, expected) => {
+    expect(clampAskIdle(value)).toEqual(expected);
+  });
+
+  it("never fails environment validation for odd values", async () => {
+    const original = [env.AI_ASK_DEADLINE_MS, env.AI_ASK_IDLE_MS];
+    env.AI_ASK_DEADLINE_MS = -1;
+    env.AI_ASK_IDLE_MS = NaN;
+    try {
+      expect(await validate(env)).toEqual([]);
+    } finally {
+      [env.AI_ASK_DEADLINE_MS, env.AI_ASK_IDLE_MS] = original;
+    }
+  });
+
+  describe("streamLimits", () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("lets a slow stream that keeps producing events run past 15 s", () => {
+      const limits = streamLimits(15_000, 45_000);
+      for (let s = 0; s < 20; s++) {
+        vi.advanceTimersByTime(1_000);
+        limits.touch();
+      }
+      expect(limits.signal.aborted).toEqual(false);
+      limits.stop();
+    });
+
+    it("aborts after an idle gap", () => {
+      const limits = streamLimits(15_000, 45_000);
+      vi.advanceTimersByTime(5_000);
+      limits.touch();
+      vi.advanceTimersByTime(14_999);
+      expect(limits.signal.aborted).toEqual(false);
+      vi.advanceTimersByTime(1);
+      expect(limits.signal.aborted).toEqual(true);
+      limits.stop();
+    });
+
+    it("aborts at the total cap even while events keep arriving", () => {
+      const limits = streamLimits(15_000, 45_000);
+      for (let s = 0; s < 44; s++) {
+        vi.advanceTimersByTime(1_000);
+        limits.touch();
+      }
+      expect(limits.signal.aborted).toEqual(false);
+      vi.advanceTimersByTime(1_000);
+      expect(limits.signal.aborted).toEqual(true);
+      limits.stop();
+    });
+
+    it("never aborts once stopped", () => {
+      const limits = streamLimits(1_000, 2_000);
+      limits.stop();
+      vi.advanceTimersByTime(10_000);
+      expect(limits.signal.aborted).toEqual(false);
+    });
   });
 });
