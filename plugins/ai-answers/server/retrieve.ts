@@ -172,8 +172,14 @@ async function searchTitles(
     .map((item) => item.document);
 }
 
-/** Drops documents in collections excluded from AI answers. */
-async function dropAIExcluded(
+/**
+ * Drops documents in collections excluded from AI answers.
+ *
+ * @param user the user asking; limits the lookup to their workspace.
+ * @param documents the documents to filter.
+ * @returns the documents that are not in an excluded collection.
+ */
+export async function dropAIExcluded(
   user: User,
   documents: Document[]
 ): Promise<Document[]> {
