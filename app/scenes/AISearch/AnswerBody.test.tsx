@@ -386,4 +386,127 @@ describe("AnswerTurn sources", () => {
     expect(host.querySelector("summary")?.textContent).toContain("Sources");
     expect(host.querySelector("summary")?.textContent).toContain("1");
   });
+
+  describe("feedback buttons", () => {
+    const UUID = "0b8c7a4e-5b2f-4f5e-9d3a-1f2e3d4c5b6a";
+    const withRate = (t: Turn) => {
+      const host = document.createElement("div");
+      host.innerHTML = renderToStaticMarkup(
+        <ThemeProvider theme={theme}>
+          <MemoryRouter>
+            <AnswerTurn
+              turn={t}
+              isLast
+              scopeLabels={[]}
+              onStop={() => {}}
+              onRetry={() => {}}
+              onRate={() => {}}
+            />
+          </MemoryRouter>
+        </ThemeProvider>
+      );
+      return host;
+    };
+    const buttons = (h: HTMLElement) =>
+      [...h.querySelectorAll("button[aria-pressed]")] as HTMLButtonElement[];
+
+    it("shows two labelled toggle buttons on a finished, recorded answer", () => {
+      const host = withRate(turn({ usageId: UUID }));
+      const b = buttons(host);
+      expect(b.map((x) => x.getAttribute("aria-label"))).toEqual([
+        "Helpful",
+        "Not helpful",
+      ]);
+      expect(b.map((x) => x.getAttribute("aria-pressed"))).toEqual([
+        "false",
+        "false",
+      ]);
+      expect(host.querySelector("[aria-live] button[aria-pressed]")).toBeNull();
+    });
+
+    it("reflects the rating, pending and the thanks status", () => {
+      const host = withRate(
+        turn({
+          usageId: UUID,
+          feedback: { rating: "down", previous: null, pending: true },
+        })
+      );
+      const b = buttons(host);
+      expect(b.map((x) => x.getAttribute("aria-pressed"))).toEqual([
+        "false",
+        "true",
+      ]);
+      expect(b.every((x) => x.disabled)).toBe(true);
+      const saved = withRate(
+        turn({
+          usageId: UUID,
+          feedback: {
+            rating: "up",
+            previous: null,
+            pending: false,
+            saved: true,
+          },
+        })
+      );
+      const status = [...saved.querySelectorAll('[role="status"]')].pop();
+      expect(status?.textContent).toBe("Thanks for the feedback");
+      expect(status?.closest("[aria-live]")).toBeNull();
+    });
+
+    it("shows an inline error and rate-limit message", () => {
+      const failed = withRate(
+        turn({
+          usageId: UUID,
+          feedback: {
+            rating: null,
+            previous: null,
+            pending: false,
+            error: "failed",
+          },
+        })
+      );
+      expect(failed.textContent).toContain("Couldn't save your feedback");
+      const limited = withRate(
+        turn({
+          usageId: UUID,
+          feedback: {
+            rating: null,
+            previous: null,
+            pending: false,
+            error: "rateLimited",
+          },
+        })
+      );
+      expect(limited.textContent).toContain("Too many requests");
+    });
+
+    it.each([
+      ["no usageId", { usageId: null }],
+      ["usageId undefined", {}],
+      ["streaming", { usageId: UUID, status: "generating" as const }],
+      [
+        "failed",
+        {
+          usageId: UUID,
+          status: "failed" as const,
+          problem: "unverified" as const,
+        },
+      ],
+      ["stopped", { usageId: UUID, status: "stopped" as const }],
+      [
+        "refused",
+        {
+          usageId: UUID,
+          feedback: {
+            rating: null,
+            previous: null,
+            pending: false,
+            hidden: true,
+          },
+        },
+      ],
+    ])("renders no feedback UI when %s", (_n, patch) => {
+      expect(buttons(withRate(turn(patch)))).toHaveLength(0);
+    });
+  });
 });

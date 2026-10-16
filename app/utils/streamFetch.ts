@@ -58,6 +58,8 @@ export interface AskEvents {
   };
   done: {
     conversationId: string | null;
+    /** Id of the usage row, used for feedback; null if it was not recorded. */
+    usageId: string | null;
     usage: { inputTokens: number; outputTokens: number };
     timings: { retrievalMs: number; firstBlockMs?: number; totalMs: number };
   };

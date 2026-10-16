@@ -1,7 +1,14 @@
 import * as React from "react";
-import { NetworkError, OfflineError } from "~/utils/errors";
+import {
+  AuthorizationError,
+  NetworkError,
+  NotFoundError,
+  OfflineError,
+  RateLimitExceededError,
+} from "~/utils/errors";
+import { client } from "~/utils/ApiClient";
 import { StreamRequestError, streamFetch } from "~/utils/streamFetch";
-import type { ChatState, Scope, TurnProblem } from "./model";
+import type { ChatState, Rating, Scope, TurnProblem } from "./model";
 import { chatReducer, initialChatState, isActive } from "./model";
 
 /**
@@ -50,6 +57,8 @@ export function useAISearch(): {
   ask: (question: string, scope: Scope) => void;
   stop: () => void;
   reset: () => void;
+  /** Sets, switches or (when repeating the current rating) clears feedback. */
+  rate: (turnId: number, rating: Rating) => void;
 } {
   const [state, dispatch] = React.useReducer(chatReducer, initialChatState);
   const controllerRef = React.useRef<AbortController | null>(null);
@@ -100,6 +109,35 @@ export function useAISearch(): {
     })();
   }, []);
 
+  const stateRef = React.useRef(state);
+  React.useEffect(() => {
+    stateRef.current = state;
+  });
+
+  const rate = React.useCallback((turnId: number, rating: Rating) => {
+    const turn = stateRef.current.turns.find((t) => t.id === turnId);
+    if (!turn?.usageId || turn.feedback?.pending) {
+      return;
+    }
+    const next = turn.feedback?.rating === rating ? null : rating;
+    dispatch({ type: "feedbackStart", turnId, rating: next });
+    void client
+      .post("ai.feedback", { usageId: turn.usageId, rating: next ?? "clear" })
+      .then(() => dispatch({ type: "feedbackDone", turnId }))
+      .catch((err) =>
+        dispatch({
+          type: "feedbackFailed",
+          turnId,
+          error:
+            err instanceof AuthorizationError || err instanceof NotFoundError
+              ? "refused"
+              : err instanceof RateLimitExceededError
+                ? "rateLimited"
+                : "failed",
+        })
+      );
+  }, []);
+
   const stop = React.useCallback(() => controllerRef.current?.abort(), []);
 
   const reset = React.useCallback(() => {
@@ -123,5 +161,5 @@ export function useAISearch(): {
     };
   }, []);
 
-  return { state, streaming, ask, stop, reset };
+  return { state, streaming, ask, stop, reset, rate };
 }

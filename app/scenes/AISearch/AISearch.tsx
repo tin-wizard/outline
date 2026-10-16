@@ -42,7 +42,7 @@ const Page = observer(function Page() {
   const { t } = useTranslation();
   const { collections, documents } = useStores();
   const params = useQuery();
-  const { state, streaming, ask, stop, reset } = useAISearch();
+  const { state, streaming, ask, stop, reset, rate } = useAISearch();
   const [text, setText] = React.useState(params.get("q") ?? "");
   const [scope, setScope] = React.useState<Scope>(() => ({
     collectionId: validId(params.get("collectionId")),
@@ -166,6 +166,7 @@ const Page = observer(function Page() {
             isLast={turn === last}
             scopeLabels={scopeLabels(turn.scope)}
             onStop={stop}
+            onRate={rate}
             onRetry={(failed) => submit(failed.question, failed.scope)}
           />
         ))

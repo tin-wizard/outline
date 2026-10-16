@@ -1,3 +1,4 @@
+import { isUUID } from "validator";
 import type {
   AskCitation,
   AskEvent,
@@ -21,6 +22,22 @@ export type TurnStatus =
   | "failed"
   | "stopped";
 
+export type Rating = "up" | "down";
+
+export interface Feedback {
+  /** The current rating, null when none (or cleared). */
+  rating: Rating | null;
+  /** The rating before the in-flight request, restored if it fails. */
+  previous: Rating | null;
+  /** A request is in flight: the buttons are disabled. */
+  pending: boolean;
+  /** Set after a successful request, for the "Thanks" announcement. */
+  saved?: boolean;
+  error?: "failed" | "rateLimited";
+  /** The server refused (403/404): the buttons are hidden. */
+  hidden?: boolean;
+}
+
 export interface Scope {
   collectionId?: string;
   documentId?: string;
@@ -39,6 +56,10 @@ export interface Turn {
   sources: AskSource[] | null;
   blocks: (BlockInput & { index: number })[];
   problem?: TurnProblem;
+  /** Id of the metered usage row, needed to send feedback; null if not recorded. */
+  usageId?: string | null;
+  /** Helpful / not helpful state of a finished answer. */
+  feedback?: Feedback;
   /** Seconds the server asked us to wait after a 429. */
   retryAfter?: number;
 }
@@ -53,6 +74,13 @@ export type ChatAction =
   | { type: "submit"; question: string; scope: Scope }
   | { type: "event"; event: AskEvent }
   | { type: "requestFailed"; problem: TurnProblem; retryAfter?: number }
+  | { type: "feedbackStart"; turnId: number; rating: Rating | null }
+  | { type: "feedbackDone"; turnId: number }
+  | {
+      type: "feedbackFailed";
+      turnId: number;
+      error: "failed" | "rateLimited" | "refused";
+    }
   | { type: "stopped" }
   | { type: "ended" }
   | { type: "reset" };
@@ -172,6 +200,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     };
   }
 
+  if (
+    action.type === "feedbackStart" ||
+    action.type === "feedbackDone" ||
+    action.type === "feedbackFailed"
+  ) {
+    return reduceFeedback(state, action);
+  }
+
   const turn = state.turns[state.turns.length - 1];
   if (!turn || !isActive(turn)) {
     return state;
@@ -254,7 +290,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         }
         case "done":
           return update(
-            { status: "done" },
+            {
+              status: "done",
+              usageId:
+                typeof event.data.usageId === "string" &&
+                isUUID(event.data.usageId)
+                  ? event.data.usageId
+                  : null,
+            },
             typeof event.data.conversationId === "string"
               ? event.data.conversationId
               : null
@@ -273,4 +316,70 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     default:
       return state;
   }
+}
+
+/**
+ * Whether feedback can be given for a turn: finished normally and recorded.
+ *
+ * @param turn the turn.
+ * @returns true when the helpful / not helpful buttons apply.
+ */
+export function canRate(turn: Turn): boolean {
+  return turn.status === "done" && !!turn.usageId && !turn.feedback?.hidden;
+}
+
+function reduceFeedback(
+  state: ChatState,
+  action: Extract<
+    ChatAction,
+    { type: "feedbackStart" | "feedbackDone" | "feedbackFailed" }
+  >
+): ChatState {
+  const index = state.turns.findIndex((t) => t.id === action.turnId);
+  const turn = state.turns[index];
+  if (!turn || !canRate(turn)) {
+    return state;
+  }
+  const current: Feedback = turn.feedback ?? {
+    rating: null,
+    previous: null,
+    pending: false,
+  };
+  let next: Feedback;
+  switch (action.type) {
+    case "feedbackStart":
+      if (current.pending) {
+        return state;
+      }
+      next = {
+        rating: action.rating,
+        previous: current.rating,
+        pending: true,
+      };
+      break;
+    case "feedbackDone":
+      next = { ...current, pending: false, saved: true };
+      break;
+    default:
+      next =
+        action.error === "refused"
+          ? {
+              ...current,
+              rating: current.previous,
+              pending: false,
+              hidden: true,
+            }
+          : {
+              ...current,
+              rating: current.previous,
+              pending: false,
+              error: action.error,
+            };
+  }
+  return {
+    ...state,
+    turns: state.turns.map((t, i) =>
+      i === index ? { ...t, feedback: next } : t
+    ),
+  };
 }

@@ -49,10 +49,14 @@ export function controlled() {
   };
 }
 
-export const done = (conversationId: string | null): AskEvent => ({
+export const done = (
+  conversationId: string | null,
+  usageId: string | null = null
+): AskEvent => ({
   event: "done",
   data: {
     conversationId,
+    usageId,
     usage: { inputTokens: 1, outputTokens: 1 },
     timings: { retrievalMs: 1, totalMs: 2 },
   },

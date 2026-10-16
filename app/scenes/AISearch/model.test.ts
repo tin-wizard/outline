@@ -1,6 +1,6 @@
 import type { AskEvent } from "~/utils/streamFetch";
 import type { ChatState } from "./model";
-import { chatReducer, citedSources, initialChatState } from "./model";
+import { canRate, chatReducer, citedSources, initialChatState } from "./model";
 
 const run = (events: AskEvent[], from: ChatState = initialChatState) =>
   events.reduce<ChatState>(
@@ -18,10 +18,14 @@ const block = (index: number, markdown = "text"): AskEvent => ({
   },
 });
 
-const done = (conversationId: string | null): AskEvent => ({
+const done = (
+  conversationId: string | null,
+  usageId: string | null = null
+): AskEvent => ({
   event: "done",
   data: {
     conversationId,
+    usageId,
     usage: { inputTokens: 1, outputTokens: 1 },
     timings: { retrievalMs: 1, totalMs: 2 },
   },
@@ -244,5 +248,86 @@ describe("chatReducer with malformed events", () => {
       "/doc/a#h-x",
       "/doc/a#h-y",
     ]);
+  });
+});
+
+describe("usageId and feedback", () => {
+  const UUID = "0b8c7a4e-5b2f-4f5e-9d3a-1f2e3d4c5b6a";
+  const finished = () => run([done("c", UUID)]);
+
+  it("stores a valid usageId and nulls anything else", () => {
+    expect(finished().turns[0].usageId).toBe(UUID);
+    for (const bad of ["not-a-uuid", "../x", 5, null, undefined, ""]) {
+      const event = {
+        event: "done",
+        data: { conversationId: null, usageId: bad },
+      } as unknown as AskEvent;
+      expect(run([event]).turns[0].usageId).toBeNull();
+    }
+  });
+
+  const act = (
+    state: ChatState,
+    ...actions: Parameters<typeof chatReducer>[1][]
+  ) => actions.reduce(chatReducer, state);
+
+  it("applies, confirms and rolls back ratings", () => {
+    let state = act(finished(), {
+      type: "feedbackStart",
+      turnId: 1,
+      rating: "up",
+    });
+    expect(state.turns[0].feedback).toMatchObject({
+      rating: "up",
+      pending: true,
+      previous: null,
+    });
+    state = act(state, { type: "feedbackDone", turnId: 1 });
+    expect(state.turns[0].feedback).toMatchObject({
+      rating: "up",
+      pending: false,
+      saved: true,
+    });
+    state = act(state, { type: "feedbackStart", turnId: 1, rating: "down" });
+    state = act(state, { type: "feedbackFailed", turnId: 1, error: "failed" });
+    expect(state.turns[0].feedback).toMatchObject({
+      rating: "up",
+      pending: false,
+      error: "failed",
+    });
+  });
+
+  it("ignores a second start while pending", () => {
+    const state = act(
+      finished(),
+      { type: "feedbackStart", turnId: 1, rating: "up" },
+      { type: "feedbackStart", turnId: 1, rating: "down" }
+    );
+    expect(state.turns[0].feedback?.rating).toBe("up");
+  });
+
+  it("hides the buttons when refused", () => {
+    const state = act(
+      finished(),
+      { type: "feedbackStart", turnId: 1, rating: "up" },
+      { type: "feedbackFailed", turnId: 1, error: "refused" }
+    );
+    expect(canRate(state.turns[0])).toBe(false);
+  });
+
+  it("does not allow feedback without usageId or on unfinished/failed turns", () => {
+    expect(canRate(run([done("c")]).turns[0])).toBe(false);
+    expect(canRate(run([block(0)]).turns[0])).toBe(false);
+    const failed = run([
+      block(0),
+      { event: "failed", data: { reason: "unverified", partial: true } },
+    ]);
+    expect(canRate(failed.turns[0])).toBe(false);
+    const state = act(failed, {
+      type: "feedbackStart",
+      turnId: 1,
+      rating: "up",
+    });
+    expect(state.turns[0].feedback).toBeUndefined();
   });
 });

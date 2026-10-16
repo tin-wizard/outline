@@ -2,6 +2,8 @@ import * as React from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type * as StreamModule from "~/utils/streamFetch";
+import { client } from "~/utils/ApiClient";
+import { NotFoundError, RateLimitExceededError } from "~/utils/errors";
 import { StreamRequestError, streamFetch } from "~/utils/streamFetch";
 import type { ChatState } from "./model";
 import { block, controlled, done } from "./testStream";
@@ -165,5 +167,83 @@ describe("useAISearch", () => {
       conversationId: undefined,
     });
     await fresh.end();
+  });
+
+  describe("feedback", () => {
+    const UUID = "0b8c7a4e-5b2f-4f5e-9d3a-1f2e3d4c5b6a";
+    const post = vi.mocked(client.post);
+
+    async function finishedTurn() {
+      const view = mount();
+      const stream = controlled();
+      act(() => view.api().ask("Q?", {}));
+      await stream.push(block(0), done("c", UUID));
+      await stream.end();
+      post.mockReset();
+      return view;
+    }
+
+    it("sends up, down, then clear in order and tracks the rating", async () => {
+      const { api } = await finishedTurn();
+      post.mockResolvedValue({});
+      for (const [click, rating, expected] of [
+        ["up", "up", "up"],
+        ["down", "down", "down"],
+        ["down", "clear", null],
+      ] as const) {
+        await act(async () => api().rate(1, click));
+        expect(post).toHaveBeenLastCalledWith("ai.feedback", {
+          usageId: UUID,
+          rating,
+        });
+        expect(lastTurn(api().state).feedback).toMatchObject({
+          rating: expected,
+          pending: false,
+        });
+      }
+      expect(post).toHaveBeenCalledTimes(3);
+    });
+
+    it("is optimistic, disabled while pending, and sends one request", async () => {
+      const { api } = await finishedTurn();
+      let resolve: () => void = () => {};
+      post.mockReturnValue(new Promise<void>((r) => (resolve = r)));
+      act(() => api().rate(1, "up"));
+      expect(lastTurn(api().state).feedback).toMatchObject({
+        rating: "up",
+        pending: true,
+      });
+      act(() => api().rate(1, "down"));
+      expect(post).toHaveBeenCalledTimes(1);
+      await act(async () => resolve());
+      expect(lastTurn(api().state).feedback?.pending).toBe(false);
+    });
+
+    it("rolls back on failure and maps 429 / 404", async () => {
+      const { api } = await finishedTurn();
+      post.mockRejectedValueOnce(new Error("boom"));
+      await act(async () => api().rate(1, "up"));
+      expect(lastTurn(api().state).feedback).toMatchObject({
+        rating: null,
+        error: "failed",
+      });
+      post.mockRejectedValueOnce(new RateLimitExceededError("slow"));
+      await act(async () => api().rate(1, "up"));
+      expect(lastTurn(api().state).feedback?.error).toBe("rateLimited");
+      post.mockRejectedValueOnce(new NotFoundError());
+      await act(async () => api().rate(1, "up"));
+      expect(lastTurn(api().state).feedback?.hidden).toBe(true);
+    });
+
+    it("does nothing without a usageId", async () => {
+      const view = mount();
+      const stream = controlled();
+      act(() => view.api().ask("Q?", {}));
+      await stream.push(block(0), done("c"));
+      await stream.end();
+      post.mockReset();
+      await act(async () => view.api().rate(1, "up"));
+      expect(post).not.toHaveBeenCalled();
+    });
   });
 });

@@ -3,10 +3,12 @@ import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import styled from "styled-components";
 import { s } from "@shared/styles";
+import { ThumbsDownIcon, ThumbsUpIcon } from "outline-icons";
 import Button from "~/components/Button";
+import Tooltip from "~/components/Tooltip";
 import { AnswerBody } from "./AnswerBody";
-import type { Turn, TurnProblem } from "./model";
-import { citedSources, isActive } from "./model";
+import type { Rating, Turn, TurnProblem } from "./model";
+import { canRate, citedSources, isActive } from "./model";
 
 interface Props {
   turn: Turn;
@@ -16,6 +18,8 @@ interface Props {
   scopeLabels: string[];
   onStop: () => void;
   onRetry: (turn: Turn) => void;
+  /** Sets or clears helpful / not helpful for a finished answer. */
+  onRate?: (turnId: number, rating: Rating) => void;
 }
 
 const RETRYABLE: TurnProblem[] = [
@@ -58,6 +62,7 @@ export function isDocPath(url: string): boolean {
  * @param props.scopeLabels names of the scope searched.
  * @param props.onStop stops the running turn.
  * @param props.onRetry asks the question again.
+ * @param props.onRate sends helpful / not helpful feedback.
  * @returns the turn.
  */
 export function AnswerTurn({
@@ -66,6 +71,7 @@ export function AnswerTurn({
   scopeLabels,
   onStop,
   onRetry,
+  onRate,
 }: Props) {
   const { t } = useTranslation();
   const headingRef = React.useRef<HTMLHeadingElement>(null);
@@ -187,7 +193,81 @@ export function AnswerTurn({
           </Message>
         )}
       </Answer>
+      {onRate && canRate(turn) && <FeedbackBar turn={turn} onRate={onRate} />}
     </Section>
+  );
+}
+
+function FeedbackBar({
+  turn,
+  onRate,
+}: {
+  turn: Turn;
+  onRate: (turnId: number, rating: Rating) => void;
+}) {
+  const { t } = useTranslation();
+  const feedback = turn.feedback;
+  const pending = !!feedback?.pending;
+  let message = "";
+  if (feedback?.error === "rateLimited") {
+    message = t("Too many requests, try again in a minute.");
+  } else if (feedback?.error) {
+    message = t("Couldn't save your feedback. Try again.");
+  } else if (feedback?.saved && feedback.rating) {
+    message = t("Thanks for the feedback");
+  }
+
+  return (
+    <Feedback>
+      <Rate
+        label={t("Helpful")}
+        pressed={feedback?.rating === "up"}
+        disabled={pending}
+        onClick={() => onRate(turn.id, "up")}
+      >
+        <ThumbsUpIcon size={20} />
+      </Rate>
+      <Rate
+        label={t("Not helpful")}
+        pressed={feedback?.rating === "down"}
+        disabled={pending}
+        onClick={() => onRate(turn.id, "down")}
+      >
+        <ThumbsDownIcon size={20} />
+      </Rate>
+      {/* Always rendered so announcements are reliable; outside the answer region. */}
+      <Muted as="span" role="status">
+        {message}
+      </Muted>
+    </Feedback>
+  );
+}
+
+function Rate({
+  label,
+  pressed,
+  disabled,
+  onClick,
+  children,
+}: {
+  label: string;
+  pressed: boolean;
+  disabled: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <Tooltip content={label}>
+      <RateButton
+        type="button"
+        aria-pressed={pressed}
+        aria-label={label}
+        disabled={disabled}
+        onClick={onClick}
+      >
+        {children}
+      </RateButton>
+    </Tooltip>
   );
 }
 
@@ -367,4 +447,45 @@ const SourceList = styled.ul`
 const SourceNumber = styled.span`
   color: ${s("textSecondary")};
   font-variant-numeric: tabular-nums;
+`;
+
+const Feedback = styled.div`
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 8px 0 0;
+`;
+
+const RateButton = styled.button`
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: ${s("textSecondary")};
+  cursor: var(--pointer);
+
+  &:hover:not(:disabled),
+  &:focus-visible {
+    background: ${s("backgroundSecondary")};
+    color: ${s("text")};
+  }
+
+  &[aria-pressed="true"] {
+    border-color: ${s("accent")};
+    color: ${s("accent")};
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
+  svg {
+    fill: currentColor;
+  }
 `;
