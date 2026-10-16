@@ -1,5 +1,5 @@
 import { PagesDomain, PagesPublication, type PagesSite } from "@server/models";
-import { PagesSiteStatus } from "@server/models/PagesSite";
+import { PagesSiteKind, PagesSiteStatus } from "@server/models/PagesSite";
 import pagesEnv from "../env";
 
 /**
@@ -30,7 +30,8 @@ export function publishedUrl(site: PagesSite): string | null {
   if (site.status !== PagesSiteStatus.Published || !base) {
     return null;
   }
-  return `${base.replace(/\/+$/, "")}/sites/${site.slug}/index.html`;
+  const folder = site.kind === PagesSiteKind.Artifact ? "artifacts" : "sites";
+  return `${base.replace(/\/+$/, "")}/${folder}/${site.slug}/index.html`;
 }
 
 /**
@@ -47,6 +48,7 @@ export function presentPagesSite(site: PagesSite) {
     title: site.title,
     status: site.status,
     gateType: site.gateType,
+    kind: site.kind,
     currentVersion: site.currentVersion,
     codeVersion: site.codeVersion,
     rotatedAt: site.rotatedAt,

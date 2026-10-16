@@ -30,6 +30,7 @@ import "../policies";
 import { pagesSiteIncludes, presentPagesSite } from "../presenters/pagesSite";
 import { createIngestRouter } from "./ingest";
 import { type StoreFactory, createPublishRouter } from "./publish";
+import { createArtifactPublishRouter } from "./publishArtifact";
 import * as T from "./schema";
 
 const router = new Router();
@@ -284,6 +285,9 @@ export function createPagesRouter(
   pagesRouter.use(router.routes());
   pagesRouter.use(
     createPublishRouter(deps.storeFactory ?? defaultStore).routes()
+  );
+  pagesRouter.use(
+    createArtifactPublishRouter(deps.storeFactory ?? defaultStore).routes()
   );
   // The one route without auth(); every other route declares its own.
   pagesRouter.use(createIngestRouter().routes());
