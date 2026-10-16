@@ -118,6 +118,12 @@ router.post(
       throw AuthorizationError("AI answers are not enabled for this workspace");
     }
 
+    // Owner decision D8: members and admins only. Guests and viewers still get
+    // normal search, just no AI answers.
+    if (user.isGuest || user.isViewer) {
+      throw AuthorizationError("AI answers are not available for your role");
+    }
+
     const sources = await retrieveSources(user, ctx.input.body);
     const documents = sources.map((source) => source.document);
 

@@ -12,6 +12,7 @@ export default class AuthenticationHelper {
    * - `collections.group_memberships` -> `Scope.Read`
    * - `attachments.redirect` -> `Scope.Read`
    * - `files.get` -> `Scope.Read`
+   * - `documents.answerQuestion` -> `Scope.Read`
    */
   private static methodToScope = {
     create: Scope.Create,
@@ -27,6 +28,7 @@ export default class AuthenticationHelper {
     get: Scope.Read,
     memberships: Scope.Read,
     group_memberships: Scope.Read,
+    answerQuestion: Scope.Read,
   };
 
   /**

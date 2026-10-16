@@ -110,6 +110,16 @@ describe("AuthenticationHelper", () => {
         expect(canAccess("/api/files.create", scopes)).toBe(false);
       });
 
+      it("documents read scope grants access to answerQuestion", async () => {
+        expect(
+          canAccess("/api/documents.answerQuestion", ["documents:read"])
+        ).toBe(true);
+        expect(canAccess("/api/documents.answerQuestion", ["read"])).toBe(true);
+        expect(
+          canAccess("/api/documents.answerQuestion", ["documents:create"])
+        ).toBe(false);
+      });
+
       it("write", async () => {
         const scopes = ["documents:write"];
 

@@ -1,12 +1,14 @@
 import { http, HttpResponse } from "msw";
 import { vi } from "vitest";
 import { TeamPreference } from "@shared/types";
-import { AIAnswerUsage, SearchQuery } from "@server/models";
+import { AIAnswerUsage, SearchQuery, Team, type User } from "@server/models";
 import {
   buildAdmin,
   buildCollection,
   buildDocument,
+  buildGuestUser,
   buildUser,
+  buildViewer,
 } from "@server/test/factories";
 import { server as mswServer } from "@server/test/msw";
 import { getTestServer } from "@server/test/support";
@@ -71,6 +73,47 @@ describe("#documents.answerQuestion", () => {
       });
       expect(res.status).toEqual(403);
       expect(create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("role gate (members and admins only)", () => {
+    beforeEach(() => {
+      create.mockReset();
+      mswServer.use(
+        http.post("https://api.anthropic.com/v1/messages", async () =>
+          HttpResponse.json(await create())
+        )
+      );
+    });
+
+    async function enable(user: User) {
+      const team = await Team.findByPk(user.teamId, { rejectOnEmpty: true });
+      team.setPreference(TeamPreference.AIAnswers, true);
+      await team.save();
+      return user;
+    }
+
+    it.each([
+      ["guest", buildGuestUser],
+      ["viewer", buildViewer],
+    ])("denies a %s with 403 and never calls the model", async (_, build) => {
+      const user = await enable(await build());
+      const res = await server.post("/api/documents.answerQuestion", user, {
+        body: { query: "How many days of holiday?" },
+      });
+      expect(res.status).toEqual(403);
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["member", buildUser],
+      ["admin", buildAdmin],
+    ])("lets a %s through the gate", async (_, build) => {
+      const user = await enable(await build());
+      const res = await server.post("/api/documents.answerQuestion", user, {
+        body: { query: "How many days of holiday?" },
+      });
+      expect(res.status).toEqual(200);
     });
   });
 

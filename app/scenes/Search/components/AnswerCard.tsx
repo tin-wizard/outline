@@ -7,6 +7,7 @@ import type { DateFilter, StatusFilter } from "@shared/types";
 import { TeamPreference } from "@shared/types";
 import Text from "~/components/Text";
 import useCurrentTeam from "~/hooks/useCurrentTeam";
+import useCurrentUser from "~/hooks/useCurrentUser";
 import env from "~/env";
 import { client } from "~/utils/ApiClient";
 
@@ -65,9 +66,13 @@ export function AnswerCard({
 }: Props) {
   const { t } = useTranslation();
   const team = useCurrentTeam();
+  const user = useCurrentUser();
+  // Guests and viewers get no answers (the server returns 403), so don't ask.
   const enabled =
     env.AI_ANSWERS_ENABLED === true &&
-    team.getPreference(TeamPreference.AIAnswers);
+    team.getPreference(TeamPreference.AIAnswers) &&
+    !user.isGuest &&
+    !user.isViewer;
   // Keyed on the serialized value so a new array with the same contents does
   // not refetch.
   const statusKey = statusFilter?.join(",") ?? "";
