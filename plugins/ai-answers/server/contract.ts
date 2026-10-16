@@ -18,8 +18,12 @@ export const DEFAULT_DEADLINE_MS = 15_000;
 /** Usage for a request that never reached a model. */
 export const ZERO_USAGE: Usage = { inputTokens: 0, outputTokens: 0 };
 
-/** Output token ceiling sent to the model; also the worst case when usage is unknown. */
-export const MAX_OUTPUT_TOKENS = 1024;
+/**
+ * Output token ceiling sent to the model; also the worst case when usage is
+ * unknown. Generous because thinking tokens count toward max_tokens, and a
+ * call that stops there is billed but yields no answer.
+ */
+export const MAX_OUTPUT_TOKENS = 4096;
 
 /** Why generation stopped, normalised across providers. */
 export type FinishReason = "stop" | "other";

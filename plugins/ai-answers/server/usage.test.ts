@@ -5,6 +5,7 @@ import env from "@server/env";
 import Redis from "@server/storage/redis";
 import { buildTeam, buildUser } from "@server/test/factories";
 import { CLIENT_MAX_RETRIES, CLIENT_TIMEOUT_MS } from "./anthropicClient";
+import { MAX_OUTPUT_TOKENS } from "./contract";
 import pluginEnv from "./env";
 import {
   MAX_CONCURRENT_CALLS,
@@ -317,7 +318,7 @@ describe("estimateUsage", () => {
         sections: ["a".repeat(300)],
       } as never,
     ]);
-    expect(estimate.outputTokens).toEqual(1024);
+    expect(estimate.outputTokens).toEqual(MAX_OUTPUT_TOKENS);
     expect(estimate.inputTokens).toBeGreaterThan(100);
   });
 });

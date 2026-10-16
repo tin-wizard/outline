@@ -8,7 +8,7 @@
 //
 // Usage, from the repo root:
 //   ANTHROPIC_API_KEY=... node plugins/ai-answers/eval/run.mjs \
-//     [--model claude-haiku-5-5] [--runs 3] [--out plugins/ai-answers/eval/eval-results.json]
+//     [--model claude-sonnet-5-5] [--runs 3] [--out plugins/ai-answers/eval/eval-results.json]
 import { spawnSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";

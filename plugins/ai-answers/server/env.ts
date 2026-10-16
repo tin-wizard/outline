@@ -1,19 +1,8 @@
-import {
-  IsBoolean,
-  IsNumber,
-  IsOptional,
-  IsString,
-  Max,
-  Min,
-} from "class-validator";
+import { IsBoolean, IsOptional, IsString } from "class-validator";
 import { Environment } from "@server/env";
 import { Public } from "@server/utils/decorators/Public";
 import environment from "@server/utils/environment";
-import {
-  CLIENT_TIMEOUT_MS,
-  DEFAULT_DEADLINE_MS,
-  MIN_DEADLINE_MS,
-} from "./contract";
+import { DEFAULT_DEADLINE_MS } from "./contract";
 
 class AIAnswersPluginEnvironment extends Environment {
   /**
@@ -38,7 +27,7 @@ class AIAnswersPluginEnvironment extends Environment {
   @IsOptional()
   @IsString()
   public AI_ANSWERS_MODEL =
-    this.toOptionalString(environment.AI_ANSWERS_MODEL) ?? "claude-haiku-5-5";
+    this.toOptionalString(environment.AI_ANSWERS_MODEL) ?? "claude-sonnet-5-5";
 
   /**
    * Monthly spend cap per workspace in USD (calendar month, UTC). Defaults to
@@ -54,11 +43,10 @@ class AIAnswersPluginEnvironment extends Environment {
    * Hard deadline in milliseconds for the model call of an answer: when it
    * passes, the call is aborted and the retrieved documents are returned
    * without an answer. Redis and database work around the call is not bounded
-   * by it. Between 1000 and 30000 (the client timeout); defaults to 15000.
+   * by it. Clamped to 1000-30000 (the client timeout) at use; defaults to
+   * 15000. Deliberately not validated here: a failing validator exits the
+   * process, and a typo must not take the site down.
    */
-  @IsNumber()
-  @Min(MIN_DEADLINE_MS)
-  @Max(CLIENT_TIMEOUT_MS)
   @IsOptional()
   public AI_ANSWERS_DEADLINE_MS =
     this.toOptionalNumber(environment.AI_ANSWERS_DEADLINE_MS) ??
