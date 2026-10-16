@@ -1,6 +1,10 @@
 import { vi } from "vitest";
 import env from "./env";
-import { generateAnswer, type AnswerClient } from "./generate";
+import {
+  generateAnswer,
+  generateAnswerWithUsage,
+  type AnswerClient,
+} from "./generate";
 import type { AnswerSource } from "./retrieve";
 
 function source(title: string, sections: string[]): AnswerSource {
@@ -255,5 +259,20 @@ describe("generateAnswer", () => {
     await generateAnswer(client, "q?", [source("", ["x"])]);
     const request = create.mock.calls[0][0];
     expect(request.messages[0].content[0].title).toEqual("Untitled");
+  });
+});
+
+describe("generateAnswerWithUsage", () => {
+  it("returns the provider token usage", async () => {
+    const create = vi.fn().mockResolvedValue({
+      content: [cited("25 days.", 0)],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 120, output_tokens: 7 },
+    });
+    const client = { messages: { create } } as unknown as AnswerClient;
+    const out = await generateAnswerWithUsage(client, "How many?", [
+      source("Holidays", ["# Leave\n25 days"]),
+    ]);
+    expect(out.usage).toEqual({ inputTokens: 120, outputTokens: 7 });
   });
 });
