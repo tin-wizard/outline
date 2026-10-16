@@ -1,7 +1,9 @@
 import { QueryTypes, Sequelize } from "sequelize";
+import type { Transaction } from "sequelize";
 import { vi } from "vitest";
 import { AIAnswerUsage } from "@server/models";
 import env from "@server/env";
+import { sequelize } from "@server/storage/database";
 import Redis from "@server/storage/redis";
 import { buildTeam, buildUser } from "@server/test/factories";
 import { CLIENT_MAX_RETRIES, CLIENT_TIMEOUT_MS } from "./anthropicClient";
@@ -133,6 +135,46 @@ describe("slot lifetime", () => {
 });
 
 describe("row-level security", () => {
+  // CI connects as a superuser, which bypasses RLS even with FORCE. In that
+  // case the queries below drop to a plain role so the policy is exercised.
+  const rlsRole = "outline_ai_answers_rls_test";
+  let bypassesRls = false;
+
+  beforeAll(async () => {
+    const [row] = await sequelize.query<{ bypass: boolean }>(
+      `SELECT rolsuper OR rolbypassrls AS bypass FROM pg_roles WHERE rolname = current_user`,
+      { type: QueryTypes.SELECT }
+    );
+    bypassesRls = row.bypass;
+    if (!bypassesRls) {
+      return;
+    }
+    await sequelize.query(
+      `DO $$ BEGIN
+         CREATE ROLE ${rlsRole} NOLOGIN NOSUPERUSER NOBYPASSRLS;
+       EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL;
+       END $$`
+    );
+    await sequelize.query(
+      `GRANT SELECT, INSERT ON ai_answer_usages TO ${rlsRole}`
+    );
+  });
+
+  /** Sets the tenant for the transaction, as the request transaction does. */
+  const enterTenant = async (
+    isolated: Sequelize,
+    tenantId: string,
+    transaction: Transaction
+  ) => {
+    await isolated.query(
+      `SELECT set_config('app.team_id', :tenantId, true), set_config('app.rls_forced', 'on', true)`,
+      { replacements: { tenantId }, transaction }
+    );
+    if (bypassesRls) {
+      await isolated.query(`SET LOCAL ROLE ${rlsRole}`, { transaction });
+    }
+  };
+
   it("hides one team's usage from another team's tenant context", async () => {
     const a = await buildTeam();
     const b = await buildTeam();
@@ -145,10 +187,7 @@ describe("row-level security", () => {
       });
       try {
         return await isolated.transaction(async (transaction) => {
-          await isolated.query(
-            `SELECT set_config('app.team_id', :tenantId, true), set_config('app.rls_forced', 'on', true)`,
-            { replacements: { tenantId }, transaction }
-          );
+          await enterTenant(isolated, tenantId, transaction);
           const [row] = await isolated.query<{ count: string }>(
             `SELECT count(*) FROM ai_answer_usages WHERE "teamId" = :teamId`,
             {
@@ -171,10 +210,7 @@ describe("row-level security", () => {
       });
       try {
         await isolated.transaction(async (transaction) => {
-          await isolated.query(
-            `SELECT set_config('app.team_id', :tenantId, true), set_config('app.rls_forced', 'on', true)`,
-            { replacements: { tenantId }, transaction }
-          );
+          await enterTenant(isolated, tenantId, transaction);
           await isolated.query(
             `INSERT INTO ai_answer_usages (id, "teamId", model, "inputTokens", "outputTokens", "costMicroUsd", outcome, "createdAt")
              VALUES (gen_random_uuid(), :rowTeamId, 'm', 0, 0, 0, 'answered', now())`,
