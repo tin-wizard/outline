@@ -6,7 +6,7 @@ import { client } from "~/utils/ApiClient";
 import { NotFoundError, RateLimitExceededError } from "~/utils/errors";
 import { StreamRequestError, streamFetch } from "~/utils/streamFetch";
 import type { ChatState } from "./model";
-import { block, controlled, done } from "./testStream";
+import { block, controlled, done } from "~/test/askStream";
 import { useAISearch } from "./useAISearch";
 
 vi.mock("~/utils/streamFetch", async (importOriginal) => ({

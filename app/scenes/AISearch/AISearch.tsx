@@ -28,7 +28,7 @@ import { useAutoSubmitQuery } from "./useAutoSubmitQuery";
  *
  * @returns the page, or a redirect to home when AI answers are unavailable.
  */
-const AISearch = observer(function AISearch() {
+export const AISearch = observer(function AISearch() {
   const enabled = useAIAnswersEnabled();
   return enabled ? <Page /> : <Redirect to={homePath()} />;
 });
@@ -82,6 +82,20 @@ const Page = observer(function Page() {
 
   const handleSubmit = () => submit(text);
 
+  const handleRemoveCollection = () =>
+    setScope((prev) => ({ ...prev, collectionId: undefined }));
+
+  const handleRemoveDocument = () =>
+    setScope((prev) => ({ ...prev, documentId: undefined }));
+
+  // Suggestions only fill the composer: sending is always the user's action.
+  const handleSuggestionClick = (
+    event: React.MouseEvent<HTMLButtonElement>
+  ) => {
+    setText(event.currentTarget.value);
+    textareaRef.current?.focus();
+  };
+
   const handleNewConversation = () => {
     reset();
     setText("");
@@ -100,8 +114,7 @@ const Page = observer(function Page() {
             key: "collection",
             kind: t("Collection"),
             label: collectionName(collectionId),
-            onRemove: () =>
-              setScope((prev) => ({ ...prev, collectionId: undefined })),
+            onRemove: handleRemoveCollection,
           },
         ]
       : []),
@@ -111,8 +124,7 @@ const Page = observer(function Page() {
             key: "document",
             kind: t("Document"),
             label: documentTitle(documentId),
-            onRemove: () =>
-              setScope((prev) => ({ ...prev, documentId: undefined })),
+            onRemove: handleRemoveDocument,
           },
         ]
       : []),
@@ -121,7 +133,7 @@ const Page = observer(function Page() {
   const suggestions = [
     t("How do we onboard a new team member?"),
     t("What are the steps to request access to a tool?"),
-    t("Summarize our most recent project updates"),
+    t("What does our handbook say about time off?"),
   ];
 
   const { turns } = state;
@@ -151,7 +163,11 @@ const Page = observer(function Page() {
           <Suggestions aria-label={t("Example questions")}>
             {suggestions.map((suggestion) => (
               <li key={suggestion}>
-                <Suggestion type="button" onClick={() => submit(suggestion)}>
+                <Suggestion
+                  type="button"
+                  value={suggestion}
+                  onClick={handleSuggestionClick}
+                >
                   {suggestion}
                 </Suggestion>
               </li>
@@ -213,5 +229,3 @@ const Suggestion = styled.button`
     background: ${s("backgroundSecondary")};
   }
 `;
-
-export default AISearch;

@@ -509,4 +509,15 @@ describe("AnswerTurn sources", () => {
       expect(buttons(withRate(turn(patch)))).toHaveLength(0);
     });
   });
+
+  it.each([
+    ["conversation_new", "Started a new conversation"],
+    ["history_unavailable", "Earlier messages in this conversation"],
+    ["unknown", "limited context"],
+    ["something_new", "limited context"],
+  ])("maps notice code %s to localised text", (code, text) => {
+    const host = render(turn({ notice: code }));
+    expect(host.textContent).toContain(text);
+    expect(host.textContent).not.toContain(code);
+  });
 });

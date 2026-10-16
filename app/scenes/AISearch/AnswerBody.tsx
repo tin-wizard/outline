@@ -137,6 +137,8 @@ function Markers({
   onClick?: (n: number) => void;
 }) {
   const { t } = useTranslation();
+  const handleClick = (event: React.MouseEvent<HTMLButtonElement>) =>
+    onClick?.(Number(event.currentTarget.value));
   return (
     <>
       {citations.map((n) => (
@@ -144,7 +146,8 @@ function Markers({
           key={n}
           type="button"
           aria-label={t("Source {{ number }}", { number: n })}
-          onClick={() => onClick?.(n)}
+          value={n}
+          onClick={handleClick}
         >
           {n}
         </Marker>

@@ -1,3 +1,3 @@
-import AISearch from "./AISearch";
+import { AISearch } from "./AISearch";
 
 export default AISearch;

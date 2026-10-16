@@ -86,6 +86,8 @@ export function AnswerTurn({
     previous.current = turn.status;
   }, [isLast, turn.status]);
 
+  const handleRetry = () => onRetry(turn);
+
   const handleCitationClick = React.useCallback(
     (n: number) => {
       const target = document.getElementById(`source-${turn.id}-${n}`);
@@ -120,7 +122,7 @@ export function AnswerTurn({
         <Heading ref={headingRef} tabIndex={-1}>
           {t("Answer")}
         </Heading>
-        {turn.notice && <Muted>{turn.notice}</Muted>}
+        {turn.notice && <Muted>{noticeMessage(turn.notice, t)}</Muted>}
         {!!turn.sources?.length && !cited.length && active && (
           <Details>
             <summary>
@@ -185,7 +187,7 @@ export function AnswerTurn({
             {isLast && RETRYABLE.includes(turn.problem) && (
               <>
                 {" "}
-                <Button type="button" neutral onClick={() => onRetry(turn)}>
+                <Button type="button" neutral onClick={handleRetry}>
                   {t("Try again")}
                 </Button>
               </>
@@ -207,6 +209,8 @@ function FeedbackBar({
 }) {
   const { t } = useTranslation();
   const feedback = turn.feedback;
+  const handleHelpful = () => onRate(turn.id, "up");
+  const handleNotHelpful = () => onRate(turn.id, "down");
   const pending = !!feedback?.pending;
   let message = "";
   if (feedback?.error === "rateLimited") {
@@ -223,7 +227,7 @@ function FeedbackBar({
         label={t("Helpful")}
         pressed={feedback?.rating === "up"}
         disabled={pending}
-        onClick={() => onRate(turn.id, "up")}
+        onClick={handleHelpful}
       >
         <ThumbsUpIcon size={20} />
       </Rate>
@@ -231,7 +235,7 @@ function FeedbackBar({
         label={t("Not helpful")}
         pressed={feedback?.rating === "down"}
         disabled={pending}
-        onClick={() => onRate(turn.id, "down")}
+        onClick={handleNotHelpful}
       >
         <ThumbsDownIcon size={20} />
       </Rate>
@@ -269,6 +273,25 @@ function Rate({
       </RateButton>
     </Tooltip>
   );
+}
+
+/**
+ * Localised text for a server notice code. The server's own English message
+ * is never shown; unknown codes get a generic note.
+ */
+function noticeMessage(code: string, t: (key: string) => string): string {
+  switch (code) {
+    case "conversation_new":
+      return t(
+        "Started a new conversation: the earlier one is no longer available."
+      );
+    case "history_unavailable":
+      return t(
+        "Earlier messages in this conversation aren't available, so this answer doesn't use them."
+      );
+    default:
+      return t("This conversation is continuing with limited context.");
+  }
 }
 
 function problemMessage(

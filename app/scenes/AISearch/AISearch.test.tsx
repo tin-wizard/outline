@@ -9,8 +9,8 @@ import theme from "@shared/styles/theme";
 import useAIAnswersEnabled from "~/hooks/useAIAnswersEnabled";
 import type * as StreamModule from "~/utils/streamFetch";
 import { streamFetch } from "~/utils/streamFetch";
-import AISearch from "./AISearch";
-import { block, controlled, done } from "./testStream";
+import { AISearch } from "./AISearch";
+import { block, controlled, done } from "~/test/askStream";
 
 vi.mock("~/utils/streamFetch", async (importOriginal) => ({
   ...(await importOriginal<typeof StreamModule>()),
@@ -239,5 +239,21 @@ describe("AISearch page", () => {
     await tick();
     expect(stream.signal?.aborted).toBe(true);
     expect(host.textContent).toContain("Stopped");
+  });
+
+  it("fills the composer from a suggestion without sending anything", async () => {
+    const { host } = mount("/ai");
+    const chip = host.querySelector<HTMLButtonElement>(
+      "ul[aria-label] button[value]"
+    );
+    if (!chip) {
+      throw new Error("no suggestion");
+    }
+    await act(async () => chip.click());
+    await tick();
+    expect(mocked).not.toHaveBeenCalled();
+    const textarea = host.querySelector("textarea");
+    expect(textarea?.value).toBe(chip.value);
+    expect(document.activeElement).toBe(textarea);
   });
 });

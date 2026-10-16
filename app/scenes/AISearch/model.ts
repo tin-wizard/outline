@@ -50,7 +50,7 @@ export interface Turn {
   /** The scope this question was searched with. */
   scope: Scope;
   status: TurnStatus;
-  /** A fixed server notice, such as a lost conversation. */
+  /** A server notice code, such as `conversation_new`; mapped to text by the UI. */
   notice?: string;
   /** Retrieved sources; null until the `sources` event. */
   sources: AskSource[] | null;
@@ -244,11 +244,12 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             ? update({}, event.data.id)
             : state;
         case "status": {
-          const { phase, message } = event.data;
+          const { phase, notice } = event.data;
           if (phase === "notice") {
-            return typeof message === "string"
-              ? update({ notice: message })
-              : state;
+            // Only the stable code is kept; the server's English message is not shown.
+            return update({
+              notice: typeof notice === "string" && notice ? notice : "unknown",
+            });
           }
           // Phases only move forward: a late "searching" after blocks is noise.
           if (

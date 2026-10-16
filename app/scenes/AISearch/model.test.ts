@@ -89,17 +89,26 @@ describe("chatReducer", () => {
     expect(state.turns[0].blocks).toHaveLength(1);
   });
 
-  it("records a notice without changing the phase", () => {
+  it("keeps only the notice code, never the server's English message", () => {
     const state = run([
       {
         event: "status",
-        data: { phase: "notice", message: "Conversation expired" },
+        data: {
+          phase: "notice",
+          notice: "conversation_new",
+          message: "Conversation expired",
+        },
       },
     ]);
     expect(state.turns[0]).toMatchObject({
       status: "searching",
-      notice: "Conversation expired",
+      notice: "conversation_new",
     });
+    expect(JSON.stringify(state)).not.toContain("Conversation expired");
+    const legacy = run([
+      { event: "status", data: { phase: "notice", message: "Old server" } },
+    ]);
+    expect(legacy.turns[0].notice).toBe("unknown");
   });
 
   it("ignores events after the turn ended", () => {

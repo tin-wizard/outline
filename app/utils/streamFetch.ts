@@ -42,7 +42,13 @@ export interface AskCitation {
 
 export interface AskEvents {
   conversation: { id: string };
-  status: { phase: "searching" | "generating" | "notice"; message?: string };
+  status: {
+    phase: "searching" | "generating" | "notice";
+    /** Stable notice code (phase "notice"), such as "conversation_new". */
+    notice?: string;
+    /** English text kept for old clients; never shown. */
+    message?: string;
+  };
   sources: AskSource[];
   block: {
     index: number;
