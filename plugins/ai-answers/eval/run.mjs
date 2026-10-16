@@ -3,7 +3,8 @@
 // Costs real money, so it is manual and never part of CI. It needs
 // ANTHROPIC_API_KEY in the environment and a LOCAL Postgres and Redis (it seeds
 // synthetic documents into the test database from .env.test). It refuses to run
-// against any non-local DATABASE_URL or REDIS_URL.
+// against any non-local DATABASE_URL or REDIS_URL. Each run leaves its synthetic
+// teams and documents behind in that local .env.test database, like a test run.
 //
 // Usage, from the repo root:
 //   ANTHROPIC_API_KEY=... node plugins/ai-answers/eval/run.mjs \
@@ -12,6 +13,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { isLocalUrl } from "./guard.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, "../../..");
@@ -23,16 +25,6 @@ const fail = (message) => {
   console.error(message);
   process.exit(1);
 };
-const isLocal = (url) => {
-  try {
-    return ["127.0.0.1", "localhost", "[::1]", "::1"].includes(
-      new URL(url).hostname
-    );
-  } catch {
-    return false;
-  }
-};
-
 if (!process.env.ANTHROPIC_API_KEY) {
   fail("ANTHROPIC_API_KEY is not set; the live eval needs it.");
 }
@@ -50,10 +42,10 @@ if (existsSync(testEnv)) {
 }
 const databaseUrl = process.env.DATABASE_URL ?? dotenv.DATABASE_URL;
 const redisUrl = process.env.REDIS_URL ?? dotenv.REDIS_URL;
-if (!databaseUrl || !isLocal(databaseUrl)) {
+if (!databaseUrl || !isLocalUrl(databaseUrl)) {
   fail("Refusing to run: DATABASE_URL must point at 127.0.0.1 or localhost.");
 }
-if (!redisUrl || !isLocal(redisUrl)) {
+if (!redisUrl || !isLocalUrl(redisUrl)) {
   fail("Refusing to run: REDIS_URL must point at 127.0.0.1 or localhost.");
 }
 

@@ -32,13 +32,30 @@ function truncate(text: string): string {
 }
 
 /**
+ * NFKC-normalises text and rewrites every Unicode decimal digit (fullwidth,
+ * Arabic-Indic, ...) as an ASCII digit so numbers compare by value.
+ */
+function foldDigits(text: string): string {
+  return text.normalize("NFKC").replace(/\p{Nd}/gu, (char) => {
+    // Digit blocks are contiguous runs of ten starting at zero.
+    let offset = 0;
+    let code = char.codePointAt(0) ?? 0;
+    while (/\p{Nd}/u.test(String.fromCodePoint(code - 1))) {
+      code--;
+      offset++;
+    }
+    return String(offset % 10);
+  });
+}
+
+/**
  * Lowercases and strips markdown markers and extra whitespace for comparison.
  *
  * @param text the text to normalise.
  * @returns the normalised text.
  */
 export function normalise(text: string): string {
-  return text
+  return foldDigits(text)
     .toLowerCase()
     .replace(/[*_`#>]/g, "")
     .replace(/\s+/g, " ")
@@ -48,10 +65,70 @@ export function normalise(text: string): string {
 /**
  * Share of a segment's content words that must appear in the cited passage.
  * Deliberately low so honest paraphrases pass; invented sentences carry mostly
- * new words and fall well below it. Exact tokens (see `findUnsupportedTokens`)
- * are checked separately and strictly.
+ * new words and fall well below it. Exact tokens (numbers, URLs, emails, code
+ * tokens, acronyms) are checked separately and strictly.
+ *
+ * Known limits, covered only by this ratio: unit or currency swaps ("days" for
+ * "weeks"), negation flips, invented capitalised names and lowercase acronyms.
  */
 const MIN_CONTENT_WORD_SUPPORT = 0.5;
+
+/** Longest cited range, in sections; wider ranges make the passage too loose. */
+const MAX_CITED_SECTIONS = 3;
+
+/** Shortest normalised quote accepted; shorter ones match almost anywhere. */
+const MIN_QUOTE_LENGTH = 8;
+
+const NUMBER_WORDS: Record<string, number> = Object.fromEntries(
+  "zero two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen"
+    .split(" ")
+    .map((word, i) => [word, i === 0 ? 0 : i + 1])
+);
+const TENS_WORDS: Record<string, number> = Object.fromEntries(
+  "twenty thirty forty fifty sixty seventy eighty ninety"
+    .split(" ")
+    .map((word, i) => [word, (i + 2) * 10])
+);
+// A bare "one" is mostly a pronoun, so it is only read as a number in compounds.
+const NUMBER_WORD_PATTERN = new RegExp(
+  `\\b(?:(${Object.keys(TENS_WORDS).join("|")})(?:[\\s-]+(one|two|three|four|five|six|seven|eight|nine))?|one hundred|hundred|${Object.keys(NUMBER_WORDS).join("|")})\\b`,
+  "g"
+);
+
+/** Rewrites number words from zero to one hundred as digits, in lowercase text. */
+function foldNumberWords(text: string): string {
+  return text.replace(
+    NUMBER_WORD_PATTERN,
+    (match, tens?: string, unit?: string) => {
+      if (tens) {
+        return String(
+          TENS_WORDS[tens] +
+            (unit ? (unit === "one" ? 1 : NUMBER_WORDS[unit]) : 0)
+        );
+      }
+      return match.endsWith("hundred") ? "100" : String(NUMBER_WORDS[match]);
+    }
+  );
+}
+
+/** Conservative suffix stripping so "holidays" and "received" meet "holiday" and "receive". */
+function stem(word: string): string {
+  if (word.length < 4) {
+    return word;
+  }
+  let out = word;
+  for (const suffix of ["ing", "ed", "ly", "s"]) {
+    if (
+      out.endsWith(suffix) &&
+      out.length - suffix.length >= 3 &&
+      !(suffix === "s" && out.endsWith("ss"))
+    ) {
+      out = out.slice(0, -suffix.length);
+      break;
+    }
+  }
+  return out.length > 3 && out.endsWith("e") ? out.slice(0, -1) : out;
+}
 
 /** Words that carry no claim; ignored when measuring paraphrase overlap. */
 const STOPWORDS = new Set(
@@ -65,7 +142,7 @@ const STOPWORDS = new Set(
 const URL_PATTERN = /https?:\/\/[^\s)>\]"']+/gi;
 const EMAIL_PATTERN = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g;
 const CODE_SPAN_PATTERN = /`([^`]+)`/g;
-const NUMBER_PATTERN = /\d+(?:[.,]\d+)*/g;
+const NUMBER_PATTERN = /\p{Nd}+(?:[.,]\p{Nd}+)*/gu;
 const IDENTIFIER_PATTERNS = [
   /\b[A-Z][A-Z0-9]+(?:-[A-Z0-9]+)*\b/g, // acronyms and IDs: API, PROJ-123
   /\b[A-Za-z]+(?:_[A-Za-z0-9]+)+\b/g, // snake_case
@@ -111,7 +188,8 @@ function containsToken(
  * @returns true when the text is supported.
  */
 export function isTextSupported(text: string, passage: string): boolean {
-  passage = normalise(passage);
+  passage = foldNumberWords(normalise(passage));
+  text = foldDigits(text);
   const exact: string[] = [];
   const collect = (pattern: RegExp, group = 0) => {
     for (const m of text.matchAll(pattern)) {
@@ -131,7 +209,9 @@ export function isTextSupported(text: string, passage: string): boolean {
     }
   }
   const haystack = ungroup(passage);
-  const numbers = [...prose.matchAll(NUMBER_PATTERN)].map((m) => m[0]);
+  const numbers = [
+    ...foldNumberWords(prose.toLowerCase()).matchAll(NUMBER_PATTERN),
+  ].map((m) => m[0]);
   const urlLike = exact.map((t) => t.replace(/[.,;:!?]+$/, ""));
   if (
     urlLike.some((t) => !containsToken(haystack, normalise(t))) ||
@@ -140,10 +220,15 @@ export function isTextSupported(text: string, passage: string): boolean {
     return false;
   }
 
-  const split = (value: string) => normalise(value).split(/[^\p{L}\p{N}]+/u);
-  const passageWords = new Set(split(passage));
+  const split = (value: string) =>
+    foldNumberWords(normalise(value)).split(/[^\p{L}\p{N}]+/u);
+  const passageWords = new Set(split(passage).map(stem));
   const words = [
-    ...new Set(split(prose).filter((w) => w && !STOPWORDS.has(w))),
+    ...new Set(
+      split(prose)
+        .filter((w) => w && !STOPWORDS.has(w))
+        .map(stem)
+    ),
   ];
   if (words.length === 0) {
     return true;
@@ -194,7 +279,10 @@ export function verifyAnswer(
       if (
         !source ||
         section === undefined ||
+        !Number.isInteger(citation.sectionIndex) ||
+        !Number.isInteger(citation.endSectionIndex) ||
         citation.endSectionIndex <= citation.sectionIndex ||
+        citation.endSectionIndex - citation.sectionIndex > MAX_CITED_SECTIONS ||
         citation.endSectionIndex > source.sections.length
       ) {
         continue;
@@ -206,7 +294,7 @@ export function verifyAnswer(
       );
       const quote = normalise(citation.quote);
       // The provider's quote must really be in the sent sections it points at.
-      if (!quote || !passage.includes(quote)) {
+      if (quote.length < MIN_QUOTE_LENGTH || !passage.includes(quote)) {
         continue;
       }
       const heading = headingOf(section);
@@ -223,9 +311,14 @@ export function verifyAnswer(
       });
     }
     const backed = valid.length > 0;
+    const cited = valid.map((v) => v.passage).join(" ");
+    // Every sentence must stand alone: an invented one must not ride along with a real one.
     if (
       backed &&
-      !isTextSupported(text, valid.map((v) => v.passage).join(" "))
+      !text
+        .split(/(?<=[.!?])\s+|\n+/)
+        .filter((sentence) => sentence.trim())
+        .every((sentence) => isTextSupported(sentence, cited))
     ) {
       droppedSegments++;
       continue;

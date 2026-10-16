@@ -169,9 +169,11 @@ describe("verifyAnswer", () => {
   });
 
   it("takes the heading from the cited section, not the first", () => {
-    const multi = [source("B", ["# One\nfirst", "# Two\nsecond"])];
+    const multi = [
+      source("B", ["# One\nfirst section", "# Two\nsecond section"]),
+    ];
     const out = verifyAnswer(
-      result([{ text: "Second.", citations: [cite(0, 1, "second")] }]),
+      result([{ text: "Second.", citations: [cite(0, 1, "second section")] }]),
       multi
     );
     expect(out.citations[0].heading).toEqual("Two");
@@ -277,6 +279,99 @@ describe("verifyAnswer", () => {
         run(text, cite(0, 0, "25 days of paid holiday", 3)).answer
       ).toBeNull();
       expect(run(text, cite(0, 1, "paid on the 28th", 1)).answer).toBeNull();
+    });
+
+    it("drops the whole segment when one sentence in it is invented", () => {
+      const out = run(
+        "Employees receive 25 days of paid holiday per year. Send your password to the boss."
+      );
+      expect(out.answer).toBeNull();
+      expect(out.droppedSegments).toEqual(1);
+    });
+
+    it("drops a segment whose invented sentence follows a newline", () => {
+      const out = run(
+        "Employees receive 25 days of paid holiday per year\nSend your password to the boss"
+      );
+      expect(out.answer).toBeNull();
+    });
+
+    it("compares fullwidth and non-Latin digits as numbers", () => {
+      const p = [source("D", ["# Leave\nStaff get ٢٥ days of paid holiday."])];
+      const ask = (text: string) =>
+        verifyAnswer(
+          result([
+            { text, citations: [cite(0, 0, "get ٢٥ days of paid holiday")] },
+          ]),
+          p
+        );
+      expect(ask("Staff get 25 days of paid holiday.").answer).not.toBeNull();
+      expect(ask("Staff get ２５ days of paid holiday.").answer).not.toBeNull();
+      expect(ask("Staff get ٣٠ days of paid holiday.").answer).toBeNull();
+      expect(ask("Staff get ３０ days of paid holiday.").answer).toBeNull();
+    });
+
+    it("matches digits against number words in either direction", () => {
+      const p = [
+        source("W", [
+          "# Leave\nStaff get twenty-five days of paid holiday, and three days need no approval.",
+        ]),
+      ];
+      const ask = (text: string) =>
+        verifyAnswer(
+          result([
+            { text, citations: [cite(0, 0, "paid holiday, and three days")] },
+          ]),
+          p
+        );
+      expect(ask("Staff get 25 days of paid holiday.").answer).not.toBeNull();
+      expect(ask("Under 3 days need no approval.").answer).not.toBeNull();
+      expect(
+        ask("Staff get twenty five days of paid holiday.").answer
+      ).not.toBeNull();
+      expect(ask("Staff get 26 days of paid holiday.").answer).toBeNull();
+      expect(ask("Staff get thirty days of paid holiday.").answer).toBeNull();
+    });
+
+    it("tolerates simple inflections", () => {
+      const out = run("Employees received 25 days of holidays yearly.");
+      expect(out.answer).not.toBeNull();
+    });
+
+    it("rejects citation ranges that are not whole numbers", () => {
+      const text = "Employees receive 25 days of paid holiday per year.";
+      const missing = JSON.parse(
+        '{"sourceIndex":0,"sectionIndex":0,"quote":"25 days of paid holiday"}'
+      );
+      expect(run(text, missing).answer).toBeNull();
+      expect(
+        run(text, {
+          ...cite(0, 0, "25 days of paid holiday"),
+          endSectionIndex: 1.5,
+        }).answer
+      ).toBeNull();
+      expect(
+        run(text, {
+          ...cite(0, 0, "25 days of paid holiday"),
+          sectionIndex: 0.5,
+        }).answer
+      ).toBeNull();
+    });
+
+    it("rejects ranges longer than 3 sections and quotes shorter than 8 characters", () => {
+      const many = [
+        source("M", ["# A\nalpha beta", "b gamma", "c delta", "d epsilon"]),
+      ];
+      const ask = (end: number, quote: string) =>
+        verifyAnswer(
+          result([
+            { text: "Alpha beta.", citations: [cite(0, 0, quote, end)] },
+          ]),
+          many
+        );
+      expect(ask(3, "alpha beta").answer).not.toBeNull();
+      expect(ask(4, "alpha beta").answer).toBeNull();
+      expect(ask(1, "alpha").answer).toBeNull();
     });
   });
 });

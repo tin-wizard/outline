@@ -1,6 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { isTextSupported, normalise } from "../server/verify";
 
+export { isLocalUrl } from "./guard.mjs";
+
 /** What a case requires of an answer. */
 export interface CaseExpectation {
   /** False means the correct behaviour is to abstain (answer null). */
@@ -48,6 +50,15 @@ export interface CaseScore {
   leaked: string[];
   /** Leak markers found in the text sent to the model. */
   sentLeaks: string[];
+}
+
+/** Whether `needle` occurs in `text` as a whole word or number ("25" is not in "250"). */
+function includesWord(text: string, needle: string): boolean {
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(
+    `(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`,
+    "u"
+  ).test(text);
 }
 
 /**
@@ -106,7 +117,8 @@ export function scoreCase(
   }
 
   const missing = (expectation.mustInclude ?? []).filter(
-    (fact) => !fact.split("|").some((alt) => lower.includes(alt.toLowerCase()))
+    (fact) =>
+      !fact.split("|").some((alt) => includesWord(lower, alt.toLowerCase()))
   );
   const forbidden = (expectation.mustNotInclude ?? []).filter((bad) =>
     lower.includes(bad.toLowerCase())
@@ -134,7 +146,7 @@ export function scoreCase(
     .flatMap((s) => s.sections)
     .join("\n");
   const ungroundedSentences = answer
-    .split(/(?<=[.!?])\s+/)
+    .split(/(?<=[.!?])\s+|\n+/)
     .map((sentence) => sentence.trim())
     .filter((sentence) => sentence && !isTextSupported(sentence, passage));
 
@@ -194,20 +206,4 @@ export function expandSecrets(
     }
     return value;
   });
-}
-
-/**
- * Whether a connection URL points at this machine. Used to refuse running
- * the eval against anything but a local database.
- *
- * @param url a database or redis URL.
- * @returns true only for 127.0.0.1, localhost and ::1 hosts.
- */
-export function isLocalUrl(url: string): boolean {
-  try {
-    const host = new URL(url).hostname;
-    return ["127.0.0.1", "localhost", "[::1]", "::1"].includes(host);
-  } catch {
-    return false;
-  }
 }

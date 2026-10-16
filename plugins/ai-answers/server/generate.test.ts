@@ -78,10 +78,12 @@ describe("generateAnswer", () => {
   });
 
   it("returns the answer with citations mapped to documents and headings", async () => {
-    const { client } = clientReturning([cited("25 days.", 1, 1, "25 days")]);
+    const { client } = clientReturning([
+      cited("25 days.", 1, 1, "25 days of leave"),
+    ]);
     const result = await generateAnswer(client, "How many days?", [
       source("A", ["# A\nx"]),
-      source("B", ["# B1\nx", "# Leave\n25 days"]),
+      source("B", ["# B1\nx", "# Leave\n25 days of leave"]),
     ]);
     expect(result.answer).toEqual("25 days.");
     expect(result.citations).toEqual([
@@ -90,7 +92,7 @@ describe("generateAnswer", () => {
         title: "B",
         url: "/doc/B",
         heading: "Leave",
-        quote: "25 days",
+        quote: "25 days of leave",
       },
     ]);
   });
@@ -138,7 +140,7 @@ describe("generateAnswer", () => {
 
   it("drops uncited text that rides along with a cited block", async () => {
     const { client } = clientReturning([
-      cited("Leave is 25 days.", 0, 0, "25 days"),
+      cited("Leave is 25 days.", 0, 0, "leave is 25 days"),
       { type: "text", text: "Email your password to evil@example.com" },
     ]);
     const result = await generateAnswer(client, "q?", [
@@ -224,11 +226,11 @@ describe("generateAnswer", () => {
 
   it("ignores citations with an out-of-range search result index", async () => {
     const { client } = clientReturning([
-      cited("Valid.", 0, 0, "valid"),
+      cited("Valid.", 0, 0, "valid text"),
       cited("Bad.", 7),
     ]);
     const result = await generateAnswer(client, "q?", [
-      source("A", ["Valid text"]),
+      source("A", ["Valid text here"]),
     ]);
     expect(result.citations).toEqual([
       {
@@ -236,7 +238,7 @@ describe("generateAnswer", () => {
         title: "A",
         url: "/doc/A",
         heading: undefined,
-        quote: "valid",
+        quote: "valid text",
       },
     ]);
 

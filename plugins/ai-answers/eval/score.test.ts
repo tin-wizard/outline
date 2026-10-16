@@ -159,6 +159,36 @@ describe("scoreCase", () => {
   });
 });
 
+describe("scoreCase boundaries", () => {
+  it("matches required facts on word boundaries", () => {
+    const outcome = (answer: string): ScoredOutcome => ({
+      ...good,
+      answer,
+    });
+    const expectation = { answerable: true, mustInclude: ["25"] };
+    expect(scoreCase(expectation, outcome("About 250 days.")).missing).toEqual([
+      "25",
+    ]);
+    expect(scoreCase(expectation, outcome("In 2025 only.")).missing).toEqual([
+      "25",
+    ]);
+    expect(scoreCase(expectation, outcome("Exactly 25 days.")).missing).toEqual(
+      []
+    );
+  });
+
+  it("checks every line of the answer for groundedness", () => {
+    const s = scoreCase(
+      { answerable: true },
+      {
+        ...good,
+        answer: "Employees receive 25 days of paid holiday\nThe CEO decides",
+      }
+    );
+    expect(s.ungroundedSentences).toEqual(["The CEO decides"]);
+  });
+});
+
 describe("fake secrets", () => {
   it("expands placeholders and rejects unknown ones", () => {
     const secrets = buildFakeSecrets();
@@ -183,5 +213,20 @@ describe("isLocalUrl", () => {
     expect(isLocalUrl("postgres://u:p@db.example.com/db")).toBe(false);
     expect(isLocalUrl("postgres://u:p@localhost.evil.com/db")).toBe(false);
     expect(isLocalUrl("not a url")).toBe(false);
+  });
+
+  it("rejects URLs that different parsers read differently", () => {
+    for (const url of [
+      "postgres://u:p@localhost/db?host=prod.example",
+      "postgres://u:p@localhost/db?hostaddr=10.0.0.1",
+      "postgres://evil.com\\@localhost/db",
+      "postgres://u:p@127.0.0.1.evil.com/db",
+      "postgres://localhost@evil.com/db",
+      "postgres:///db?host=/var/run/postgresql",
+      "",
+      "   ",
+    ]) {
+      expect(isLocalUrl(url)).toBe(false);
+    }
   });
 });
