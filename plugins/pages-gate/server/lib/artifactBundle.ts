@@ -37,9 +37,9 @@ export function contentTypeForPath(path: string): string | undefined {
 /**
  * Validates an uploaded artifact and returns its files.
  *
- * MVP limitation: a zipped site is served under `/a/<token>/`, so assets must
- * be referenced relatively (build with base './'). Root-absolute URLs such as
- * Vite's default base "/" resolve to the sandbox root and 404.
+ * MVP limitation: the bundle is served from `/artifacts/<slug>/`, so assets
+ * must be referenced relatively (build with base './'). Root-absolute URLs
+ * such as `/assets/x.js` resolve to the host root and 404.
  *
  * @param fileName the original upload name, used to pick html or zip.
  * @param bytes the file contents.

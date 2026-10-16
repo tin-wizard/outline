@@ -32,7 +32,7 @@ describe("PagesSite", () => {
         slug: site.slug,
         title: "Other",
         prefix: `sites/${site.slug}/`,
-      }),
+      })
     ).rejects.toThrow();
   });
 
@@ -96,6 +96,8 @@ describe("PagesSite.kind", () => {
 
   it("stores an artifact site", async () => {
     const site = await buildPagesSite({ kind: PagesSiteKind.Artifact });
-    expect((await PagesSite.findByPk(site.id))?.kind).toBe(PagesSiteKind.Artifact);
+    expect((await PagesSite.findByPk(site.id))?.kind).toBe(
+      PagesSiteKind.Artifact
+    );
   });
 });

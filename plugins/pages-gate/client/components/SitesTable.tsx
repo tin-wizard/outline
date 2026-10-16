@@ -64,7 +64,13 @@ export function SitesTable({ sites, ...handlers }: Props) {
                   ? t("Public")
                   : t("Protected")}
             </td>
-            <td>{site.measurementEnabled ? t("On") : t("Off")}</td>
+            <td>
+              {site.kind === "artifact"
+                ? "—"
+                : site.measurementEnabled
+                  ? t("On")
+                  : t("Off")}
+            </td>
             <td>
               <Time dateTime={site.updatedAt} addSuffix shorten />
             </td>
