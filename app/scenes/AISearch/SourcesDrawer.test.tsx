@@ -246,7 +246,6 @@ describe("answer presentation", () => {
           turn={t}
           isLast
           scopeLabels={["Eng"]}
-          onStop={() => {}}
           onRetry={() => {}}
           {...props}
         />

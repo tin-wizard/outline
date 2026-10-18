@@ -18,6 +18,8 @@ interface Props {
    * titles, tagged A, B and C in column order.
    */
   compare?: boolean;
+  /** Letters shown on citation chips instead of numbers (compare answers). */
+  letters?: ReadonlyMap<number, string>;
 }
 
 /**
@@ -30,6 +32,7 @@ interface Props {
  * @param props.onCitationClick called with the source number of a marker.
  * @param props.previews hover and focus preview data by source number.
  * @param props.compare tags the document columns of a comparison table.
+ * @param props.letters letters for citation chips of a comparison.
  * @returns the rendered answer.
  */
 export function AnswerBody({
@@ -37,6 +40,7 @@ export function AnswerBody({
   onCitationClick,
   previews,
   compare,
+  letters,
 }: Props) {
   const groups = React.useMemo(() => groupBlocks(blocks), [blocks]);
   const marks = (citations: number[]) => (
@@ -44,6 +48,7 @@ export function AnswerBody({
       citations={citations}
       onClick={onCitationClick}
       previews={previews}
+      letters={letters}
     />
   );
 
@@ -165,7 +170,9 @@ function Markers({
   citations,
   onClick,
   previews,
+  letters,
 }: {
+  letters?: ReadonlyMap<number, string>;
   citations: number[];
   onClick?: (n: number, marker?: HTMLElement) => void;
   previews?: ReadonlyMap<number, CitationPreviewData>;
@@ -176,6 +183,7 @@ function Markers({
         <CitationMarker
           key={n}
           n={n}
+          label={letters?.get(n)}
           onClick={onClick}
           preview={previews?.get(n)}
         />

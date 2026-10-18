@@ -4,6 +4,8 @@ import { Link } from "react-router-dom";
 import styled from "styled-components";
 import { s } from "@shared/styles";
 import { CitationQuote } from "./CitationQuote";
+import { tagColor } from "./compare";
+import { Tag } from "./CompareCards";
 import { formatWhen, isStale } from "./dates";
 import { isDocPath } from "./docPath";
 import type { CitedSection } from "./model";
@@ -29,6 +31,8 @@ interface Props {
   /** DOM id, so a citation can bring the card into view. */
   id: string;
   selected?: boolean;
+  /** The letter of a compared document, shown next to the number. */
+  letter?: string;
 }
 
 /**
@@ -40,7 +44,7 @@ interface Props {
  * @param props see Props.
  * @returns the card.
  */
-export function SourceCard({ source, id, selected }: Props) {
+export function SourceCard({ source, id, selected, letter }: Props) {
   const { t, i18n } = useTranslation();
   const href = source.sections[0]?.url ?? source.url ?? "";
   const when = formatWhen(source.updatedAt, i18n.language);
@@ -61,6 +65,7 @@ export function SourceCard({ source, id, selected }: Props) {
     >
       <Top>
         <NumberBadge>{source.n}</NumberBadge>
+        {letter && <Tag $color={tagColor(letter)}>{letter}</Tag>}
         {isDocPath(href) ? (
           <Link to={href}>{source.title}</Link>
         ) : (

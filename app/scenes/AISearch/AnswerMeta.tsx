@@ -1,4 +1,4 @@
-import { InfoIcon, ShieldIcon } from "outline-icons";
+import { WarningIcon, ShieldIcon } from "outline-icons";
 import { readableColor } from "polished";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
@@ -46,7 +46,7 @@ export function AnswerMeta({
           {verification.state === "verified" ? (
             <ShieldIcon size={16} />
           ) : (
-            <InfoIcon size={16} />
+            <WarningIcon size={16} />
           )}
           {verification.state === "verified" &&
             (verification.everyCited
@@ -98,6 +98,11 @@ const Pill = styled.span<{ $tone: "ok" | "warn" }>`
   padding: 0 8px 0 5px;
   border-radius: 11px;
   background: ${(props) => toneColors(props.theme, props.$tone).background};
+  box-shadow: inset 0 0 0 1px
+    ${(props) =>
+      props.$tone === "warn"
+        ? toneColors(props.theme, props.$tone).border
+        : "transparent"};
   color: ${(props) => toneColors(props.theme, props.$tone).text};
   font-size: 12px;
   font-weight: 500;

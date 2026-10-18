@@ -10,6 +10,8 @@ const CLOSE_DELAY_MS = 150;
 
 interface Props {
   n: number;
+  /** Shown instead of the number, e.g. the letter of a compared document. */
+  label?: string;
   onClick?: (n: number, marker?: HTMLElement) => void;
   preview?: CitationPreviewData;
 }
@@ -21,11 +23,12 @@ interface Props {
  * collection, and is neutral when that is unknown.
  *
  * @param props.n the source number.
+ * @param props.label text for the chip instead of the number.
  * @param props.onClick called with the number and the chip when activated.
  * @param props.preview the card's data; no card without it.
  * @returns the chip.
  */
-export function CitationMarker({ n, onClick, preview }: Props) {
+export function CitationMarker({ n, label, onClick, preview }: Props) {
   const { t } = useTranslation();
   const id = React.useId();
   const [open, setOpen] = React.useState(false);
@@ -70,11 +73,11 @@ export function CitationMarker({ n, onClick, preview }: Props) {
         type="button"
         data-citation
         $color={preview?.collectionColor}
-        aria-label={t("Source {{ number }}", { number: n })}
+        aria-label={t("Source {{ number }}", { number: label ?? n })}
         aria-describedby={showing ? id : undefined}
         onClick={handleClick}
       >
-        {n}
+        {label ?? n}
       </Marker>
       {showing && <CitationPreview id={id} preview={preview} />}
     </MarkerWrap>

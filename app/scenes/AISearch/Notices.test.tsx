@@ -70,7 +70,6 @@ function render(
         turn={turn}
         isLast
         scopeLabels={[]}
-        onStop={() => {}}
         onRetry={() => {}}
         {...props}
       />
@@ -210,7 +209,6 @@ describe("error cards", () => {
             turn={failed}
             isLast
             scopeLabels={[]}
-            onStop={() => {}}
             onRetry={onRetry}
             onRetryUnscoped={onRetryUnscoped}
           />
@@ -360,7 +358,7 @@ describe("streaming state", () => {
       "Only statements that pass verification are shown."
     );
     expect(host.querySelector("kbd")?.textContent).toBe("Esc");
-    expect(host.textContent).toContain("Stop");
+    expect(host.textContent).not.toContain("Stop");
   });
 
   it("is searching before any source arrives, with no pill or actions", () => {
@@ -378,9 +376,9 @@ describe("streaming state", () => {
     expect(host.querySelector('[aria-label="Copy answer"]')).toBeNull();
   });
 
-  it("offers Stop only on the newest turn", () => {
+  it("shows the Esc footnote only on the newest turn", () => {
     expect(render(streaming, { isLast: false }).textContent).not.toContain(
-      "Stop"
+      "Only statements that pass verification"
     );
   });
 });

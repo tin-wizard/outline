@@ -13,7 +13,6 @@ import { transparentize } from "polished";
 import styled, { keyframes } from "styled-components";
 import { HEADER_HEIGHT } from "@shared/constants";
 import { breakpoints, s } from "@shared/styles";
-import Button from "~/components/Button";
 import PlaceholderText from "~/components/PlaceholderText";
 import {
   answerParts,
@@ -27,6 +26,8 @@ import { AnswerBody } from "./AnswerBody";
 import { AnswerMeta } from "./AnswerMeta";
 import type { CitationPreviewData } from "./CitationPreview";
 import { CitationQuote } from "./CitationQuote";
+import { compareLetters, isCompare } from "./compare";
+import { CompareCards } from "./CompareCards";
 import { isDocPath } from "./docPath";
 import { turnToMarkdown } from "./exportMarkdown";
 import { GapNotice, NotCoveredNotice } from "./GapNotice";
@@ -47,7 +48,6 @@ interface Props {
   scopeLine?: ScopeLine;
   /** Saves the answer as a draft document; absent when the user cannot. */
   onSave?: (turn: Turn) => void;
-  onStop: () => void;
   onRetry: (turn: Turn) => void;
   /** Asks again without the scope, after the server refused the scope. */
   onRetryUnscoped?: (turn: Turn) => void;
@@ -82,7 +82,6 @@ interface Props {
  * @param props.scopeLabels names of the scope searched.
  * @param props.scopeLine the scope line shown under the question.
  * @param props.onSave saves the answer as a draft document.
- * @param props.onStop stops the running turn.
  * @param props.onRetry asks the question again.
  * @param props.onRetryUnscoped asks again without the scope.
  * @param props.onRate sends helpful / not helpful feedback.
@@ -99,7 +98,6 @@ export function AnswerTurn({
   scopeLabels,
   scopeLine,
   onSave,
-  onStop,
   onRetry,
   onRetryUnscoped,
   onRate,
@@ -196,6 +194,13 @@ export function AnswerTurn({
     [turn, notCovered]
   );
   const gaps = React.useMemo(() => gapBlocks(turn), [turn]);
+  const letters = React.useMemo(
+    () => (isCompare(turn) ? compareLetters(turn) : undefined),
+    [turn]
+  );
+  // Letters are only reliable once the table header names the columns.
+  const showCards =
+    !!letters && turn.blocks.some((block) => block.kind === "tableHeader");
   const verification = notCovered ? undefined : verificationOf(turn);
   const followUps = React.useMemo(
     // Only the newest answer suggests follow-ups; older ones would repeat.
@@ -258,11 +263,6 @@ export function AnswerTurn({
                   <Dots />
                 </li>
               </Steps>
-              {isLast && (
-                <Button type="button" neutral onClick={onStop}>
-                  {t("Stop")}
-                </Button>
-              )}
             </Progress>
           )}
           {!active && (
@@ -278,6 +278,9 @@ export function AnswerTurn({
               {t("Answer")}
             </Heading>
             {turn.notice && <Muted>{noticeMessage(turn.notice, t)}</Muted>}
+            {showCards && letters && turn.sources && (
+              <CompareCards sources={turn.sources} letters={letters} />
+            )}
             {!!turn.sources?.length && !cited.length && active && (
               <Details>
                 <summary>
@@ -322,7 +325,8 @@ export function AnswerTurn({
                     <AnswerBody
                       key={`blocks-${i}`}
                       blocks={part.blocks}
-                      compare={turn.scope.mode === "compare"}
+                      compare={!!letters}
+                      letters={letters}
                       previews={previews}
                       onCitationClick={handleCitationClick}
                     />

@@ -391,7 +391,7 @@ describe("AISearch page", () => {
     await tick();
     await stream.push({ event: "status", data: { phase: "generating" } });
     const stop = [...host.querySelectorAll("button")].find(
-      (b) => b.textContent === "Stop"
+      (b) => b.textContent === "Stop generating"
     );
     expect(stop).toBeTruthy();
     await act(async () => {
@@ -400,6 +400,31 @@ describe("AISearch page", () => {
     await tick();
     expect(stream.signal?.aborted).toBe(true);
     expect(host.textContent).toContain("Stopped");
+  });
+
+  it("floats a Stop generating pill only while streaming, with no second Stop in the turn", async () => {
+    const stream = controlled();
+    const { host } = mount("/ai?q=hello");
+    await tick();
+    await stream.push({ event: "status", data: { phase: "generating" } });
+    const pills = [...host.querySelectorAll("button")].filter(
+      (b) => b.textContent === "Stop generating"
+    );
+    expect(pills).toHaveLength(1);
+    expect(host.querySelector("article")?.contains(pills[0])).toBe(false);
+    expect(
+      [...host.querySelectorAll("button")].filter(
+        (b) =>
+          b.textContent === "Stop" || b.getAttribute("aria-label") === "Stop"
+      )
+    ).toHaveLength(1);
+    await stream.push(done("c1"));
+    await stream.end();
+    expect(
+      [...host.querySelectorAll("button")].some(
+        (b) => b.textContent === "Stop generating"
+      )
+    ).toBe(false);
   });
 
   it("fills the composer from a suggestion without sending anything", async () => {

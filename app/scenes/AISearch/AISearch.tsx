@@ -350,7 +350,6 @@ const Page = observer(function Page({
                     scopeLabels={scopeLabels(turn.scope)}
                     scopeLine={scopeLine(turn)}
                     onSave={canSave ? handleSaveTurn : undefined}
-                    onStop={stop}
                     onRate={rate}
                     onReport={report}
                     onOpenSources={drawer.show}
@@ -376,6 +375,12 @@ const Page = observer(function Page({
               hidden={route.status !== "idle"}
               $hero={empty}
             >
+              {streaming && (
+                <StopPill type="button" onClick={stop}>
+                  <StopSquare aria-hidden />
+                  {t("Stop generating")}
+                </StopPill>
+              )}
               <Composer
                 value={text}
                 onChange={setText}
@@ -508,6 +513,42 @@ const ComposerDock = styled.div<{ $hero?: boolean }>`
       ? "24px 0 8px"
       : "8px 0 max(12px, env(safe-area-inset-bottom))"};
   background: ${s("background")};
+`;
+
+/** Floats centred above the composer while an answer is written. */
+const StopPill = styled.button`
+  position: absolute;
+  top: -34px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 14px;
+  box-shadow:
+    inset 0 0 0 1px ${s("buttonNeutralBorder")},
+    ${s("menuShadow")};
+  background: ${s("buttonNeutralBackground")};
+  color: ${s("text")};
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: var(--pointer);
+
+  &:hover,
+  &:focus-visible {
+    background: ${s("buttonNeutralHoverBackground")};
+  }
+`;
+
+const StopSquare = styled.span`
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: currentColor;
 `;
 
 const Disclaimer = styled.p`

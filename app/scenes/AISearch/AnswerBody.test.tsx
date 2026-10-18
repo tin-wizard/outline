@@ -256,13 +256,7 @@ describe("AnswerTurn sources", () => {
     host.innerHTML = renderToStaticMarkup(
       <ThemeProvider theme={theme}>
         <MemoryRouter>
-          <AnswerTurn
-            turn={t}
-            isLast
-            scopeLabels={[]}
-            onStop={() => {}}
-            onRetry={() => {}}
-          />
+          <AnswerTurn turn={t} isLast scopeLabels={[]} onRetry={() => {}} />
         </MemoryRouter>
       </ThemeProvider>
     );
@@ -320,7 +314,6 @@ describe("AnswerTurn sources", () => {
             })}
             isLast
             scopeLabels={["Eng"]}
-            onStop={() => {}}
             onRetry={() => {}}
           />
         </MemoryRouter>
@@ -336,7 +329,6 @@ describe("AnswerTurn sources", () => {
     expect(region?.getAttribute("aria-live")).toBe("polite");
     expect(region?.getAttribute("aria-busy")).toBe("true");
     expect(host.textContent).toContain("Writing and checking each statement");
-    expect(host.textContent).toContain("Stop");
   });
 
   it("puts phase text in its own status outside the aria-busy region", () => {
@@ -406,7 +398,6 @@ describe("AnswerTurn sources", () => {
               turn={t}
               isLast
               scopeLabels={[]}
-              onStop={() => {}}
               onRetry={() => {}}
               onRate={() => {}}
             />

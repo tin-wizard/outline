@@ -57,15 +57,7 @@ const wrap = (node: React.ReactNode) => (
 function renderTurn(t: Turn): HTMLElement {
   const host = document.createElement("div");
   host.innerHTML = renderToStaticMarkup(
-    wrap(
-      <AnswerTurn
-        turn={t}
-        isLast
-        scopeLabels={[]}
-        onStop={() => {}}
-        onRetry={() => {}}
-      />
-    )
+    wrap(<AnswerTurn turn={t} isLast scopeLabels={[]} onRetry={() => {}} />)
   );
   return host;
 }

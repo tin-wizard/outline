@@ -10,6 +10,7 @@ import { coverageOf } from "./answerInsights";
 import type { Coverage } from "./answerInsights";
 import type { Turn } from "./model";
 import { citedSources, isActive } from "./model";
+import { compareLetters, isCompare } from "./compare";
 import { SourceCard } from "./SourceCard";
 import { toneColors } from "./tones";
 import { SHEET_QUERY } from "./useSourcesDrawer";
@@ -40,6 +41,10 @@ export function SourcesDrawer({ turn, selected, autoFocus, onClose }: Props) {
   // Too narrow for a side pane next to the answer: a modal bottom sheet.
   const isSheet = useMediaQuery(SHEET_QUERY);
   const cited = React.useMemo(() => citedSources(turn), [turn]);
+  const letters = React.useMemo(
+    () => (isCompare(turn) ? compareLetters(turn) : undefined),
+    [turn]
+  );
 
   // Escape closes the drawer wherever focus is, unless something else on top
   // (a menu, dialog or popover) or the composer's Stop already handled it.
@@ -163,6 +168,7 @@ export function SourcesDrawer({ turn, selected, autoFocus, onClose }: Props) {
                 key={source.n}
                 id={`drawer-source-${source.n}`}
                 source={source}
+                letter={letters?.get(source.n)}
                 selected={selected === source.n}
               />
             ))}
