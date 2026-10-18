@@ -37,13 +37,13 @@ const turn: Turn = {
   blocks: [{ index: 0, kind: "paragraph", markdown: "A.", citations: [] }],
 };
 
-function mount(turns: Turn[], streaming = false) {
+function mount(turns: Turn[], streaming = false, title?: string) {
   const host = document.createElement("div");
   document.body.appendChild(host);
   act(() =>
     createRoot(host).render(
       <ThemeProvider theme={theme}>
-        <ExportActions turns={turns} streaming={streaming} />
+        <ExportActions turns={turns} streaming={streaming} title={title} />
       </ThemeProvider>
     )
   );
@@ -68,6 +68,15 @@ describe("ExportActions", () => {
       expect.anything()
     );
     expect(toast.success).toHaveBeenCalledWith("Copied");
+  });
+
+  it("uses the chat title as the heading", () => {
+    const { button } = mount([turn], false, "Hotel limits");
+    act(() => button("Copy conversation").click());
+    expect(copy).toHaveBeenCalledWith(
+      conversationToMarkdown([turn], { title: "Hotel limits" }),
+      expect.anything()
+    );
   });
 
   it("downloads a Blob and revokes the object URL", () => {

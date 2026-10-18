@@ -12,6 +12,8 @@ interface Props {
   turns: Turn[];
   /** Disables every action while an answer is streaming. */
   streaming: boolean;
+  /** Heading of the exported Markdown, e.g. the chat title. */
+  title?: string;
 }
 
 /**
@@ -20,13 +22,14 @@ interface Props {
  *
  * @param props.turns the conversation turns.
  * @param props.streaming whether an answer is being written.
+ * @param props.title heading of the exported Markdown; "AI Search" by default.
  * @returns the button group.
  */
-export function ExportActions({ turns, streaming }: Props) {
+export function ExportActions({ turns, streaming, title }: Props) {
   const { t } = useTranslation();
   const disabled = streaming || !turns.some((turn) => turn.blocks.length > 0);
   const markdown = () =>
-    conversationToMarkdown(turns, { title: t("AI Search") });
+    conversationToMarkdown(turns, { title: title || t("AI Search") });
 
   const handleCopied = () => toast.success(t("Copied"));
 

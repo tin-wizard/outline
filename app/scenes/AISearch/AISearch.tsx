@@ -56,7 +56,10 @@ export const AISearch = observer(function AISearch() {
 function HistoryOff() {
   const { t } = useTranslation();
   React.useEffect(() => {
-    toast.info(t("Chat history is turned off for this workspace."));
+    // A fixed id shows the notice once even when the effect runs twice.
+    toast.info(t("Chat history is turned off for this workspace."), {
+      id: "ai-history-off",
+    });
   }, [t]);
   return <Redirect to={aiPath()} />;
 }
@@ -205,7 +208,7 @@ const Page = observer(function Page({
       actions={
         turns.length > 0 ? (
           <>
-            <ExportActions turns={turns} streaming={streaming} />
+            <ExportActions turns={turns} streaming={streaming} title={title} />
             <Button
               as={Link}
               to={aiPath()}
