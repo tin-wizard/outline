@@ -103,12 +103,12 @@ export const AIChats = observer(function AIChats({ deleteOnly }: Props) {
           />
         </SearchBox>
         {groups.map((group) => (
-          <section key={group.key} aria-label={labels[group.key]}>
+          <div role="group" key={group.key} aria-label={labels[group.key]}>
             <GroupTitle>{labels[group.key]}</GroupTitle>
             {group.items.map((conversation) => (
               <AIChatRow key={conversation.id} conversation={conversation} />
             ))}
-          </section>
+          </div>
         ))}
         {loading && (
           <DelayedMount>

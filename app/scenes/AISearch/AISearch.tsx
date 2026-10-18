@@ -350,7 +350,7 @@ const Root = styled.div`
       display: block !important;
     }
 
-    section {
+    article {
       break-inside: avoid-page;
     }
   }

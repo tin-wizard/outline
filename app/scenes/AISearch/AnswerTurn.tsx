@@ -613,7 +613,8 @@ const Chip = styled.button`
   }
 `;
 
-const Section = styled.section`
+// An article, not a section: a long chat would add one landmark per answer.
+const Section = styled.article`
   margin: 24px 0;
 `;
 
