@@ -54,6 +54,7 @@ export type AskFailure =
   | "no_answer"
   | "unverified"
   | "budget"
+  | "quota"
   | "unavailable"
   | "timeout"
   | "cancelled"
@@ -440,22 +441,24 @@ router.post(
 
       let reservation: Awaited<ReturnType<typeof reserveModelCall>>;
       try {
-        reservation = await reserveModelCall(user.teamId);
+        reservation = await reserveModelCall(user.teamId, user.id);
       } catch (error) {
         limits.stop();
         throw error;
       }
       if (!reservation.ok) {
         limits.stop();
-        if (reservation.reason === "budget") {
+        const { reason } = reservation;
+        if (reason === "budget" || reason === "quota") {
           await record({
             ...base,
             usage: ZERO_USAGE,
-            outcome: "budget_blocked",
+            outcome: reason === "budget" ? "budget_blocked" : "quota_blocked",
           });
         }
         await finish([], {
-          failed: reservation.reason === "budget" ? "budget" : "unavailable",
+          failed:
+            reason === "budget" || reason === "quota" ? reason : "unavailable",
         });
         return;
       }
@@ -615,9 +618,10 @@ router.post(
   }
 );
 
-// Rates one answer. Stores only the rating and its time, never any text. Runs
-// in the request transaction (no model call here), so row-level security
-// applies as well as the explicit team and asker scoping below.
+// Rates one answer. Stores only the rating and its time, never any text. The
+// explicit team and asker WHERE below is the protection: row-level security
+// only covers reads routed through the request transaction, and the
+// production database role bypasses it.
 router.post(
   "ai.feedback",
   rateLimiter(RateLimiterStrategy.TenPerMinute),

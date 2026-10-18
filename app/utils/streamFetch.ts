@@ -17,6 +17,7 @@ export type AskFailure =
   | "no_answer"
   | "unverified"
   | "budget"
+  | "quota"
   | "unavailable"
   | "timeout"
   | "cancelled"

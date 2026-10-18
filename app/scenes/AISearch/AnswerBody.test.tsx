@@ -343,6 +343,14 @@ describe("AnswerTurn sources", () => {
     expect(host.querySelector("[aria-live] [role=status]")).toBeNull();
   });
 
+  it("explains the daily limit without offering a retry", () => {
+    const host = render(turn({ status: "failed", problem: "quota" }));
+    expect(host.textContent).toContain(
+      "You've reached your daily AI limit. It resets at midnight UTC."
+    );
+    expect(host.textContent).not.toContain("Try again");
+  });
+
   it("shows the Retry-After wait and a retry button for rate limiting", () => {
     const host = render(
       turn({ status: "failed", problem: "rateLimited", retryAfter: 42 })

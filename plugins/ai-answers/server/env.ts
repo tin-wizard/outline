@@ -44,6 +44,18 @@ class AIAnswersPluginEnvironment extends Environment {
     this.toOptionalString(environment.AI_ANSWERS_MONTHLY_BUDGET_USD) ?? "25";
 
   /**
+   * Daily spend cap per user in USD (calendar day, UTC), checked before each
+   * model call. Defaults to 2. Unset, empty or invalid (not a plain
+   * non-negative number, or above 100000) means the default; an explicit 0
+   * blocks AI answers for every user. Not validated here: a failing validator
+   * exits the process, and a typo must not take the site down.
+   */
+  @IsOptional()
+  public AI_ANSWERS_USER_DAILY_BUDGET_USD = this.toOptionalString(
+    environment.AI_ANSWERS_USER_DAILY_BUDGET_USD
+  );
+
+  /**
    * Hard deadline in milliseconds for the model call of an answer: when it
    * passes, the call is aborted and the retrieved documents are returned
    * without an answer. Redis and database work around the call is not bounded

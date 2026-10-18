@@ -314,6 +314,10 @@ function problemMessage(
       return t(
         "AI answers have reached this workspace's monthly limit. Ask an admin or try again later."
       );
+    case "quota":
+      return t(
+        "You've reached your daily AI limit. It resets at midnight UTC."
+      );
     case "unavailable":
       return t("AI answers are temporarily unavailable.");
     case "timeout":

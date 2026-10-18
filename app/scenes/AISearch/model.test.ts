@@ -230,6 +230,14 @@ describe("chatReducer with malformed events", () => {
     expect(late.turns[0].status).toBe("generating");
   });
 
+  it("keeps the quota failure reason", () => {
+    const state = run([wire("failed", { reason: "quota", partial: false })]);
+    expect(state.turns[0]).toMatchObject({
+      status: "failed",
+      problem: "quota",
+    });
+  });
+
   it("treats an unknown failure reason as an error and a non-string conversation id as none", () => {
     const state = run([wire("failed", { reason: "weird", partial: false })]);
     expect(state.turns[0].problem).toBe("error");

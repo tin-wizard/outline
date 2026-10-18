@@ -603,6 +603,33 @@ describe("#ai.ask", () => {
       ]);
     });
 
+    it("a user over their daily limit fails with quota and never calls the model", async () => {
+      const { user } = await setup();
+      const bodies = upstream(() => anthropicEvents([cited]));
+      await AIAnswerUsage.create({
+        teamId: user.teamId,
+        userId: user.id,
+        model: "claude-sonnet-5-5",
+        inputTokens: 0,
+        outputTokens: 0,
+        costMicroUsd: String(2_000_000),
+        outcome: "answered",
+        droppedSegments: 0,
+        durationMs: 0,
+      });
+      const events = await askEvents(user);
+      expect(events.at(-1)).toEqual({
+        event: "failed",
+        data: { reason: "quota", partial: false },
+      });
+      expect(bodies).toHaveLength(0);
+      const rows = await rowsFor(user.teamId);
+      expect(rows.map((r) => [r.outcome, r.costMicroUsd]).sort()).toEqual([
+        ["answered", "2000000"],
+        ["quota_blocked", "0"],
+      ]);
+    });
+
     it("an unmetered workspace fails as unavailable and never calls the model", async () => {
       const { user } = await setup();
       const bodies = upstream(() => anthropicEvents([cited]));

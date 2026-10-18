@@ -145,6 +145,7 @@ const FAILURES = [
   "no_answer",
   "unverified",
   "budget",
+  "quota",
   "unavailable",
   "timeout",
   "cancelled",
