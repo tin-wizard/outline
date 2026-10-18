@@ -1,4 +1,5 @@
 import { ArrowIcon } from "outline-icons";
+import { VisuallyHidden } from "@radix-ui/react-visually-hidden";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import styled from "styled-components";
@@ -99,11 +100,12 @@ export function Composer({
       />
       <Bar>
         {chips}
-        <Hint id="ai-composer-hint">
+        {/* Read by screen readers only: the mockup's bar has no room for it next to four chips. */}
+        <VisuallyHidden id="ai-composer-hint">
           {busy
             ? t("Press Escape to stop")
             : t("Enter to send · Shift+Enter for a new line")}
-        </Hint>
+        </VisuallyHidden>
         {value.length >= COUNTER_FROM && (
           <Counter aria-hidden="true">
             {value.length}/{MAX_QUERY_LENGTH}
@@ -170,17 +172,6 @@ const Bar = styled.div`
   align-items: center;
   gap: 8px;
   margin: 10px 0 0 -6px;
-`;
-
-const Hint = styled.span`
-  flex: none;
-  color: ${s("textTertiary")};
-  font-size: 12px;
-  white-space: nowrap;
-
-  @media (max-width: ${breakpoints.desktop - 1}px) {
-    display: none;
-  }
 `;
 
 const Counter = styled.span`

@@ -154,6 +154,13 @@ export function ResumedDivider({ date }: { date: string }) {
 const Current = styled.span`
   ${ellipsis()}
   min-width: 0;
+  /* Header crumbs stop shrinking from tablet up, so a long title needs a cap. */
+  max-width: min(40vw, 560px);
+
+  @media (min-width: ${breakpoints.tablet}px) and (max-width: ${breakpoints.desktop - 1}px) {
+    max-width: 26vw;
+  }
+
   padding-inline: 4px;
   color: ${s("text")};
   font-size: 15px;

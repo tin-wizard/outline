@@ -355,6 +355,8 @@ const List = styled.div`
 
 const Row = styled.label`
   display: flex;
+  /* Never squeezed by the scrolling list; two-line rows keep their height. */
+  flex: none;
   align-items: center;
   gap: 8px;
   min-height: 32px;
@@ -393,6 +395,7 @@ const Grow = styled.span`
 const Meta = styled.span`
   color: ${s("textTertiary")};
   font-size: 12px;
+  line-height: 1.3;
 `;
 
 const Hint = styled.p`

@@ -63,7 +63,9 @@ export function ScopeChips({
     ? t("All collections")
     : selectedCollections.length <= 2 && names.every(Boolean)
       ? names.join(", ")
-      : t("{{ count }} collections", { count: selectedCollections.length });
+      : selectedCollections.length === 1
+        ? t("1 collection")
+        : t("{{ count }} collections", { count: selectedCollections.length });
   const documentsLabel = !docs.length
     ? t("Specific documents")
     : docs.length === 1

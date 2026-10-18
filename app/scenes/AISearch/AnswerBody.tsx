@@ -207,11 +207,14 @@ const TableWrapper = styled.div`
   margin: 0.5em 0;
 
   table {
+    width: 100%;
     border-collapse: collapse;
   }
 
   th,
   td {
+    /* Words stay whole; a table too wide for the column scrolls instead. */
+    overflow-wrap: normal;
     padding: 6px 10px;
     border: 1px solid ${s("divider")};
     text-align: left;

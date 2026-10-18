@@ -11,6 +11,7 @@ import { Trans, useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import { transparentize } from "polished";
 import styled, { keyframes } from "styled-components";
+import { HEADER_HEIGHT } from "@shared/constants";
 import { breakpoints, s } from "@shared/styles";
 import Button from "~/components/Button";
 import PlaceholderText from "~/components/PlaceholderText";
@@ -111,7 +112,17 @@ export function AnswerTurn({
   const { t } = useTranslation();
   const headingRef = React.useRef<HTMLHeadingElement>(null);
   const previous = React.useRef(turn.status);
+  const askedRef = React.useRef<HTMLDivElement>(null);
   const active = isActive(turn);
+
+  // A question just asked scrolls into view; stored turns keep the reader's place.
+  React.useEffect(() => {
+    if (isActive(turn)) {
+      askedRef.current?.scrollIntoView?.({ block: "start" });
+    }
+    // Only on mount: later updates of the same turn must not move the page.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const cited = React.useMemo(() => citedSources(turn), [turn]);
   const previews = React.useMemo(
     () =>
@@ -196,7 +207,7 @@ export function AnswerTurn({
 
   return (
     <Section aria-label={turn.question}>
-      <Asked>
+      <Asked ref={askedRef}>
         <Question>{turn.question}</Question>
         {scopeLine && (
           <QuestionScope data-kind={scopeLine.kind}>
@@ -510,6 +521,7 @@ const Asked = styled.div`
   align-items: flex-end;
   gap: 4px;
   margin: 0 0 14px;
+  scroll-margin-top: ${HEADER_HEIGHT + 16}px;
 `;
 
 const QuestionScope = styled.p`
