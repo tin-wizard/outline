@@ -4,7 +4,8 @@ import styled from "styled-components";
 import { s } from "@shared/styles";
 import type { AskSource } from "~/utils/streamFetch";
 import { formatWhen } from "./dates";
-import { TAG_COLORS, tagColor } from "./compare";
+import type { TAG_COLORS } from "./compare";
+import { tagColor } from "./compare";
 
 interface Props {
   sources: AskSource[];

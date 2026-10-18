@@ -104,11 +104,16 @@ describe("compare answers", () => {
 
   it("uses letters on the citation chips", () => {
     const chips = [...render(turn()).querySelectorAll("[data-citation]")];
-    expect(chips.map((c) => c.getAttribute("aria-label")).sort()).toEqual([
-      "Source A",
-      "Source B",
-    ]);
-    expect(chips.map((c) => c.textContent).sort()).toEqual(["A", "B"]);
+    expect(
+      chips
+        .map((c) => c.getAttribute("aria-label"))
+        .sort((a, b) => (a ?? "").localeCompare(b ?? ""))
+    ).toEqual(["Source A", "Source B"]);
+    expect(
+      chips
+        .map((c) => c.textContent)
+        .sort((a, b) => (a ?? "").localeCompare(b ?? ""))
+    ).toEqual(["A", "B"]);
   });
 
   it("shows no cards before the table header, or outside compare mode", () => {
