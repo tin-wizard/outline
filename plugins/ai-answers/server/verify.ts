@@ -303,7 +303,8 @@ export type BlockDropReason =
   | "structure"
   | "unsupported"
   | "uncited"
-  | "table";
+  | "table"
+  | "comparative";
 
 /** A block that may be released, with its sanitised content. */
 export interface AcceptedBlock {
@@ -484,16 +485,26 @@ export function verifyBlock(
         isRowSupported(cleaned, p, flatten(valid[i].passage))
       );
       if (at === -1) {
-        return verbatimOr(drop("unsupported"));
+        return verbatimOr(
+          drop(isComparison(text) ? "comparative" : "unsupported")
+        );
       }
       used.add(at);
     } else {
       for (const sentence of sentencesOf(text)) {
-        const at = passages.findIndex((p) => isClaimSupported(sentence, p));
+        // A comparison must be stated by one passage, not pieced together.
+        const comparison =
+          isComparison(sentence) &&
+          !ctx.flat.some((sections) => isWholeCopyIn(sentence, sections));
+        const at = passages.findIndex(
+          (p, i) =>
+            isClaimSupported(sentence, p) &&
+            (!comparison || isComparisonStated(sentence, valid[i].passage))
+        );
         if (at !== -1) {
           used.add(at);
         } else if (!isGapStatement(sentence, ctx)) {
-          return verbatimOr(drop("unsupported"));
+          return verbatimOr(drop(comparison ? "comparative" : "unsupported"));
         }
       }
     }
@@ -999,7 +1010,8 @@ function isRowSupported(
   const row = filled.join(" ");
   if (
     cells.some((cell) => !/[\p{L}\p{N}]/u.test(cell)) ||
-    splitWords(row).some((w) => POLARITY_WORDS.has(stem(w)))
+    splitWords(row).some((w) => POLARITY_WORDS.has(stem(w))) ||
+    isComparison(row)
   ) {
     return flatPassage.includes(flatten(`| ${cells.join(" | ")} |`));
   }
@@ -1042,6 +1054,7 @@ function isLeadIn(text: string, ctx: PreparedSources): boolean {
   return (
     text.endsWith(":") &&
     sentencesOf(text).length === 1 &&
+    !isComparison(text) &&
     isLabel(text, ctx, 0)
   );
 }
@@ -1262,6 +1275,94 @@ const COMPARATIVE_WORDS = new Set(
     "compared comparison unlike whereas same unchanged both"
   ).split(" ")
 );
+
+/**
+ * Comparative words that make a sentence a comparison or a ranking: "than",
+ * "versus", "compared" and superlatives. A bare "more" ("more details are in
+ * X") compares nothing and is left to the ordinary support check.
+ */
+const COMPARISON_TRIGGERS = new Set(
+  [...COMPARATIVE_WORDS].filter(
+    (word) =>
+      word.endsWith("est") ||
+      ["than", "vs", "versus", "compared", "unlike", "most", "worst"].includes(
+        word
+      )
+  )
+);
+
+/** Triggers whose two sides keep their order ("A costs more than B"). */
+const ORDERED_TRIGGERS = new Set([
+  "than",
+  "vs",
+  "versus",
+  "compared",
+  "unlike",
+]);
+
+/** How many words either side of a trigger the compared things may be. */
+const COMPARISON_WINDOW = 12;
+
+/** Words of the text outside inline code and code-like tokens. */
+function proseWords(text: string): string[] {
+  const prose = text
+    .replace(CODE_SPAN_PATTERN, " ")
+    .split(/\s+/)
+    .filter((token) => !CODE_LIKE_PATTERN.test(token))
+    .join(" ");
+  return splitWords(prose).filter(Boolean);
+}
+
+/** Positions of comparison triggers; "at least" and "at most" bound a quantity. */
+function triggersIn(words: string[]): number[] {
+  return words.flatMap((word, i) =>
+    COMPARISON_TRIGGERS.has(word) && words[i - 1] !== "at" ? [i] : []
+  );
+}
+
+/** Stemmed content words, the comparison triggers left out. */
+function comparedWords(words: string[]): string[] {
+  return words
+    .filter((w) => !STOPWORDS.has(w) && !COMPARISON_TRIGGERS.has(w))
+    .map(stem);
+}
+
+/** Whether the text compares or ranks things. */
+function isComparison(text: string): boolean {
+  return triggersIn(proseWords(text)).length > 0;
+}
+
+/**
+ * Whether one clause of the passage states the sentence's comparison: for
+ * each trigger, the same word with every content word before it in the
+ * sentence within `COMPARISON_WINDOW` words before it and every content word
+ * after it within the window after it; a superlative's words may be on
+ * either side.
+ */
+function isComparisonStated(sentence: string, passage: string): boolean {
+  const words = proseWords(sentence);
+  const clauses = passage.split(/[!?;|\n]|[.:](?=\s|$)/).map(proseWords);
+  return triggersIn(words).every((t) => {
+    const before = comparedWords(words.slice(0, t));
+    const after = comparedWords(words.slice(t + 1));
+    return clauses.some((clause) =>
+      triggersIn(clause).some((p) => {
+        if (clause[p] !== words[t]) {
+          return false;
+        }
+        const left = new Set(
+          comparedWords(clause.slice(Math.max(0, p - COMPARISON_WINDOW), p))
+        );
+        const right = new Set(
+          comparedWords(clause.slice(p + 1, p + 1 + COMPARISON_WINDOW))
+        );
+        return ORDERED_TRIGGERS.has(words[t])
+          ? before.every((w) => left.has(w)) && after.every((w) => right.has(w))
+          : [...before, ...after].every((w) => left.has(w) || right.has(w));
+      })
+    );
+  });
+}
 
 /** Arrows, inequality signs, deltas and strikethrough that state a change. */
 const COMPARATIVE_SYMBOLS = /[→←⇒⇐↑↓<>±Δ]|->|~~/u;

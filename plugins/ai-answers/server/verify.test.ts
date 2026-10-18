@@ -1297,3 +1297,91 @@ describe("compareSources", () => {
     ]);
   });
 });
+
+describe("verifyBlock comparatives in answer mode (BE-3)", () => {
+  const sources = [
+    source("Basic Plan", ["# Pricing\nThe Basic plan costs 10 EUR per month."]),
+    source("Pro Plan", ["# Pricing\nThe Pro plan costs 30 EUR per month."]),
+    source("Plans", [
+      "# Plans\nThe Pro plan is more expensive than the Basic plan. Enterprise is the largest plan.",
+      "# Help\nLeave details are listed on the portal page.",
+      "# CLI\nThe flag `--newer-than` skips files older than the given date.",
+    ]),
+  ];
+  const basic = cite(0, 0, "The Basic plan costs 10 EUR per month.");
+  const pro = cite(1, 0, "The Pro plan costs 30 EUR per month.");
+  const plans = cite(2, 0, "The Pro plan is more expensive");
+  const one = (markdown: string, citations: ReturnType<typeof cite>[]) =>
+    verifyBlock(splitBlocks(markdown)[0], citations, sources);
+
+  it("drops a false comparison whose words each appear in the sources", () => {
+    expect(one("Basic costs more than Pro.", [basic, pro])).toMatchObject({
+      ok: false,
+      reason: "comparative",
+    });
+  });
+
+  it("drops a true but derived comparison no passage states", () => {
+    expect(one("Pro costs more than Basic.", [basic, pro])).toMatchObject({
+      ok: false,
+      reason: "comparative",
+    });
+  });
+
+  it("releases a faithful restatement of a stated comparison", () => {
+    expect(
+      one("The Pro plan is more expensive than Basic.", [plans])
+    ).toMatchObject({ ok: true, modelCited: true });
+  });
+
+  it("drops a stated comparison with its sides swapped", () => {
+    expect(
+      one("The Basic plan is more expensive than the Pro plan.", [plans])
+    ).toMatchObject({ ok: false, reason: "comparative" });
+  });
+
+  it("releases a verbatim copy of a comparison", () => {
+    expect(
+      one("The Pro plan is more expensive than the Basic plan.", [])
+    ).toMatchObject({ ok: true });
+    expect(
+      one("The Pro plan is more expensive than the Basic plan.", [basic])
+    ).toMatchObject({ ok: true });
+  });
+
+  it("releases 'more' that compares nothing", () => {
+    expect(
+      one("More details are on the portal page.", [
+        cite(2, 1, "Leave details are listed on the portal page."),
+      ])
+    ).toMatchObject({ ok: true, modelCited: true });
+  });
+
+  it("drops an unsupported superlative and keeps a stated one", () => {
+    expect(one("Pro is the largest plan.", [basic, pro])).toMatchObject({
+      ok: false,
+      reason: "comparative",
+    });
+    expect(one("The largest plan is Enterprise.", [plans])).toMatchObject({
+      ok: true,
+    });
+  });
+
+  it("ignores comparative words inside inline code", () => {
+    expect(
+      one("The `--newer-than` flag skips older files.", [
+        cite(2, 2, "skips files older than the given date"),
+      ])
+    ).toMatchObject({ ok: true });
+  });
+
+  it("drops a derived comparison in a table row", () => {
+    const [, row] = splitBlocks(
+      "| Plan | Price |\n| --- | --- |\n| Pro | more expensive than Basic |"
+    );
+    expect(verifyBlock(row, [basic, pro], sources)).toMatchObject({
+      ok: false,
+      reason: "comparative",
+    });
+  });
+});

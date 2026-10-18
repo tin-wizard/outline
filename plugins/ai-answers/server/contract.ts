@@ -90,6 +90,7 @@ export const STRUCTURED_SYSTEM_PROMPT = [
   `If the search results do not contain the answer, reply with exactly ${NO_ANSWER} and nothing else.`,
   'If they answer only part of the question, answer that part, then say plainly what the documents do not cover in a separate sentence such as "The documents do not cover X."',
   "Every statement of fact must be supported by the search results and cite them.",
+  "Do not state comparisons, rankings or differences unless a single search result states them; never derive them by comparing values from different sources.",
   'Write complete, self-contained sentences that name their subject. Do not start a sentence with a pronoun such as "It" or "This" when its antecedent is not in the same sentence.',
   "",
   "Shape the answer to the question, as long as it needs to be and no longer:",
