@@ -22,6 +22,10 @@ import {
   withTracing,
 } from "./util";
 import { ValidationError } from "@server/errors";
+import {
+  aiExcludedCollectionIds,
+  isAIExcluded,
+} from "@server/utils/aiExclusion";
 
 /**
  * Presents a comment with a markdown rendering of its content so that
@@ -148,9 +152,16 @@ export function commentTools(server: McpServer, scopes: string[]) {
             let comments: Comment[];
 
             if (documentId) {
-              const document = await Document.findByPk(documentId, {
+              let document = await Document.findByPk(documentId, {
                 userId: user.id,
               });
+              // Same response as a missing document.
+              if (
+                document &&
+                (await isAIExcluded(user, document.collectionId))
+              ) {
+                document = null;
+              }
               authorize(user, "read", document);
 
               comments = await Comment.findAll(params);
@@ -160,6 +171,9 @@ export function commentTools(server: McpServer, scopes: string[]) {
                 userId: user.id,
               });
               authorize(user, "read", collection);
+              if (collection.aiExcluded) {
+                return success([]);
+              }
 
               comments = await Comment.findAll({
                 include: [
@@ -175,7 +189,14 @@ export function commentTools(server: McpServer, scopes: string[]) {
                 ...params,
               });
             } else {
-              const accessibleCollectionIds = await user.collectionIds();
+              const collectionIds = await user.collectionIds();
+              const excluded = await aiExcludedCollectionIds(
+                user,
+                collectionIds
+              );
+              const accessibleCollectionIds = collectionIds.filter(
+                (id) => !excluded.has(id)
+              );
 
               comments = await Comment.findAll({
                 include: [
@@ -295,14 +316,18 @@ export function commentTools(server: McpServer, scopes: string[]) {
               authorize(user, "comment", document);
 
               if (anchorText) {
-                const updated = ProsemirrorHelper.applyCommentMarkByText({
-                  docState: DocumentHelper.toState(document),
-                  anchorText,
-                  commentId,
-                  userId: user.id,
-                  prefix: anchorPrefix,
-                  suffix: anchorSuffix,
-                });
+                // Anchoring would reveal whether text exists in an excluded
+                // document, so it fails there exactly as for absent text.
+                const updated =
+                  !(await isAIExcluded(user, document.collectionId)) &&
+                  ProsemirrorHelper.applyCommentMarkByText({
+                    docState: DocumentHelper.toState(document),
+                    anchorText,
+                    commentId,
+                    userId: user.id,
+                    prefix: anchorPrefix,
+                    suffix: anchorSuffix,
+                  });
 
                 if (!updated) {
                   throw ValidationError(

@@ -1,5 +1,4 @@
 import type { Filter } from "@shared/helpers/FilterHelper";
-import { Collection } from "@server/models";
 import type { Document, User } from "@server/models";
 import { DocumentHelper } from "@server/models/helpers/DocumentHelper";
 import {
@@ -8,6 +7,7 @@ import {
 } from "@server/models/helpers/Filters";
 import { expandDocumentIdLeaves } from "@server/routes/api/documents/documents";
 import SearchProviderManager from "@server/utils/SearchProviderManager";
+import { dropAIExcluded } from "@server/utils/aiExclusion";
 import type * as T from "./api/schema";
 import { redactSecrets } from "./redact";
 import {
@@ -167,36 +167,4 @@ async function searchTitles(
     .filter((item) => item.hits >= required)
     .sort((a, b) => b.hits - a.hits)
     .map((item) => item.document);
-}
-
-/**
- * Drops documents in collections excluded from AI answers.
- *
- * @param user the user asking; limits the lookup to their workspace.
- * @param documents the documents to filter.
- * @returns the documents that are not in an excluded collection.
- */
-export async function dropAIExcluded(
-  user: User,
-  documents: Document[]
-): Promise<Document[]> {
-  const collectionIds = [
-    ...new Set(documents.map((d) => d.collectionId)),
-  ].filter((id): id is string => !!id);
-  if (collectionIds.length === 0) {
-    return documents;
-  }
-  const excluded = new Set(
-    (
-      await Collection.findAll({
-        where: { id: collectionIds, teamId: user.teamId, aiExcluded: true },
-        attributes: ["id"],
-        // A trashed collection's documents can still be searched.
-        paranoid: false,
-      })
-    ).map((c) => c.id)
-  );
-  return documents.filter(
-    (d) => !d.collectionId || !excluded.has(d.collectionId)
-  );
 }

@@ -7,7 +7,7 @@ import { can } from "@server/policies";
 import Redis from "@server/storage/redis";
 import { blockToMarkdown } from "./blocks";
 import { redactSecrets } from "./redact";
-import { dropAIExcluded } from "./retrieve";
+import { dropAIExcluded } from "@server/utils/aiExclusion";
 import type { AcceptedBlock } from "./verify";
 
 /** One question and its verified answer, written by the server only. */

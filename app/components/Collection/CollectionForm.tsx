@@ -237,7 +237,7 @@ export const CollectionForm = observer(function CollectionForm_({
               id="aiExcluded"
               label={t("Exclude from AI answers")}
               note={t(
-                "Documents within this collection are never used by AI answers in search."
+                "Documents within this collection are never used by AI answers or exposed to AI clients such as MCP. Normal search is unaffected."
               )}
               checked={!!field.value}
               onChange={field.onChange}
