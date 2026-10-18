@@ -6,7 +6,7 @@ import { Link, Redirect, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { isUUID } from "validator";
 import styled from "styled-components";
-import { s } from "@shared/styles";
+import { breakpoints, s } from "@shared/styles";
 import Button from "~/components/Button";
 import Scene from "~/components/Scene";
 import PlaceholderText from "~/components/PlaceholderText";
@@ -17,13 +17,16 @@ import useStores from "~/hooks/useStores";
 import { aiPath, homePath } from "~/utils/routeHelpers";
 import { AnswerTurn } from "./AnswerTurn";
 import { ExportActions } from "./ExportActions";
+import { SourcesDrawer } from "./SourcesDrawer";
 import { Composer, MAX_QUERY_LENGTH } from "./Composer";
 import type { ScopeChip } from "./ScopeChips";
 import { ScopeChips } from "./ScopeChips";
 import type { Scope } from "./model";
+import { citedSources } from "./model";
 import { useAISearch } from "./useAISearch";
 import { useAutoSubmitQuery } from "./useAutoSubmitQuery";
 import { useConversationRoute } from "./useConversationRoute";
+import { useSourcesDrawer } from "./useSourcesDrawer";
 
 /**
  * The AI Search page (`/ai`): a conversation with streamed, cited answers
@@ -71,7 +74,7 @@ const Page = observer(function Page({
   historyEnabled: boolean;
 }) {
   const { t } = useTranslation();
-  const { collections, documents } = useStores();
+  const { collections, documents, aiConversations } = useStores();
   const params = useQuery();
   const { state, streaming, ask, stop, reset, hydrate, rate } = useAISearch();
   const route = useConversationRoute({
@@ -87,6 +90,7 @@ const Page = observer(function Page({
     documentId: validId(params.get("documentId")),
   }));
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+  const drawer = useSourcesDrawer();
 
   const { collectionId, documentId } = scope;
   React.useEffect(() => {
@@ -134,6 +138,12 @@ const Page = observer(function Page({
     textareaRef.current?.focus();
   };
 
+  // Chips fill the composer like the idle suggestions: sending stays explicit.
+  const handleFollowUp = (question: string) => {
+    setText(question.slice(0, MAX_QUERY_LENGTH));
+    textareaRef.current?.focus();
+  };
+
   // The link to /ai starts a new chat; the stored one is kept, not deleted.
   const handleNewConversation = () => {
     reset();
@@ -177,12 +187,21 @@ const Page = observer(function Page({
 
   const { turns } = state;
   const last = turns[turns.length - 1];
+  const title =
+    (conversationId && aiConversations.get(conversationId)?.title) ||
+    t("AI Search");
+  // The drawer shows the selected answer, else the newest one with sources.
+  const drawerTurn =
+    turns.find((turn) => turn.id === drawer.turnId) ??
+    [...turns].reverse().find((turn) => citedSources(turn).length > 0) ??
+    last;
 
   return (
     <Scene
-      title={t("AI Search")}
+      title={title}
       icon={<SparklesIcon />}
-      textTitle={t("AI Search")}
+      textTitle={title}
+      centered={false}
       actions={
         turns.length > 0 ? (
           <>
@@ -193,86 +212,113 @@ const Page = observer(function Page({
               neutral
               onClick={handleNewConversation}
             >
-              {t("New conversation")}
+              {t("New chat")}
             </Button>
           </>
         ) : undefined
       }
     >
       <Root data-ai-search>
-        <div data-print-hidden>
-          <ScopeChips chips={chips} disabled={streaming} />
-        </div>
-        {route.status === "loading" ? (
-          <Idle aria-busy="true">
-            <span role="status">{t("Loading conversation…")}</span>
-            <PlaceholderText />
-            <PlaceholderText delay={0.2} />
-          </Idle>
-        ) : route.status === "notFound" ? (
-          <Idle role="alert">
-            <strong>{t("Conversation not found")}</strong>
-            <p>
-              <Link to={aiPath()}>{t("New chat")}</Link>
-            </p>
-          </Idle>
-        ) : route.status === "error" ? (
-          <Idle role="alert">
-            <p>{t("Could not load this conversation.")}</p>
-            <Button type="button" neutral onClick={route.retry}>
-              {t("Try again")}
-            </Button>
-          </Idle>
-        ) : turns.length === 0 ? (
-          <Idle>
-            <p>
-              {t(
-                "Ask a question and get an answer built from your documents, with sources."
-              )}
-            </p>
-            <Suggestions aria-label={t("Example questions")}>
-              {suggestions.map((suggestion) => (
-                <li key={suggestion}>
-                  <Suggestion
-                    type="button"
-                    value={suggestion}
-                    onClick={handleSuggestionClick}
-                  >
-                    {suggestion}
-                  </Suggestion>
-                </li>
-              ))}
-            </Suggestions>
-          </Idle>
-        ) : (
-          turns.map((turn) => (
-            <AnswerTurn
-              key={turn.id}
-              turn={turn}
-              isLast={turn === last}
-              scopeLabels={scopeLabels(turn.scope)}
-              onStop={stop}
-              onRate={rate}
-              onRetry={(failed) => submit(failed.question, failed.scope)}
+        <Panes>
+          <Chat>
+            <div data-print-hidden>
+              <ScopeChips chips={chips} disabled={streaming} />
+            </div>
+            {route.status === "loading" ? (
+              <Idle aria-busy="true">
+                <span role="status">{t("Loading conversation…")}</span>
+                <PlaceholderText />
+                <PlaceholderText delay={0.2} />
+              </Idle>
+            ) : route.status === "notFound" ? (
+              <Idle role="alert">
+                <strong>{t("Conversation not found")}</strong>
+                <p>
+                  <Link to={aiPath()}>{t("New chat")}</Link>
+                </p>
+              </Idle>
+            ) : route.status === "error" ? (
+              <Idle role="alert">
+                <p>{t("Could not load this conversation.")}</p>
+                <Button type="button" neutral onClick={route.retry}>
+                  {t("Try again")}
+                </Button>
+              </Idle>
+            ) : turns.length === 0 ? (
+              <Welcome>
+                <SparklesIcon size={32} />
+                <WelcomeTitle>{t("Ask your documents")}</WelcomeTitle>
+                <p>
+                  {t(
+                    "Ask a question and get an answer built from your documents, with sources."
+                  )}
+                </p>
+                <Suggestions aria-label={t("Example questions")}>
+                  {suggestions.map((suggestion) => (
+                    <li key={suggestion}>
+                      <Suggestion
+                        type="button"
+                        value={suggestion}
+                        onClick={handleSuggestionClick}
+                      >
+                        {suggestion}
+                      </Suggestion>
+                    </li>
+                  ))}
+                </Suggestions>
+              </Welcome>
+            ) : (
+              turns.map((turn) => (
+                <AnswerTurn
+                  key={turn.id}
+                  turn={turn}
+                  isLast={turn === last}
+                  scopeLabels={scopeLabels(turn.scope)}
+                  onStop={stop}
+                  onRate={rate}
+                  onOpenSources={drawer.show}
+                  onFollowUp={handleFollowUp}
+                  onRetry={(failed) => submit(failed.question, failed.scope)}
+                />
+              ))
+            )}
+            <div data-print-hidden hidden={route.status !== "idle"}>
+              <Composer
+                value={text}
+                onChange={setText}
+                onSubmit={handleSubmit}
+                onStop={stop}
+                busy={streaming}
+                textareaRef={textareaRef}
+              />
+            </div>
+          </Chat>
+          {drawer.open && drawerTurn && (
+            <SourcesDrawer
+              turn={drawerTurn}
+              selected={drawer.selected}
+              autoFocus={drawer.focusIn}
+              onClose={drawer.close}
             />
-          ))
-        )}
-        <div data-print-hidden hidden={route.status !== "idle"}>
-          <Composer
-            value={text}
-            onChange={setText}
-            onSubmit={handleSubmit}
-            onStop={stop}
-            busy={streaming}
-            textareaRef={textareaRef}
-          />
-        </div>
+          )}
+        </Panes>
       </Root>
     </Scene>
   );
 });
 
 const Root = styled.div`
+  width: 100%;
+  padding: 4px 16px 0;
+
+  @media (min-width: ${breakpoints.tablet}px) {
+    padding: 4px 44px 0;
+  }
+
+  [data-print-only] {
+    display: none;
+  }
+
   @media print {
     color: #000;
     background: #fff;
@@ -297,10 +343,51 @@ const Root = styled.div`
       font-size: 0.85em;
     }
 
+    [data-print-only] {
+      display: block !important;
+    }
+
     section {
       break-inside: avoid-page;
     }
   }
+`;
+
+const Panes = styled.div`
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 24px;
+`;
+
+const Chat = styled.div`
+  flex: 1;
+  min-width: 0;
+  max-width: 46em;
+`;
+
+const Welcome = styled.div`
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: 48px 0 32px;
+  color: ${s("textSecondary")};
+  text-align: center;
+
+  svg {
+    fill: ${s("accent")};
+  }
+
+  ul {
+    width: 100%;
+    text-align: start;
+  }
+`;
+
+const WelcomeTitle = styled.h2`
+  margin: 8px 0 0;
+  color: ${s("text")};
+  font-size: 20px;
 `;
 
 const Idle = styled.div`

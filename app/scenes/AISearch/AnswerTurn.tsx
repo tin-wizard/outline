@@ -8,6 +8,11 @@ import { ThumbsDownIcon, ThumbsUpIcon } from "outline-icons";
 import Button from "~/components/Button";
 import CopyToClipboard from "~/components/CopyToClipboard";
 import Tooltip from "~/components/Tooltip";
+import {
+  followUpSuggestions,
+  isNotCovered,
+  verificationOf,
+} from "./answerInsights";
 import { AnswerBody } from "./AnswerBody";
 import type { CitationPreviewData } from "./CitationPreview";
 import { CitationQuote } from "./CitationQuote";
@@ -31,6 +36,14 @@ interface Props {
   onRetry: (turn: Turn) => void;
   /** Sets or clears helpful / not helpful for a finished answer. */
   onRate?: (turnId: number, rating: Rating) => void;
+  /**
+   * Opens the Sources drawer for this answer (optionally at one source). When
+   * given, citation markers open the drawer instead of scrolling to the inline
+   * list, which is then only shown in print.
+   */
+  onOpenSources?: (turnId: number, n?: number, opener?: HTMLElement) => void;
+  /** Receives a follow-up suggestion to place in the composer. */
+  onFollowUp?: (text: string) => void;
 }
 
 const RETRYABLE: TurnProblem[] = [
@@ -74,6 +87,8 @@ export function isDocPath(url: string): boolean {
  * @param props.onStop stops the running turn.
  * @param props.onRetry asks the question again.
  * @param props.onRate sends helpful / not helpful feedback.
+ * @param props.onOpenSources opens the Sources drawer.
+ * @param props.onFollowUp fills the composer with a suggestion.
  * @returns the turn.
  */
 export function AnswerTurn({
@@ -83,6 +98,8 @@ export function AnswerTurn({
   onStop,
   onRetry,
   onRate,
+  onOpenSources,
+  onFollowUp,
 }: Props) {
   const { t } = useTranslation();
   const headingRef = React.useRef<HTMLHeadingElement>(null);
@@ -125,18 +142,33 @@ export function AnswerTurn({
   const handleCopied = () => toast.success(t("Copied"));
 
   const handleCitationClick = React.useCallback(
-    (n: number) => {
+    (n: number, marker?: HTMLElement) => {
+      if (onOpenSources) {
+        onOpenSources(turn.id, n, marker);
+        return;
+      }
       const target = document.getElementById(`source-${turn.id}-${n}`);
       target?.scrollIntoView?.({ block: "nearest" });
       target?.focus();
       setHighlighted(n);
     },
-    [turn.id]
+    [turn.id, onOpenSources]
   );
+
+  const handleOpenSources = (event: React.MouseEvent<HTMLButtonElement>) =>
+    onOpenSources?.(turn.id, undefined, event.currentTarget);
+
+  const handleFollowUp = (event: React.MouseEvent<HTMLButtonElement>) =>
+    onFollowUp?.(event.currentTarget.value);
 
   const hasBlocks = turn.blocks.length > 0;
   const segments = React.useMemo(() => answerSegments(turn), [turn]);
-  const noResults = turn.problem === "no_answer" && !hasBlocks;
+  const notCovered = isNotCovered(turn);
+  const verification = notCovered ? undefined : verificationOf(turn);
+  const followUps = React.useMemo(
+    () => (notCovered ? [] : followUpSuggestions(turn)),
+    [turn, notCovered]
+  );
 
   return (
     <Section aria-label={turn.question}>
@@ -180,9 +212,6 @@ export function AnswerTurn({
             </SourceList>
           </Details>
         )}
-        {turn.problem && hasBlocks && (
-          <Muted>{t("Partial answer, not fully verified")}</Muted>
-        )}
         {segments.map((segment, i) =>
           segment.type === "hidden" ? (
             <Hidden key={`hidden-${i}`} role="note">
@@ -199,8 +228,15 @@ export function AnswerTurn({
             />
           )
         )}
+        {verification && (
+          <Meta data-state={verification.state}>
+            {verification.state === "verified"
+              ? verifiedText(verification.documents, verification.cited, t)
+              : t("Not fully verified")}
+          </Meta>
+        )}
         {cited.length > 0 && (
-          <div>
+          <div data-print-only={onOpenSources ? true : undefined}>
             <SourcesHeading>{t("Sources")}</SourcesHeading>
             <SourceList>
               {cited.map((source) => (
@@ -217,20 +253,22 @@ export function AnswerTurn({
           </div>
         )}
         {turn.status === "stopped" && <Message>{t("Stopped")}</Message>}
-        {noResults && (
-          <Message>
-            <strong>{t("No relevant documents found")}</strong>
-            <br />
-            {scopeLabels.length
-              ? t("Searched in: {{ scope }}.", {
-                  scope: scopeLabels.join(", "),
-                })
-              : t("Searched in: all documents.")}
-            <br />
-            {t("Try rephrasing, or widen the search by removing a filter.")}
-          </Message>
+        {notCovered && (
+          <NotCovered role="note">
+            <strong>{t("Not covered by your documents")}</strong>
+            <span>
+              {scopeLabels.length
+                ? t("Searched in: {{ scope }}.", {
+                    scope: scopeLabels.join(", "),
+                  })
+                : t("Searched in: all documents.")}
+            </span>
+            <span>
+              {t("Try rephrasing, or widen the search by removing a filter.")}
+            </span>
+          </NotCovered>
         )}
-        {turn.problem && !noResults && (
+        {turn.problem && !notCovered && (
           <Message>
             {problemMessage(turn, hasBlocks, t)}
             {isLast && RETRYABLE.includes(turn.problem) && (
@@ -246,6 +284,11 @@ export function AnswerTurn({
       </Answer>
       {turn.status === "done" && hasBlocks && (
         <CopyActions data-print-hidden>
+          {onOpenSources && cited.length > 0 && (
+            <Button type="button" neutral onClick={handleOpenSources}>
+              {t("Sources ({{ count }})", { count: cited.length })}
+            </Button>
+          )}
           <CopyToClipboard
             text={turnToMarkdown(turn, {
               includeQuestion: false,
@@ -258,6 +301,25 @@ export function AnswerTurn({
             </Button>
           </CopyToClipboard>
         </CopyActions>
+      )}
+      {onFollowUp && followUps.length > 0 && (
+        <Chips data-print-hidden aria-label={t("Follow-up suggestions")}>
+          {followUps.map((followUp) => {
+            const label =
+              followUp.kind === "more"
+                ? t("Tell me more about {{ heading }}", {
+                    heading: followUp.heading,
+                  })
+                : t("Compare these documents");
+            return (
+              <li key={label}>
+                <Chip type="button" value={label} onClick={handleFollowUp}>
+                  {label}
+                </Chip>
+              </li>
+            );
+          })}
+        </Chips>
       )}
       {onRate && canRate(turn) && <FeedbackBar turn={turn} onRate={onRate} />}
     </Section>
@@ -339,6 +401,19 @@ function Rate({
   );
 }
 
+function verifiedText(
+  documents: number | undefined,
+  cited: number,
+  t: (key: string, options?: Record<string, unknown>) => string
+): string {
+  const parts = [t("Verified")];
+  if (documents) {
+    parts.push(t("Based on {{ count }} documents", { count: documents }));
+  }
+  parts.push(t("{{ count }} sources cited", { count: cited }));
+  return parts.join(" · ");
+}
+
 /**
  * Localised text for a server notice code. The server's own English message
  * is never shown; unknown codes get a generic note.
@@ -405,7 +480,17 @@ function problemMessage(
   }
 }
 
-function SourceEntry({
+/**
+ * One cited source: numbered title link, collection and the cited excerpts
+ * with their section links. Used by the inline list and the Sources drawer.
+ *
+ * @param props.n the citation number.
+ * @param props.title the source title (untrusted text).
+ * @param props.sections cited sections.
+ * @param props.collectionName the collection, if any.
+ * @returns the entry content.
+ */
+export function SourceEntry({
   n,
   title,
   sections,
@@ -460,7 +545,64 @@ const SectionEntry = styled.div`
 `;
 
 const CopyActions = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   margin: 8px 0 0;
+`;
+
+const Meta = styled.p`
+  margin: 12px 0 0;
+  color: ${s("textSecondary")};
+  font-size: 13px;
+
+  &[data-state="verified"]::before {
+    content: "✓ ";
+    color: ${s("accent")};
+  }
+`;
+
+const NotCovered = styled.p`
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 12px 0;
+  padding: 12px 14px;
+  border-inline-start: 3px solid ${s("divider")};
+  border-radius: 6px;
+  background: ${s("backgroundSecondary")};
+  color: ${s("textSecondary")};
+  font-size: 14px;
+
+  strong {
+    color: ${s("text")};
+  }
+`;
+
+const Chips = styled.ul`
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+`;
+
+const Chip = styled.button`
+  padding: 6px 12px;
+  border: 1px solid ${s("divider")};
+  border-radius: 16px;
+  background: ${s("background")};
+  color: ${s("text")};
+  font: inherit;
+  font-size: 13px;
+  text-align: start;
+  cursor: var(--pointer);
+
+  &:hover,
+  &:focus-visible {
+    background: ${s("backgroundSecondary")};
+  }
 `;
 
 const Section = styled.section`

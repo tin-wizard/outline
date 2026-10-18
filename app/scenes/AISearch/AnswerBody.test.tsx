@@ -298,7 +298,7 @@ describe("AnswerTurn sources", () => {
 
   it("labels partial answers and shows the reason", () => {
     const host = render(turn({ status: "failed", problem: "unverified" }));
-    expect(host.textContent).toContain("Partial answer, not fully verified");
+    expect(host.textContent).toContain("Not fully verified");
     expect(host.textContent).toContain("Couldn't fully verify this answer");
     expect(host.textContent).toContain("Claim.");
   });
@@ -322,7 +322,7 @@ describe("AnswerTurn sources", () => {
         </MemoryRouter>
       </ThemeProvider>
     );
-    expect(host).toContain("No relevant documents found");
+    expect(host).toContain("Not covered by your documents");
     expect(host).toContain("Searched in: Eng.");
   });
 

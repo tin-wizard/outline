@@ -253,7 +253,7 @@ describe("citation previews", () => {
 
     it("still activates the source entry on click", () => {
       act(() => marker().click());
-      expect(onClick).toHaveBeenCalledWith(1);
+      expect(onClick).toHaveBeenCalledWith(1, marker());
     });
   });
 });

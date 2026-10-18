@@ -34,7 +34,7 @@ vi.mock("~/hooks/useStores", () => {
   const stores = {
     collections: { get: () => undefined, fetch: mockFetchCollection },
     documents: { get: () => undefined, fetch: mockFetchDocument },
-    aiConversations: { fetch: mockFetchConversation },
+    aiConversations: { fetch: mockFetchConversation, get: () => undefined },
   };
   return { default: () => stores };
 });
@@ -231,6 +231,60 @@ describe("AISearch page", () => {
     await stream.end();
     expect(document.activeElement?.tagName).toBe("H2");
     expect(document.activeElement?.textContent).toBe("Answer");
+  });
+
+  it("opens the Sources drawer from a marker and fills the composer from a chip without sending", async () => {
+    window.sessionStorage.clear();
+    const stream = controlled();
+    const { host } = mount("/ai?q=hello");
+    await tick();
+    const citation = {
+      n: 1,
+      documentId: "d1",
+      title: "Doc 1",
+      url: "/doc/a-abc#h-leave-policy",
+      quote: "Requests go to managers.",
+    };
+    await stream.push(
+      {
+        event: "sources",
+        data: [{ n: 1, documentId: "d1", title: "Doc 1", url: "/doc/a-abc" }],
+      },
+      {
+        event: "block",
+        data: {
+          index: 0,
+          kind: "paragraph",
+          markdown: "Claim [1].",
+          citations: [citation],
+        },
+      },
+      done("c1")
+    );
+    await stream.end();
+    expect(host.querySelector("aside")).toBeNull();
+    const marker = host.querySelector<HTMLButtonElement>("[data-citation]");
+    act(() => marker?.click());
+    expect(host.querySelector("aside")?.textContent).toContain(
+      "Requests go to managers."
+    );
+    const chip = [...host.querySelectorAll("button")].find((b) =>
+      b.textContent?.startsWith("Tell me more about")
+    );
+    act(() => chip?.click());
+    expect(host.querySelector("textarea")?.value).toBe(
+      "Tell me more about leave policy"
+    );
+    expect(mocked).toHaveBeenCalledTimes(1);
+    act(() => {
+      host
+        .querySelector("aside")
+        ?.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+        );
+    });
+    expect(host.querySelector("aside")).toBeNull();
+    expect(document.activeElement).toBe(marker);
   });
 
   it("aborts the request when the page unmounts", async () => {

@@ -11,7 +11,7 @@ interface Props {
   /** The verified blocks received so far. */
   blocks: BlockInput[];
   /** Called when a citation marker is activated. */
-  onCitationClick?: (n: number) => void;
+  onCitationClick?: (n: number, marker?: HTMLElement) => void;
   /** Preview card data by source number, built from the stream's events. */
   previews?: ReadonlyMap<number, CitationPreviewData>;
 }
@@ -144,7 +144,7 @@ function Markers({
   previews,
 }: {
   citations: number[];
-  onClick?: (n: number) => void;
+  onClick?: (n: number, marker?: HTMLElement) => void;
   previews?: ReadonlyMap<number, CitationPreviewData>;
 }) {
   return (
@@ -167,13 +167,14 @@ function CitationMarker({
   preview,
 }: {
   n: number;
-  onClick?: (n: number) => void;
+  onClick?: (n: number, marker?: HTMLElement) => void;
   preview?: CitationPreviewData;
 }) {
   const { t } = useTranslation();
   const id = React.useId();
   const [open, setOpen] = React.useState(false);
-  const handleClick = () => onClick?.(n);
+  const handleClick = (event: React.MouseEvent<HTMLButtonElement>) =>
+    onClick?.(n, event.currentTarget);
   const handleOpen = () => setOpen(true);
   const handleClose = () => setOpen(false);
   const handleKeyDown = (event: React.KeyboardEvent) => {
