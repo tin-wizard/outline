@@ -16,7 +16,7 @@
 - Additive migrations with `down()`, `lock_timeout` 5s, RLS `tenant_isolation` with the **nullif** policy variant (see `20261016130000`); all tenant queries scoped by teamId+userId explicitly (production DB role bypasses RLS).
 - No answer text outside these tables/Redis; redact on write; no content in logs.
 - CLAUDE.md conventions; TDD; explicit `git add`; commit trailer per model.
-- New env/preference: `TeamPreference.AIConversationHistory` (default **true** when AI answers is on; admin toggle in Settings → Features next to AI answers); retention constant 90 days (env `AI_HISTORY_RETENTION_DAYS`, default 90, clamp 1–365, never fails validation).
+- New env/preference: `TeamPreference.AIConversationHistory` (default **false** — changed 2026-10-18 at final review so enabling AI answers never starts storing chats silently; admins opt in via the toggle in Settings → Features next to AI answers); retention constant 90 days (env `AI_HISTORY_RETENTION_DAYS`, default 90, clamp 1–365, never fails validation).
 
 ## Model routing
 | Task | Implementer | Reviewer |
