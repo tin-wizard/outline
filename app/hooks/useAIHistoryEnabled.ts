@@ -4,7 +4,7 @@ import useCurrentTeam from "~/hooks/useCurrentTeam";
 
 /**
  * Whether conversation history can be used: AI answers are available to the
- * user and the workspace keeps history (default on).
+ * user and the workspace keeps history (default off; admins opt in).
  *
  * @param input.aiEnabled whether AI answers are available to the user.
  * @param input.preference the workspace's AIConversationHistory preference.

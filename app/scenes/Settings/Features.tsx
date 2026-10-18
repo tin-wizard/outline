@@ -187,7 +187,7 @@ function Features() {
           name={TeamPreference.AIConversationHistory}
           label={t("AI conversation history")}
           description={t(
-            "Off by default. Once an admin turns this on, each member's AI conversations are stored so they can return to them for 90 days after their last activity. A conversation is private to the member who asked, and nothing is stored while this is off."
+            "Off by default. Once an admin turns this on, each member's AI conversations are stored so they can return to them for a limited time (90 days by default) after their last activity. A conversation is private to the member who asked, and nothing is stored while this is off."
           )}
           border={false}
         >
