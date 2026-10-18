@@ -29,6 +29,7 @@ vi.mock("~/utils/streamFetch", async (importOriginal) => ({
 vi.mock("~/hooks/useAIAnswersEnabled", () => ({ default: vi.fn() }));
 vi.mock("~/hooks/useAIHistoryEnabled", () => ({ default: vi.fn() }));
 vi.mock("~/hooks/useMobile", () => ({ default: () => false }));
+vi.mock("~/hooks/useMediaQuery", () => ({ default: () => false }));
 vi.mock("~/hooks/useStores", () => {
   // Stable, like the real hook: effects depend on the stores.
   const stores = {

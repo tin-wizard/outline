@@ -166,8 +166,9 @@ export function AnswerTurn({
   const notCovered = isNotCovered(turn);
   const verification = notCovered ? undefined : verificationOf(turn);
   const followUps = React.useMemo(
-    () => (notCovered ? [] : followUpSuggestions(turn)),
-    [turn, notCovered]
+    // Only the newest answer suggests follow-ups; older ones would repeat.
+    () => (notCovered || !isLast ? [] : followUpSuggestions(turn)),
+    [turn, notCovered, isLast]
   );
 
   return (

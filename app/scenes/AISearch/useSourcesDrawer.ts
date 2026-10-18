@@ -3,9 +3,15 @@ import { breakpoints } from "@shared/styles";
 
 const STORAGE_KEY = "ai-search-sources-open";
 
+/**
+ * Below desktop width a side pane would squeeze the answer column, so the
+ * Sources drawer is a modal bottom sheet there.
+ */
+export const SHEET_QUERY = `(max-width: ${breakpoints.desktop - 1}px)`;
+
 function readOpen(): boolean {
-  // Below tablet width the drawer is a modal sheet: never reopen it unasked.
-  if (window.matchMedia?.(`(max-width: ${breakpoints.tablet - 1}px)`).matches) {
+  // As a modal sheet the drawer is never reopened unasked.
+  if (window.matchMedia?.(SHEET_QUERY).matches) {
     return false;
   }
   try {

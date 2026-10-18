@@ -227,6 +227,14 @@ const Marker = styled.button`
   vertical-align: super;
   cursor: var(--pointer);
 
+  /* Touch: at least a 24px target (WCAG 2.5.8). */
+  @media (pointer: coarse) {
+    min-width: 24px;
+    height: 24px;
+    border-radius: 12px;
+    line-height: 24px;
+  }
+
   &:hover,
   &:focus-visible {
     background: ${s("accent")};

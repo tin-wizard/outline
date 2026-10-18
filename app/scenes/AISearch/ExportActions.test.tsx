@@ -12,17 +12,26 @@ import type { Turn } from "./model";
 vi.mock("copy-to-clipboard", () => ({ default: vi.fn() }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn() } }));
 vi.mock("~/env", () => ({ default: { ENVIRONMENT: "test" } }));
+const viewport = vi.hoisted(() => ({ mobile: false }));
+vi.mock("~/hooks/useMediaQuery", () => ({ default: () => viewport.mobile }));
 vi.mock("~/components/Button", () => ({
   default: ({
     children,
     onClick,
     disabled,
+    "aria-label": ariaLabel,
   }: {
     children?: React.ReactNode;
     onClick?: React.MouseEventHandler<HTMLButtonElement>;
     disabled?: boolean;
+    "aria-label"?: string;
   }) => (
-    <button type="button" onClick={onClick} disabled={disabled}>
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={ariaLabel}
+    >
       {children}
     </button>
   ),
@@ -68,6 +77,24 @@ describe("ExportActions", () => {
       expect.anything()
     );
     expect(toast.success).toHaveBeenCalledWith("Copied");
+  });
+
+  it("shows labelled icon buttons below desktop width", () => {
+    viewport.mobile = true;
+    try {
+      const { host } = mount([turn]);
+      const labels = [...host.querySelectorAll("button")].map((b) => [
+        b.textContent,
+        b.getAttribute("aria-label"),
+      ]);
+      expect(labels).toEqual([
+        ["", "Copy conversation as Markdown"],
+        ["", "Download as Markdown (.md)"],
+        ["", "Print / Save as PDF"],
+      ]);
+    } finally {
+      viewport.mobile = false;
+    }
   });
 
   it("uses the chat title as the heading", () => {

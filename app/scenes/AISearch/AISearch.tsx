@@ -285,7 +285,7 @@ const Page = observer(function Page({
                 />
               ))
             )}
-            <div data-print-hidden hidden={route.status !== "idle"}>
+            <ComposerDock data-print-hidden hidden={route.status !== "idle"}>
               <Composer
                 value={text}
                 onChange={setText}
@@ -294,7 +294,7 @@ const Page = observer(function Page({
                 busy={streaming}
                 textareaRef={textareaRef}
               />
-            </div>
+            </ComposerDock>
           </Chat>
           {drawer.open && drawerTurn && (
             <SourcesDrawer
@@ -367,6 +367,15 @@ const Chat = styled.div`
   flex: 1;
   min-width: 0;
   max-width: 46em;
+`;
+
+/** Keeps the composer in reach at the bottom while a long chat scrolls. */
+const ComposerDock = styled.div`
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  padding: 8px 0 max(12px, env(safe-area-inset-bottom));
+  background: ${s("background")};
 `;
 
 const Welcome = styled.div`

@@ -2,11 +2,12 @@ import { CloseIcon } from "outline-icons";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import styled, { css } from "styled-components";
-import { breakpoints, depths, s } from "@shared/styles";
-import useMobile from "~/hooks/useMobile";
+import { depths, s } from "@shared/styles";
+import useMediaQuery from "~/hooks/useMediaQuery";
 import { SourceEntry } from "./AnswerTurn";
 import type { Turn } from "./model";
 import { citedSources, isActive } from "./model";
+import { SHEET_QUERY } from "./useSourcesDrawer";
 
 interface Props {
   /** The answer whose cited sources are listed. */
@@ -20,8 +21,8 @@ interface Props {
 
 /**
  * The Sources drawer: the sources cited by one answer with their excerpts and
- * section links. A right-hand pane on wide screens and a bottom sheet below
- * tablet width, where it is modal (backdrop, focus kept inside). Escape
+ * section links. A right-hand pane on desktop widths and a bottom sheet below
+ * them, where it is modal (backdrop, focus kept inside). Escape
  * anywhere on the page, the close button or the backdrop closes it.
  *
  * @param props see Props.
@@ -31,7 +32,8 @@ export function SourcesDrawer({ turn, selected, autoFocus, onClose }: Props) {
   const { t } = useTranslation();
   const closeRef = React.useRef<HTMLButtonElement>(null);
   const drawerRef = React.useRef<HTMLElement>(null);
-  const isMobile = useMobile();
+  // Too narrow for a side pane next to the answer: a modal bottom sheet.
+  const isSheet = useMediaQuery(SHEET_QUERY);
   const cited = React.useMemo(() => citedSources(turn), [turn]);
 
   // Escape closes the drawer wherever focus is, unless something else on top
@@ -71,7 +73,7 @@ export function SourcesDrawer({ turn, selected, autoFocus, onClose }: Props) {
     if (event.key === "Escape") {
       event.stopPropagation();
       onClose();
-    } else if (event.key === "Tab" && isMobile && drawerRef.current) {
+    } else if (event.key === "Tab" && isSheet && drawerRef.current) {
       // The bottom sheet is modal: keep focus inside it.
       const focusable = drawerRef.current.querySelectorAll<HTMLElement>(
         "a[href], button:not([disabled]), [tabindex]:not([tabindex='-1'])"
@@ -90,11 +92,11 @@ export function SourcesDrawer({ turn, selected, autoFocus, onClose }: Props) {
 
   return (
     <>
-      {isMobile && <Backdrop aria-hidden onClick={onClose} data-print-hidden />}
+      {isSheet && <Backdrop aria-hidden onClick={onClose} data-print-hidden />}
       <Drawer
         ref={drawerRef}
-        role={isMobile ? "dialog" : undefined}
-        aria-modal={isMobile || undefined}
+        role={isSheet ? "dialog" : undefined}
+        aria-modal={isSheet || undefined}
         aria-labelledby="ai-sources-title"
         data-print-hidden
         onKeyDown={handleKeyDown}
@@ -182,7 +184,7 @@ const Drawer = styled.aside`
   background: ${s("background")};
   color: ${s("text")};
 
-  @media (max-width: ${breakpoints.tablet - 1}px) {
+  @media ${SHEET_QUERY} {
     ${sheet}
     width: auto;
   }

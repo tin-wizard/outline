@@ -11,7 +11,7 @@ import { SourcesDrawer } from "./SourcesDrawer";
 import { useSourcesDrawer } from "./useSourcesDrawer";
 
 const viewport = vi.hoisted(() => ({ mobile: false }));
-vi.mock("~/hooks/useMobile", () => ({ default: () => viewport.mobile }));
+vi.mock("~/hooks/useMediaQuery", () => ({ default: () => viewport.mobile }));
 
 vi.mock("~/components/Button", () => ({
   default: ({
@@ -295,5 +295,14 @@ describe("answer presentation", () => {
     expect(out).toContain('value="Tell me more about leave policy"');
     expect(out).toContain('value="Compare these documents"');
     expect(out).not.toContain('type="submit"');
+  });
+
+  it("suggests follow-ups under the newest answer only", () => {
+    const out = html(turn, {
+      isLast: false,
+      onOpenSources: () => {},
+      onFollowUp: () => {},
+    });
+    expect(out).not.toContain("Tell me more about");
   });
 });
