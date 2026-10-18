@@ -35,6 +35,13 @@ import DragPlaceholder from "./components/DragPlaceholder";
 import { DismissableSidebarAction } from "./components/DismissableSidebarAction";
 import HistoryNavigation from "./components/HistoryNavigation";
 import { AIChats } from "./components/AIChats/AIChats";
+import {
+  ChatsLibraryTabs,
+  sidebarPanelId,
+  sidebarTabId,
+  useSidebarView,
+} from "./components/AIChats/ChatsLibraryTabs";
+import { useNewChatShortcut } from "./components/AIChats/useNewChatShortcut";
 import Section from "./components/Section";
 import SharedWithMe from "./components/SharedWithMe";
 import SidebarButton from "./components/SidebarButton";
@@ -56,6 +63,12 @@ function AppSidebar() {
   const historyEnabled = useAIHistoryEnabled();
   // With history off, saved chats stay listed (delete only) until removed.
   const showAIChats = aiEnabled && onAIRoute;
+  // With history on, a Chats | Library switch picks what fills the sidebar.
+  const tabbed = showAIChats && historyEnabled;
+  const [view, setView] = useSidebarView();
+  useNewChatShortcut(tabbed);
+  const showChats = showAIChats && (!tabbed || view === "chats");
+  const showLibrary = !tabbed || view === "library";
   const history = useHistory();
   const isMobile = useMobile();
 
@@ -94,6 +107,34 @@ function AppSidebar() {
     [SidebarSection.SharedWithMe]: <SharedWithMe />,
     [SidebarSection.Collections]: <Collections />,
   };
+
+  // Everything below the AI chats; rendered unwrapped outside the switch so
+  // other routes keep the sidebar exactly as it was.
+  const library = (
+    <>
+      {sectionOrder.map((section) => (
+        <DraggableSection key={section} section={section}>
+          {sectionContent[section]}
+        </DraggableSection>
+      ))}
+      {can.createDocument && (
+        <Section auto>
+          <ArchiveLink />
+        </Section>
+      )}
+      <Section>
+        {can.createDocument && <TrashLink />}
+        <DismissableSidebarAction
+          id="sidebar-import-hidden"
+          action={navigateToImport}
+        />
+        <DismissableSidebarAction
+          id="sidebar-invite-hidden"
+          action={inviteUser}
+        />
+      </Section>
+    </>
+  );
 
   return (
     <Sidebar hidden={!ui.readyToShow}>
@@ -157,34 +198,32 @@ function AppSidebar() {
             {can.createDocument && <DraftsLink />}
           </Section>
         </Overflow>
+        {tabbed && <ChatsLibraryTabs view={view} onChange={setView} />}
         <Scrollable flex shadow ref={scrollRef}>
           <SidebarScrollProvider value={scrollArea}>
-            {showAIChats && (
-              <Section>
+            {showChats && (
+              <Section
+                {...(tabbed && {
+                  role: "tabpanel",
+                  id: sidebarPanelId("chats"),
+                  "aria-labelledby": sidebarTabId("chats"),
+                })}
+              >
                 <AIChats deleteOnly={!historyEnabled} />
               </Section>
             )}
-            {sectionOrder.map((section) => (
-              <DraggableSection key={section} section={section}>
-                {sectionContent[section]}
-              </DraggableSection>
-            ))}
-            {can.createDocument && (
-              <Section auto>
-                <ArchiveLink />
-              </Section>
-            )}
-            <Section>
-              {can.createDocument && <TrashLink />}
-              <DismissableSidebarAction
-                id="sidebar-import-hidden"
-                action={navigateToImport}
-              />
-              <DismissableSidebarAction
-                id="sidebar-invite-hidden"
-                action={inviteUser}
-              />
-            </Section>
+            {showLibrary &&
+              (tabbed ? (
+                <div
+                  role="tabpanel"
+                  id={sidebarPanelId("library")}
+                  aria-labelledby={sidebarTabId("library")}
+                >
+                  {library}
+                </div>
+              ) : (
+                library
+              ))}
           </SidebarScrollProvider>
         </Scrollable>
       </DragActiveProvider>

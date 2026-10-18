@@ -1,6 +1,9 @@
 import { observer } from "mobx-react";
 import * as React from "react";
+import { PinIcon } from "outline-icons";
 import { useTranslation } from "react-i18next";
+import styled from "styled-components";
+import { s } from "@shared/styles";
 import { toast } from "sonner";
 import EditableTitle from "~/components/EditableTitle";
 import type { RefHandle } from "~/components/EditableTitle";
@@ -59,6 +62,9 @@ export const AIChatRow = observer(function AIChatRow({ conversation }: Props) {
       depth={0}
       to={aiPath({ conversationId: conversation.id })}
       exact
+      icon={
+        conversation.isPinned ? <Pinned size={16} data-pinned /> : undefined
+      }
       label={
         <EditableTitle
           title={conversation.title}
@@ -88,3 +94,8 @@ export const AIChatRow = observer(function AIChatRow({ conversation }: Props) {
     />
   );
 });
+
+const Pinned = styled(PinIcon)`
+  flex-shrink: 0;
+  fill: ${s("textTertiary")};
+`;

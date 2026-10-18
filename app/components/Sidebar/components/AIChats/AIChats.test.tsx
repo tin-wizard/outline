@@ -110,7 +110,6 @@ describe("AIChats", () => {
     expect(titles).toEqual(["Pinned", "Today", "Older"]);
     expect(links(host)).toEqual(
       expect.arrayContaining([
-        ["New chat", "/ai"],
         ["Handbook", `/ai/${ID3}`],
         ["Leave policy", `/ai/${ID1}`],
         ["Old planning", `/ai/${ID2}`],
@@ -120,6 +119,25 @@ describe("AIChats", () => {
       offset: 0,
       limit: 20,
     });
+    // Pinned rows carry a pin icon; others none.
+    const pinned = (title: string) =>
+      !![...host.querySelectorAll("a")]
+        .find((a) => a.textContent === title)
+        ?.querySelector("[data-pinned]");
+    expect(pinned("Handbook")).toBe(true);
+    expect(pinned("Leave policy")).toBe(false);
+  });
+
+  it("has a New chat button to /ai with the Cmd+Shift+O hint", async () => {
+    reply.mockResolvedValue({ data: [], pagination: {} });
+    const { host } = await mount();
+    const button = [...host.querySelectorAll("a")].find((a) =>
+      a.textContent?.startsWith("New chat")
+    );
+    expect(button?.getAttribute("href")).toBe("/ai");
+    expect(
+      button?.querySelector("[role=img]")?.getAttribute("aria-label")
+    ).toMatch(/Shift plus O$/);
   });
 
   it("marks the open chat as the current page", async () => {
