@@ -1,4 +1,8 @@
-import { AIConversation, AIConversationTurn } from "@server/models";
+import {
+  AIAnswerUsage,
+  AIConversation,
+  AIConversationTurn,
+} from "@server/models";
 import UserAuthentication from "@server/models/UserAuthentication";
 import { buildUser, buildWebhookSubscription } from "@server/test/factories";
 import UserDeletedProcessor from "./UserDeletedProcessor";
@@ -86,5 +90,44 @@ describe("UserDeletedProcessor", () => {
       await AIConversationTurn.count({ where: { conversationId: mine.id } })
     ).toBe(0);
     expect(await AIConversation.findByPk(theirs.id)).not.toBeNull();
+  });
+
+  it("clears the user's AI feedback comments but keeps the usage rows", async () => {
+    const user = await buildUser();
+    const other = await buildUser({ teamId: user.teamId });
+    const [mine, theirs] = await Promise.all(
+      [user, other].map((u) =>
+        AIAnswerUsage.create({
+          teamId: u.teamId,
+          userId: u.id,
+          model: "m",
+          inputTokens: 1,
+          outputTokens: 1,
+          costMicroUsd: "5",
+          outcome: "answered",
+          droppedSegments: 0,
+          durationMs: 1,
+          feedback: -1,
+          feedbackReason: "inaccurate",
+          feedbackComment: "Comment",
+        })
+      )
+    );
+
+    await new UserDeletedProcessor().perform({
+      name: "users.delete",
+      userId: user.id,
+      actorId: user.id,
+      teamId: user.teamId,
+      ip,
+    });
+
+    await mine.reload();
+    expect(mine.feedbackComment).toBeNull();
+    expect(mine.feedbackReason).toEqual("inaccurate");
+    expect(mine.userId).toEqual(user.id);
+    expect(mine.costMicroUsd).toEqual("5");
+    await theirs.reload();
+    expect(theirs.feedbackComment).toEqual("Comment");
   });
 });

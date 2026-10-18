@@ -1,4 +1,6 @@
+import { Op } from "sequelize";
 import {
+  AIAnswerUsage,
   AIConversation,
   ApiKey,
   GroupUser,
@@ -69,6 +71,18 @@ export default class UserDeletedProcessor extends BaseProcessor {
         },
         transaction,
       });
+      // Usage rows stay (billing metadata); only the free-text comment goes.
+      await AIAnswerUsage.update(
+        { feedbackComment: null },
+        {
+          where: {
+            userId: event.userId,
+            teamId: event.teamId,
+            feedbackComment: { [Op.ne]: null },
+          },
+          transaction,
+        }
+      );
       await WebhookSubscription.update(
         { enabled: false },
         {
