@@ -58,7 +58,12 @@ describe("chatReducer", () => {
     expect(turn.blocks.map((b) => b.index)).toEqual([0, 1]);
     expect(state.conversationId).toBe("c1");
     expect(citedSources(turn)).toEqual([
-      { n: 1, title: "A", urls: ["/doc/a#h-x"], collectionName: "Eng" },
+      {
+        n: 1,
+        title: "A",
+        sections: [{ url: "/doc/a#h-x" }],
+        collectionName: "Eng",
+      },
     ]);
   });
 
@@ -261,7 +266,7 @@ describe("chatReducer with malformed events", () => {
         citations: [cite("/doc/a#h-y"), cite("/doc/a#h-x")],
       }),
     ]);
-    expect(citedSources(state.turns[0])[0].urls).toEqual([
+    expect(citedSources(state.turns[0])[0].sections.map((x) => x.url)).toEqual([
       "/doc/a#h-x",
       "/doc/a#h-y",
     ]);

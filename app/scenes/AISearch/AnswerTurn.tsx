@@ -7,8 +7,10 @@ import { ThumbsDownIcon, ThumbsUpIcon } from "outline-icons";
 import Button from "~/components/Button";
 import Tooltip from "~/components/Tooltip";
 import { AnswerBody } from "./AnswerBody";
-import type { Rating, Turn, TurnProblem } from "./model";
-import { canRate, citedSources, isActive } from "./model";
+import type { CitationPreviewData } from "./CitationPreview";
+import { CitationQuote } from "./CitationQuote";
+import type { CitedSection, Rating, Turn, TurnProblem } from "./model";
+import { canRate, citedSources, isActive, sectionLabel } from "./model";
 
 interface Props {
   turn: Turn;
@@ -77,7 +79,30 @@ export function AnswerTurn({
   const headingRef = React.useRef<HTMLHeadingElement>(null);
   const previous = React.useRef(turn.status);
   const active = isActive(turn);
-  const cited = citedSources(turn);
+  const cited = React.useMemo(() => citedSources(turn), [turn]);
+  const previews = React.useMemo(
+    () =>
+      new Map<number, CitationPreviewData>(
+        cited.map((source) => [
+          source.n,
+          {
+            title: source.title,
+            collectionName: source.collectionName,
+            quote: source.sections.find((x) => x.quote)?.quote,
+          },
+        ])
+      ),
+    [cited]
+  );
+  const [highlighted, setHighlighted] = React.useState<number>();
+
+  React.useEffect(() => {
+    if (highlighted === undefined) {
+      return;
+    }
+    const timer = setTimeout(() => setHighlighted(undefined), 2500);
+    return () => clearTimeout(timer);
+  }, [highlighted]);
 
   React.useEffect(() => {
     if (isLast && previous.current !== "done" && turn.status === "done") {
@@ -93,6 +118,7 @@ export function AnswerTurn({
       const target = document.getElementById(`source-${turn.id}-${n}`);
       target?.scrollIntoView?.({ block: "nearest" });
       target?.focus();
+      setHighlighted(n);
     },
     [turn.id]
   );
@@ -134,7 +160,7 @@ export function AnswerTurn({
                   <SourceEntry
                     n={source.n}
                     title={source.title}
-                    urls={[source.url]}
+                    sections={[{ url: source.url }]}
                     collectionName={source.collectionName}
                   />
                 </li>
@@ -148,6 +174,7 @@ export function AnswerTurn({
         {hasBlocks && (
           <AnswerBody
             blocks={turn.blocks}
+            previews={previews}
             onCitationClick={handleCitationClick}
           />
         )}
@@ -160,6 +187,7 @@ export function AnswerTurn({
                   key={source.n}
                   id={`source-${turn.id}-${source.n}`}
                   tabIndex={-1}
+                  data-highlighted={highlighted === source.n || undefined}
                 >
                   <SourceEntry {...source} />
                 </li>
@@ -344,39 +372,56 @@ function problemMessage(
 function SourceEntry({
   n,
   title,
-  urls,
+  sections,
   collectionName,
 }: {
   n: number;
   title: string;
-  urls: string[];
+  sections: CitedSection[];
   collectionName?: string;
 }) {
   const { t } = useTranslation();
-  const [first, ...others] = urls;
+  const [first] = sections;
+  const multiple = sections.length > 1;
   return (
     <>
       <SourceNumber>[{n}]</SourceNumber>{" "}
-      {first !== undefined && isDocPath(first) ? (
-        <Link to={first}>{title}</Link>
+      {first !== undefined && isDocPath(first.url) ? (
+        <Link to={first.url}>{title}</Link>
       ) : (
         <span>{title}</span>
       )}
       {collectionName && <Muted as="span"> · {collectionName}</Muted>}
-      {others.map(
-        (url, i) =>
-          isDocPath(url) && (
-            <React.Fragment key={url}>
-              {" · "}
-              <Link to={url}>
-                {t("Section {{ number }}", { number: i + 2 })}
-              </Link>
-            </React.Fragment>
-          )
-      )}
+      {sections.map((section, i) => {
+        if (!section.quote && !multiple) {
+          return null;
+        }
+        const label =
+          sectionLabel(section.url) ??
+          t("Section {{ number }}", { number: i + 1 });
+        return (
+          <SectionEntry key={section.url}>
+            {multiple &&
+              // The title already links to the first section.
+              (i > 0 && isDocPath(section.url) ? (
+                <Link to={section.url}>{label}</Link>
+              ) : (
+                <span>{label}</span>
+              ))}
+            {section.quote && (
+              <CitationQuote quote={section.quote} expandable />
+            )}
+          </SectionEntry>
+        );
+      })}
     </>
   );
 }
+
+const SectionEntry = styled.div`
+  margin: 4px 0 0 18px;
+  font-size: 13px;
+`;
 
 const Section = styled.section`
   margin: 24px 0;
@@ -468,6 +513,11 @@ const SourceList = styled.ul`
 
   li:focus-visible {
     outline: 2px solid ${s("accent")};
+  }
+
+  li[data-highlighted] {
+    background: ${s("backgroundSecondary")};
+    border-radius: 6px;
   }
 `;
 

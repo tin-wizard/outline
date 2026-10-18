@@ -97,6 +97,22 @@ export function isActive(turn: Turn | undefined): boolean {
   return turn?.status === "searching" || turn?.status === "generating";
 }
 
+/** One cited passage location within a source. */
+export interface CitedSection {
+  /** Section link, with the heading anchor. */
+  url: string;
+  /** The cited passage, untrusted text. */
+  quote?: string;
+}
+
+export interface CitedSource {
+  n: number;
+  title: string;
+  /** Distinct sections of this source, in citation order. */
+  sections: CitedSection[];
+  collectionName?: string;
+}
+
 /**
  * Collects the sources cited by an answer, in citation order, preferring the
  * retrieved source's collection name and the first citation's section link.
@@ -104,33 +120,64 @@ export function isActive(turn: Turn | undefined): boolean {
  * @param turn the turn.
  * @returns one entry per cited source number.
  */
-export function citedSources(turn: Turn): {
-  n: number;
-  title: string;
-  /** Distinct section links for this source, in citation order. */
-  urls: string[];
-  collectionName?: string;
-}[] {
-  const byNumber = new Map<number, { first: AskCitation; urls: string[] }>();
+export function citedSources(turn: Turn): CitedSource[] {
+  const byNumber = new Map<
+    number,
+    { first: AskCitation; sections: CitedSection[] }
+  >();
   for (const block of turn.blocks) {
     for (const citation of block.citations) {
       const entry = byNumber.get(citation.n);
+      const quote = citation.quote?.trim() || undefined;
       if (!entry) {
-        byNumber.set(citation.n, { first: citation, urls: [citation.url] });
-      } else if (!entry.urls.includes(citation.url)) {
-        entry.urls.push(citation.url);
+        byNumber.set(citation.n, {
+          first: citation,
+          sections: [{ url: citation.url, quote }],
+        });
+        continue;
+      }
+      const section = entry.sections.find((x) => x.url === citation.url);
+      if (!section) {
+        entry.sections.push({ url: citation.url, quote });
+      } else if (!section.quote && quote) {
+        section.quote = quote;
       }
     }
   }
   return [...byNumber.values()]
     .sort((a, b) => a.first.n - b.first.n)
-    .map(({ first, urls }) => ({
+    .map(({ first, sections }) => ({
       n: first.n,
       title: first.title,
-      urls,
+      sections,
       collectionName: turn.sources?.find((s) => s.n === first.n)
         ?.collectionName,
     }));
+}
+
+/**
+ * A readable label for a section link, derived from its `#h-some-heading`
+ * anchor. Text only; returns undefined when there is no usable heading.
+ *
+ * @param url a source or citation path.
+ * @returns the heading text, or undefined.
+ */
+export function sectionLabel(url: string): string | undefined {
+  const hash = url.split("#")[1];
+  if (!hash?.startsWith("h-")) {
+    return undefined;
+  }
+  let raw = hash.slice(2);
+  try {
+    raw = decodeURIComponent(raw);
+  } catch {
+    // keep the undecoded fragment
+  }
+  const label = raw
+    .replace(/[-_+]+/g, " ")
+    .trim()
+    .slice(0, 80);
+  return label || undefined;
 }
 
 const BLOCK_KINDS = [
