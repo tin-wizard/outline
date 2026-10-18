@@ -37,8 +37,14 @@ const SAFE_ANCHOR = /^h-[A-Za-z0-9%-]{0,200}$/;
 
 /** What `ai.ask` hands over to store a turn: never free-form model text. */
 export interface StoreTurnInput {
-  /** The conversation to continue; created with this id when it does not exist. */
+  /** The conversation to continue; a new one is created when omitted. */
   conversationId?: string | null;
+  /**
+   * True when `ai.ask` minted `conversationId` in this request, so the row is
+   * created with it. Otherwise only an existing row is continued: a deleted
+   * conversation is never recreated by a late turn.
+   */
+  create?: boolean;
   /** The user's original question; redacted and truncated before storing. */
   question: string;
   /** The verifier's released blocks (`AnswerVerifier.released`); [] when failed. */
@@ -73,7 +79,7 @@ export interface PresentedTurn {
   /** Readable cited documents, numbered as the block citations reference them. */
   sources: AskSource[];
   blocks: (VisibleBlock | HiddenBlock)[];
-  /** True when any block cites a document the reader can no longer read. */
+  /** True when the turn cites a document the reader can no longer read. */
   hasHiddenBlocks: boolean;
 }
 
@@ -141,22 +147,20 @@ export async function appendConversationTurn(
         title: conversationTitle(input.question),
       };
       let conversation: AIConversation | null;
-      if (requestedId) {
-        // ON CONFLICT DO NOTHING: a concurrent first turn waits for the other
-        // insert to commit instead of failing on the primary key.
-        await AIConversation.bulkCreate([{ ...values, id: requestedId }], {
-          ignoreDuplicates: true,
-          transaction,
-        });
+      if (requestedId && !input.create) {
         // The row lock serialises turns, so positions stay consecutive. A
-        // foreign id is not found here and stores nothing.
+        // foreign, unknown or deleted id is not found and stores nothing.
         conversation = await AIConversation.findOne({
           where: { id: requestedId, teamId: user.teamId, userId: user.id },
           lock: transaction.LOCK.UPDATE,
           transaction,
         });
       } else {
-        conversation = await AIConversation.create(values, { transaction });
+        // An id taken by anyone fails on the primary key and stores nothing.
+        conversation = await AIConversation.create(
+          requestedId ? { ...values, id: requestedId } : values,
+          { transaction }
+        );
       }
       if (!conversation) {
         return null;
@@ -319,9 +323,17 @@ export async function presentTurns(
       sources.push(source);
       return source;
     };
+    // One unreadable source hides the whole turn: uncited blocks (headings,
+    // lead-ins) are derived from the same sources. Fails closed with the map.
+    const turnReadable = [
+      ...turn.citedDocumentIds,
+      ...(turn.blocks ?? []).flatMap((b) =>
+        b.citations.map((c) => c.documentId)
+      ),
+    ].every((id) => readable.has(id));
     const blocks = (turn.blocks ?? []).map(
       (block): VisibleBlock | HiddenBlock => {
-        if (block.citations.some((c) => !readable.has(c.documentId))) {
+        if (!turnReadable) {
           return { hidden: true, kind: block.kind };
         }
         return {
@@ -371,12 +383,10 @@ function toStoredBlocks(released: AcceptedBlock[]): {
     markdown: redactSecrets(blockToMarkdown(r.block)).text,
     citations: r.citations.map((c): StoredCitation => {
       const quote = redactSecrets(c.quote).text;
-      const heading = c.heading ? redactSecrets(c.heading).text : "";
       const anchor = c.anchor && SAFE_ANCHOR.test(c.anchor) ? c.anchor : "";
       return {
         documentId: c.documentId,
         ...(quote ? { quote } : {}),
-        ...(heading ? { heading } : {}),
         ...(anchor ? { anchor } : {}),
       };
     }),

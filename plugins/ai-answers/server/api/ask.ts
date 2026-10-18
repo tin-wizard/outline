@@ -339,6 +339,9 @@ router.post(
       }
       // With Redis down, stored history still keeps the turn under a new id.
       const id = conversation?.id ?? (historyOn ? randomUUID() : null);
+      // Only an id minted in this request may create the stored conversation;
+      // a loaded or resumed one that was deleted meanwhile stays deleted.
+      const minted = id !== conversationId;
       if (id) {
         stream.send("conversation", { id });
       }
@@ -379,6 +382,7 @@ router.post(
             historyOn
               ? appendConversationTurn(user, {
                   conversationId: id,
+                  create: minted,
                   question: query,
                   released,
                   outcome: "failed" in end ? end.failed : "answered",
@@ -421,13 +425,10 @@ router.post(
       const retrievalMs = Date.now() - retrievalStartedAt;
       const presented = await presentSources(user, sources);
       stream.send("sources", presented);
-      if (sources.length === 0) {
-        await finish([], { failed: "no_answer" });
-        return;
-      }
 
       // Return the pinned connection before the slow model call (M1 task
-      // 1.2). No tenant-data reads after this point.
+      // 1.2) and before storing the turn, which takes its own connection. No
+      // tenant-data reads after this point.
       try {
         await releaseRequestTransaction();
       } catch (error) {
@@ -435,6 +436,10 @@ router.post(
           error: toError(error).message,
         });
         await finish([], { failed: "unavailable" });
+        return;
+      }
+      if (sources.length === 0) {
+        await finish([], { failed: "no_answer" });
         return;
       }
 

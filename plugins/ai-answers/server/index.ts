@@ -6,11 +6,12 @@ import env from "./env";
 import CleanupOldAIConversationsTask from "./tasks/CleanupOldAIConversationsTask";
 
 if (env.ANTHROPIC_API_KEY) {
-  PluginManager.add([
-    { ...config, type: Hook.API, value: askRouter },
-    { ...config, type: Hook.API, value: conversationsRouter },
-  ]);
+  PluginManager.add([{ ...config, type: Hook.API, value: askRouter }]);
 }
 
-// Retention runs even when AI answers are not configured any more.
-PluginManager.add([{ type: Hook.Task, value: CleanupOldAIConversationsTask }]);
+// Stored chats can be listed and deleted, and retention keeps running, even
+// when AI answers are not configured any more.
+PluginManager.add([
+  { ...config, type: Hook.API, value: conversationsRouter },
+  { type: Hook.Task, value: CleanupOldAIConversationsTask },
+]);

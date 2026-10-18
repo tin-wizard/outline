@@ -1206,7 +1206,6 @@ describe("#ai.ask", () => {
             {
               documentId: document.id,
               quote: FACT,
-              heading: "Leave",
               anchor: "h-leave",
             },
           ],
@@ -1238,9 +1237,18 @@ describe("#ai.ask", () => {
       expect(turn.citedDocumentIds).toEqual([]);
     });
 
-    it("stores the question of a turn that found no sources", async () => {
+    it("stores the question of a turn that found no sources, after releasing the request transaction", async () => {
       const user = await enable(await buildUser());
+      const held: boolean[] = [];
+      const create = AIConversationTurn.create.bind(AIConversationTurn);
+      vi.spyOn(AIConversationTurn, "create").mockImplementation(
+        async (...args) => {
+          held.push(!!requestContext.getStore()?.transaction);
+          return create(...args);
+        }
+      );
       const events = await askEvents(user, { query: "zebra quokka" });
+      expect(held).toEqual([false]);
       expect(events.at(-1)?.data.reason).toEqual("no_answer");
       const [turn] = await turnsOf(events[0].data.id);
       expect(turn.question).toEqual("zebra quokka");
@@ -1280,6 +1288,50 @@ describe("#ai.ask", () => {
       expect(
         await AIConversation.count({ where: { userId: user.id } })
       ).toEqual(0);
+    });
+
+    it("never recreates a conversation deleted while a turn was streaming", async () => {
+      const { user } = await setup();
+      upstream(() => anthropicEvents([cited]));
+      const id = (await askEvents(user))[0].data.id;
+
+      let arrived = false;
+      let openGate: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => {
+        openGate = resolve;
+      });
+      mswServer.use(
+        http.post(ANTHROPIC, async () => {
+          arrived = true;
+          await gate;
+          return sseResponse(anthropicEvents([cited]));
+        })
+      );
+      const pending = ask(user, {
+        query: "Does that include weekends?",
+        conversationId: id,
+      });
+      await waitFor(() => arrived);
+      const deleted = await server.post("/api/aiConversations.delete", user, {
+        body: { id },
+      });
+      expect(deleted.status).toEqual(200);
+      openGate();
+      const events = parseSse(await (await pending).text()).events;
+      expect(events.at(-1)?.event).toEqual("done");
+      expect(events.at(-1)?.data.conversationId).toBeNull();
+      expect(await AIConversation.findByPk(id)).toBeNull();
+      expect(await turnsOf(id)).toHaveLength(0);
+
+      // Asking again with the deleted id starts over under a new id.
+      upstream(() => anthropicEvents([cited]));
+      const again = await askEvents(user, {
+        query: "Again?",
+        conversationId: id,
+      });
+      expect(again[0].data.id).not.toEqual(id);
+      expect(again[1].data.notice).toEqual("conversation_new");
+      expect(await AIConversation.findByPk(id)).toBeNull();
     });
 
     it("stores nothing in the database when history is off", async () => {

@@ -11,9 +11,9 @@ import pagination, {
 } from "@server/routes/api/middlewares/pagination";
 import { QueryHelper } from "@server/storage/QueryHelper";
 import { sequelize } from "@server/storage/database";
-import type { APIContext } from "@server/types";
+import { AuthenticationType, type APIContext } from "@server/types";
 import { RateLimiterStrategy } from "@server/utils/RateLimiter";
-import { assertHistoryAllowed, assertHistoryDeletable } from "../access";
+import { assertHistoryAllowed } from "../access";
 import { deleteConversation } from "../conversation";
 import {
   conversationTitle,
@@ -44,14 +44,16 @@ async function loadOwn(user: User, id: string): Promise<AIConversation> {
 router.post(
   "aiConversations.list",
   rateLimiter(RateLimiterStrategy.OneHundredPerMinute),
-  auth(),
+  // Session only: API keys and OAuth tokens never reach anyone's chats.
+  auth({ type: AuthenticationType.APP }),
   pagination(),
   validate(T.AIConversationsListSchema),
   async (ctx: APIContext<T.AIConversationsListReq>) => {
     const { user } = ctx.state.auth;
     const { query, pinned } = ctx.input.body;
 
-    assertHistoryAllowed(user);
+    // Metadata only and owner scoped, so it needs no AI or role gate: people
+    // can always find (and delete) what was stored about them.
 
     const conditions: WhereOptions<AIConversation>[] = [
       { teamId: user.teamId, userId: user.id },
@@ -102,7 +104,8 @@ router.post(
 router.post(
   "aiConversations.info",
   rateLimiter(RateLimiterStrategy.OneHundredPerMinute),
-  auth(),
+  // Session only: API keys and OAuth tokens never reach anyone's chats.
+  auth({ type: AuthenticationType.APP }),
   validate(T.AIConversationsInfoSchema),
   async (ctx: APIContext<T.AIConversationsInfoReq>) => {
     const { user } = ctx.state.auth;
@@ -121,7 +124,8 @@ router.post(
 router.post(
   "aiConversations.update",
   rateLimiter(RateLimiterStrategy.TwentyFivePerMinute),
-  auth(),
+  // Session only: API keys and OAuth tokens never reach anyone's chats.
+  auth({ type: AuthenticationType.APP }),
   validate(T.AIConversationsUpdateSchema),
   async (ctx: APIContext<T.AIConversationsUpdateReq>) => {
     const { user } = ctx.state.auth;
@@ -147,14 +151,15 @@ router.post(
 router.post(
   "aiConversations.delete",
   rateLimiter(RateLimiterStrategy.TwentyFivePerMinute),
-  auth(),
+  // Session only: API keys and OAuth tokens never reach anyone's chats.
+  auth({ type: AuthenticationType.APP }),
   validate(T.AIConversationsDeleteSchema),
   async (ctx: APIContext<T.AIConversationsDeleteReq>) => {
     const { user } = ctx.state.auth;
     const { id } = ctx.input.body;
 
-    // Not gated on the preferences: owners can always delete what was stored.
-    assertHistoryDeletable(user);
+    // Not gated on the preferences or role: owners can always delete what
+    // was stored.
     const conversation = await loadOwn(user, id);
     authorize(user, "delete", conversation);
 

@@ -1,11 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { subDays } from "date-fns";
+import { vi } from "vitest";
 import { TeamPreference } from "@shared/types";
 import { sequelize } from "@server/storage/database";
 import Redis from "@server/storage/redis";
-import { AIConversation, AIConversationTurn, Team } from "@server/models";
-import type { Document, User } from "@server/models";
 import {
+  AIConversation,
+  AIConversationTurn,
+  Document,
+  Team,
+} from "@server/models";
+import type { User } from "@server/models";
+import {
+  buildApiKey,
   buildCollection,
   buildDocument,
   buildGuestUser,
@@ -91,47 +98,66 @@ describe("aiConversations", () => {
     it.each([
       ["guest", buildGuestUser],
       ["viewer", buildViewer],
-    ])("denies a %s", async (_role, build) => {
-      const user = await enable(await build());
-      expect((await post("list", user, {})).status).toEqual(403);
-    });
+    ])(
+      "lets a %s list and delete their own chats but not open them",
+      async (_role, build) => {
+        const user = await enable(await build());
+        const id = await store(user, "Kept from before?");
+        const list = await post("list", user, {});
+        expect(list.status).toEqual(200);
+        expect(
+          (await list.json()).data.map((c: { id: string }) => c.id)
+        ).toEqual([id]);
+        expect((await post("info", user, { id })).status).toEqual(403);
+        expect(
+          (await post("update", user, { id, pinned: true })).status
+        ).toEqual(403);
+        expect((await post("delete", user, { id })).status).toEqual(200);
+        expect(await AIConversation.findByPk(id)).toBeNull();
+      }
+    );
 
-    it("returns 403 when history is off, for list too", async () => {
+    it("lists and deletes but does not open or change chats while history is off", async () => {
       const user = await enable(await buildUser());
       const id = await store(user, "Kept?");
-      await enable(user, false);
-      const res = await post("list", user, {});
-      expect(res.status).toEqual(403);
-      expect((await res.json()).message).toEqual(
-        "AI conversation history is not enabled"
-      );
-      for (const path of ["info", "update"]) {
-        expect((await post(path, user, { id, pinned: true })).status).toEqual(
-          403
-        );
-      }
-    });
-
-    it("lets the owner delete while history or AI answers are off", async () => {
-      const user = await enable(await buildUser());
-      const first = await store(user, "Kept?");
       const second = await store(user, "Also kept?");
-      const key = `aiconv:${user.teamId}:${user.id}:${first}`;
+      const key = `aiconv:${user.teamId}:${user.id}:${id}`;
       await Redis.defaultClient.set(key, "{}", "EX", 60);
       await enable(user, false);
 
-      expect((await post("delete", user, { id: first })).status).toEqual(200);
-      expect(await AIConversation.findByPk(first)).toBeNull();
+      const list = await post("list", user, {});
+      expect(list.status).toEqual(200);
+      const { data } = await list.json();
+      expect(data.map((c: { id: string }) => c.id).sort()).toEqual(
+        [id, second].sort()
+      );
+      // Metadata only.
+      expect(data[0].turns).toBeUndefined();
+      for (const path of ["info", "update"]) {
+        const res = await post(path, user, { id, pinned: true });
+        expect(res.status).toEqual(403);
+        expect((await res.json()).message).toEqual(
+          "AI conversation history is not enabled"
+        );
+      }
+
+      expect((await post("delete", user, { id })).status).toEqual(200);
+      expect(await AIConversation.findByPk(id)).toBeNull();
       expect(await Redis.defaultClient.exists(key)).toEqual(0);
 
       const team = await Team.findByPk(user.teamId, { rejectOnEmpty: true });
       team.setPreference(TeamPreference.AIAnswers, false);
       await team.save();
+      expect((await post("list", user, {})).status).toEqual(200);
+      expect((await post("info", user, { id: second })).status).toEqual(403);
       expect((await post("delete", user, { id: second })).status).toEqual(200);
       expect(await AIConversation.findByPk(second)).toBeNull();
+    });
 
-      const other = await buildUser({ teamId: user.teamId });
-      const foreign = await store(await enable(other), "Not yours");
+    it("returns 404 for foreign and missing ids on delete, with history off", async () => {
+      const owner = await enable(await buildUser());
+      const foreign = await store(owner, "Not yours");
+      const user = await buildUser({ teamId: owner.teamId });
       await enable(user, false);
       expect((await post("delete", user, { id: foreign })).status).toEqual(404);
       expect((await post("delete", user, { id: randomUUID() })).status).toEqual(
@@ -140,22 +166,27 @@ describe("aiConversations", () => {
       expect(await AIConversation.findByPk(foreign)).not.toBeNull();
     });
 
-    it.each([
-      ["guest", buildGuestUser],
-      ["viewer", buildViewer],
-    ])("denies delete to a %s", async (_role, build) => {
-      const user = await enable(await build());
-      expect((await post("delete", user, { id: randomUUID() })).status).toEqual(
-        403
-      );
+    it("refuses API keys on every route", async () => {
+      const user = await enable(await buildUser());
+      const id = await store(user, "Private?");
+      const key = await buildApiKey({ userId: user.id });
+      for (const path of ["list", "info", "update", "delete"]) {
+        const res = await server.post(`/api/aiConversations.${path}`, {
+          body: { id, pinned: true },
+          headers: { Authorization: `Bearer ${key.value}` },
+        });
+        expect([401, 403]).toContain(res.status);
+      }
+      expect(await AIConversation.findByPk(id)).not.toBeNull();
     });
 
-    it("returns 403 when AI answers are off", async () => {
+    it("returns 403 for info when AI answers are off", async () => {
       const user = await enable(await buildUser());
+      const id = await store(user, "Kept?");
       const team = await Team.findByPk(user.teamId, { rejectOnEmpty: true });
       team.setPreference(TeamPreference.AIAnswers, false);
       await team.save();
-      expect((await post("list", user, {})).status).toEqual(403);
+      expect((await post("info", user, { id })).status).toEqual(403);
     });
   });
 
@@ -275,7 +306,7 @@ describe("aiConversations", () => {
       ]);
     });
 
-    it("hides blocks whose sources are no longer readable", async () => {
+    it("hides every block of a turn once any of its sources is no longer readable", async () => {
       const user = await enable(await buildUser());
       const author = await buildUser({ teamId: user.teamId });
       const collection = await buildCollection({
@@ -292,38 +323,74 @@ describe("aiConversations", () => {
       const deleted = await make();
       const unpublished = await make();
       const ownDraft = await make(user);
-      const id = await store(user, "Everything?", [
+      const id = await store(user, "Kept?", [
+        released("# Kept heading", []),
         released("Kept block text.", [kept]),
-        released("Deleted block text.", [deleted]),
-        released("Unpublished block text.", [unpublished]),
         released("Own draft block text.", [ownDraft]),
-        released("Structural block without citations.", []),
       ]);
+      await store(
+        user,
+        "Deleted?",
+        [
+          released("# Heading from the deleted source", []),
+          released("Deleted block text.", [deleted]),
+        ],
+        id
+      );
+      await store(
+        user,
+        "Unpublished?",
+        [released("Unpublished block text.", [unpublished])],
+        id
+      );
+      await store(user, "Nothing found?", [], id);
       await deleted.destroy();
       await unpublished.update({ publishedAt: null });
       await ownDraft.update({ publishedAt: null });
 
       const res = await post("info", user, { id });
-      const [turn] = (await res.json()).data.turns;
-      expect(turn.hasHiddenBlocks).toEqual(true);
-      expect(
-        turn.blocks.map((b: { hidden?: boolean; markdown?: string }) =>
-          b.hidden ? "hidden" : b.markdown
-        )
-      ).toEqual([
-        "Kept block text.",
-        "hidden",
-        "hidden",
-        "Own draft block text.",
-        "Structural block without citations.",
+      const turns = (await res.json()).data.turns;
+      const shown = turns.map(
+        (t: { blocks: { hidden?: boolean; markdown?: string }[] }) =>
+          t.blocks.map((b) => (b.hidden ? "hidden" : b.markdown))
+      );
+      expect(shown).toEqual([
+        ["# Kept heading", "Kept block text.", "Own draft block text."],
+        ["hidden", "hidden"],
+        ["hidden"],
+        [],
       ]);
-      expect(turn.blocks[1]).toEqual({ hidden: true, kind: "paragraph" });
-      const serialized = JSON.stringify(turn);
+      expect(
+        turns.map((t: { hasHiddenBlocks: boolean }) => t.hasHiddenBlocks)
+      ).toEqual([false, true, true, false]);
+      expect(turns[1].blocks[0]).toEqual({ hidden: true, kind: "heading" });
+      expect(turns[1].sources).toEqual([]);
+      const serialized = JSON.stringify(turns);
       expect(serialized).not.toContain(deleted.id);
       expect(serialized).not.toContain(unpublished.id);
+      expect(serialized).not.toContain("Heading from the deleted source");
     });
 
-    it("hides blocks citing a collection newly excluded from AI or without access", async () => {
+    it("hides every cited turn when sources cannot be re-checked", async () => {
+      const user = await enable(await buildUser());
+      const doc = await buildDocument({ teamId: user.teamId, userId: user.id });
+      const id = await store(user, "Cited?", [
+        released("# Heading", []),
+        released("Cited block text.", [doc]),
+      ]);
+      await store(user, "Uncited?", [released("Plain gap statement.", [])], id);
+      vi.spyOn(Document, "findByIds").mockRejectedValueOnce(new Error("down"));
+      const turns = (await (await post("info", user, { id })).json()).data
+        .turns;
+      vi.restoreAllMocks();
+      expect(turns[0].blocks).toEqual([
+        { hidden: true, kind: "heading" },
+        { hidden: true, kind: "paragraph" },
+      ]);
+      expect(turns[1].blocks[0].markdown).toEqual("Plain gap statement.");
+    });
+
+    it("hides turns citing a collection newly excluded from AI or without access", async () => {
       const user = await enable(await buildUser());
       const collection = await buildCollection({
         teamId: user.teamId,
@@ -346,18 +413,27 @@ describe("aiConversations", () => {
         collectionId: privateCollection.id,
       });
       const id = await store(user, "Excluded?", [
+        released("# Lead-in", []),
         released("Excluded block text.", [doc]),
-        released("Private block text.", [privateDoc]),
       ]);
+      await store(
+        user,
+        "Private?",
+        [released("Private block text.", [privateDoc])],
+        id
+      );
 
-      let [turn] = (await (await post("info", user, { id })).json()).data.turns;
-      expect(turn.blocks[0].markdown).toEqual("Excluded block text.");
-      expect(turn.blocks[1]).toEqual({ hidden: true, kind: "paragraph" });
+      let turns = (await (await post("info", user, { id })).json()).data.turns;
+      expect(turns[0].blocks[1].markdown).toEqual("Excluded block text.");
+      expect(turns[1].blocks[0]).toEqual({ hidden: true, kind: "paragraph" });
 
       await collection.update({ aiExcluded: true });
-      [turn] = (await (await post("info", user, { id })).json()).data.turns;
-      expect(turn.blocks[0]).toEqual({ hidden: true, kind: "paragraph" });
-      expect(turn.sources).toEqual([]);
+      turns = (await (await post("info", user, { id })).json()).data.turns;
+      expect(turns[0].blocks).toEqual([
+        { hidden: true, kind: "heading" },
+        { hidden: true, kind: "paragraph" },
+      ]);
+      expect(turns[0].sources).toEqual([]);
     });
 
     it("returns the same 404 for missing and foreign ids", async () => {

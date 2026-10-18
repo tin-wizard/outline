@@ -110,9 +110,7 @@ describe("appendConversationTurn", () => {
       {
         kind: "paragraph",
         markdown: "BOSS API is the booking service.",
-        citations: [
-          { documentId: doc.id, quote: "a supporting quote", heading: "Intro" },
-        ],
+        citations: [{ documentId: doc.id, quote: "a supporting quote" }],
       },
     ]);
 
@@ -138,18 +136,45 @@ describe("appendConversationTurn", () => {
     );
   });
 
-  it("creates the conversation with the given id when it does not exist", async () => {
+  it("creates the conversation with the given id only when asked to", async () => {
     const user = await enable(await buildUser());
     const conversationId = randomUUID();
+    const turn = {
+      conversationId,
+      question: "Hello?",
+      released: [],
+      outcome: "no_answer",
+      usageId: null,
+    };
+    expect(await appendConversationTurn(user, turn)).toBeNull();
+    expect(await AIConversation.findByPk(conversationId)).toBeNull();
+    expect(
+      await appendConversationTurn(user, { ...turn, create: true })
+    ).toEqual(conversationId);
+  });
+
+  it("never resurrects a deleted conversation", async () => {
+    const user = await enable(await buildUser());
+    const id = await appendConversationTurn(user, {
+      question: "First?",
+      released: [],
+      outcome: "no_answer",
+      usageId: null,
+    });
+    await AIConversation.destroy({ where: { id: id! } });
     expect(
       await appendConversationTurn(user, {
-        conversationId,
-        question: "Hello?",
+        conversationId: id,
+        question: "Late turn",
         released: [],
         outcome: "no_answer",
         usageId: null,
       })
-    ).toEqual(conversationId);
+    ).toBeNull();
+    expect(await AIConversation.findByPk(id!)).toBeNull();
+    expect(
+      await AIConversationTurn.count({ where: { conversationId: id! } })
+    ).toEqual(0);
   });
 
   it("never writes into another user's conversation", async () => {
@@ -161,14 +186,17 @@ describe("appendConversationTurn", () => {
       outcome: "no_answer",
       usageId: null,
     });
-    const result = await appendConversationTurn(other, {
-      conversationId: id!,
-      question: "Intruder",
-      released: [],
-      outcome: "no_answer",
-      usageId: null,
-    });
-    expect(result).toBeNull();
+    for (const create of [false, true]) {
+      const result = await appendConversationTurn(other, {
+        conversationId: id!,
+        create,
+        question: "Intruder",
+        released: [],
+        outcome: "no_answer",
+        usageId: null,
+      });
+      expect(result).toBeNull();
+    }
     expect(
       await AIConversationTurn.count({ where: { conversationId: id! } })
     ).toEqual(1);
@@ -261,17 +289,24 @@ describe("appendConversationTurn", () => {
       {
         documentId: citation.documentId,
         quote: "a supporting quote",
-        heading: "Intro",
         anchor: "h-intro-2",
       },
       { documentId: citation.documentId, quote: "a supporting quote" },
     ]);
   });
 
-  it("keeps positions consistent when two turns of a new conversation are stored at once", async () => {
+  it("keeps positions consistent when turns of a conversation are stored at once", async () => {
     const user = await enable(await buildUser());
     const conversationId = randomUUID();
-    // Hold each transaction open after it created the conversation, so the
+    await appendConversationTurn(user, {
+      conversationId,
+      create: true,
+      question: "Zero?",
+      released: [],
+      outcome: "no_answer",
+      usageId: null,
+    });
+    // Hold each transaction open after it locked the conversation, so the
     // others start before it commits.
     const create = AIConversationTurn.create.bind(AIConversationTurn);
     vi.spyOn(AIConversationTurn, "create").mockImplementation(
@@ -297,7 +332,7 @@ describe("appendConversationTurn", () => {
       where: { conversationId },
       order: [["position", "ASC"]],
     });
-    expect(turns.map((t) => t.position)).toEqual([0, 1, 2]);
+    expect(turns.map((t) => t.position)).toEqual([0, 1, 2, 3]);
     expect(
       await AIConversation.count({ where: { id: conversationId } })
     ).toEqual(1);
