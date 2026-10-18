@@ -1,6 +1,10 @@
 import type { Turn } from "./model";
 import {
+  answerParts,
+  coverageOf,
   followUpSuggestions,
+  gapBlocks,
+  isGapBlock,
   isNotCovered,
   verificationOf,
 } from "./answerInsights";
@@ -35,21 +39,42 @@ function turn(over: Partial<Turn> = {}): Turn {
   };
 }
 
+const gap = (index: number) => ({
+  index,
+  kind: "paragraph" as const,
+  markdown: "The documents do not cover contractors.",
+  citations: [],
+});
+
 describe("verificationOf", () => {
-  it("reports retrieved documents and cited sources only", () => {
+  it("reports the cited sources and that every statement is cited", () => {
     expect(verificationOf(turn())).toEqual({
       state: "verified",
-      documents: 3,
       cited: 2,
+      everyCited: true,
     });
   });
 
-  it("omits the document count when sources are unknown", () => {
-    expect(verificationOf(turn({ sources: null }))).toEqual({
+  it("does not claim every statement cited next to an uncited gap statement", () => {
+    expect(
+      verificationOf(turn({ blocks: [...turn().blocks, gap(1)] }))
+    ).toEqual({
       state: "verified",
-      documents: undefined,
       cited: 2,
+      everyCited: false,
     });
+  });
+
+  it("ignores headings when judging whether every statement is cited", () => {
+    const heading = {
+      index: 1,
+      kind: "heading" as const,
+      markdown: "Overview",
+      citations: [],
+    };
+    expect(
+      verificationOf(turn({ blocks: [heading, ...turn().blocks] }))
+    ).toMatchObject({ everyCited: true });
   });
 
   it("is partial for failed or stopped turns that kept blocks", () => {
@@ -162,5 +187,80 @@ describe("followUpSuggestions", () => {
         })
       )
     ).toEqual([]);
+  });
+});
+
+describe("coverageOf", () => {
+  it("counts the released cited claim blocks and the cited documents", () => {
+    const blocks = [
+      ...turn().blocks,
+      {
+        index: 1,
+        kind: "listItem" as const,
+        markdown: "Another.",
+        citations: [cite(1, "/doc/a#h-leave-policy")],
+      },
+      { index: 2, kind: "heading" as const, markdown: "H", citations: [] },
+    ];
+    expect(coverageOf(turn({ blocks }))).toEqual({
+      kind: "all",
+      statements: 2,
+      documents: 2,
+    });
+  });
+
+  it("never says all statements match when something was dropped", () => {
+    expect(coverageOf(turn({ droppedSegments: 1 }))).toEqual({
+      kind: "dropped",
+    });
+  });
+
+  it("is the calm gap variant when a gap statement is present", () => {
+    expect(coverageOf(turn({ blocks: [...turn().blocks, gap(1)] }))).toEqual({
+      kind: "gap",
+    });
+  });
+
+  it("is partial for a failed turn and absent while streaming or without blocks", () => {
+    expect(coverageOf(turn({ problem: "unverified" }))).toEqual({
+      kind: "partial",
+    });
+    expect(coverageOf(turn({ status: "generating" }))).toBeUndefined();
+    expect(coverageOf(turn({ blocks: [] }))).toBeUndefined();
+    expect(
+      coverageOf(turn({ blocks: [gap(0)] })) // fully not covered: the notice speaks
+    ).toBeUndefined();
+  });
+});
+
+describe("gap statements", () => {
+  it("detects the verifier's lead only on uncited paragraphs", () => {
+    expect(isGapBlock(gap(0))).toBe(true);
+    expect(isGapBlock({ ...gap(0), citations: [cite(1, "/doc/a")] })).toBe(
+      false
+    );
+    expect(isGapBlock({ ...gap(0), kind: "listItem" })).toBe(false);
+    expect(
+      isGapBlock({ ...gap(0), markdown: "Documents are great and do not rot." })
+    ).toBe(false);
+  });
+
+  it("splits an answer around gap statements, or leaves them out", () => {
+    const blocks = [
+      ...turn().blocks,
+      gap(1),
+      { ...turn().blocks[0], index: 2 },
+    ];
+    const t = turn({ blocks });
+    expect(answerParts(t).map((p) => p.type)).toEqual([
+      "blocks",
+      "gap",
+      "blocks",
+    ]);
+    expect(answerParts(t, true).map((p) => p.type)).toEqual([
+      "blocks",
+      "blocks",
+    ]);
+    expect(gapBlocks(t)).toHaveLength(1);
   });
 });

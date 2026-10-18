@@ -9,7 +9,13 @@ import {
 import type { StoredTurn } from "~/models/AIConversation";
 import { client } from "~/utils/ApiClient";
 import { StreamRequestError, streamFetch } from "~/utils/streamFetch";
-import type { ChatState, Rating, Scope, TurnProblem } from "./model";
+import type {
+  ChatState,
+  Rating,
+  ReportReason,
+  Scope,
+  TurnProblem,
+} from "./model";
 import { chatReducer, initialChatState, isActive } from "./model";
 
 /**
@@ -62,6 +68,12 @@ export function useAISearch(): {
   hydrate: (conversationId: string, turns: StoredTurn[]) => void;
   /** Sets, switches or (when repeating the current rating) clears feedback. */
   rate: (turnId: number, rating: Rating) => void;
+  /** Rates an answer not helpful with a reason; resolves true when saved. */
+  report: (
+    turnId: number,
+    reason: ReportReason,
+    comment?: string
+  ) => Promise<boolean>;
 } {
   const [state, dispatch] = React.useReducer(chatReducer, initialChatState);
   const controllerRef = React.useRef<AbortController | null>(null);
@@ -117,17 +129,21 @@ export function useAISearch(): {
     stateRef.current = state;
   });
 
-  const rate = React.useCallback((turnId: number, rating: Rating) => {
-    const turn = stateRef.current.turns.find((t) => t.id === turnId);
-    if (!turn?.usageId || turn.feedback?.pending) {
-      return;
-    }
-    const next = turn.feedback?.rating === rating ? null : rating;
-    dispatch({ type: "feedbackStart", turnId, rating: next });
-    void client
-      .post("/ai.feedback", { usageId: turn.usageId, rating: next ?? "clear" })
-      .then(() => dispatch({ type: "feedbackDone", turnId }))
-      .catch((err) =>
+  const send = React.useCallback(
+    async (
+      turnId: number,
+      usageId: string,
+      body: {
+        rating: Rating | "clear";
+        reason?: ReportReason;
+        comment?: string;
+      }
+    ): Promise<boolean> => {
+      try {
+        await client.post("/ai.feedback", { usageId, ...body });
+        dispatch({ type: "feedbackDone", turnId });
+        return true;
+      } catch (err) {
         dispatch({
           type: "feedbackFailed",
           turnId,
@@ -137,9 +153,42 @@ export function useAISearch(): {
               : err instanceof RateLimitExceededError
                 ? "rateLimited"
                 : "failed",
-        })
-      );
-  }, []);
+        });
+        return false;
+      }
+    },
+    []
+  );
+
+  const rate = React.useCallback(
+    (turnId: number, rating: Rating) => {
+      const turn = stateRef.current.turns.find((t) => t.id === turnId);
+      if (!turn?.usageId || turn.feedback?.pending) {
+        return;
+      }
+      const next = turn.feedback?.rating === rating ? null : rating;
+      dispatch({ type: "feedbackStart", turnId, rating: next });
+      void send(turnId, turn.usageId, { rating: next ?? "clear" });
+    },
+    [send]
+  );
+
+  const report = React.useCallback(
+    async (turnId: number, reason: ReportReason, comment?: string) => {
+      const turn = stateRef.current.turns.find((t) => t.id === turnId);
+      if (!turn?.usageId || turn.feedback?.pending) {
+        return false;
+      }
+      dispatch({ type: "feedbackStart", turnId, rating: "down" });
+      const text = comment?.trim();
+      return send(turnId, turn.usageId, {
+        rating: "down",
+        reason,
+        ...(text ? { comment: text } : {}),
+      });
+    },
+    [send]
+  );
 
   const hydrate = React.useCallback(
     (conversationId: string, turns: StoredTurn[]) => {
@@ -174,5 +223,5 @@ export function useAISearch(): {
     };
   }, []);
 
-  return { state, streaming, ask, stop, reset, hydrate, rate };
+  return { state, streaming, ask, stop, reset, hydrate, rate, report };
 }

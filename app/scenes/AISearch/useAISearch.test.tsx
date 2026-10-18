@@ -245,5 +245,69 @@ describe("useAISearch", () => {
       await act(async () => view.api().rate(1, "up"));
       expect(post).not.toHaveBeenCalled();
     });
+
+    it("reports with a reason and a trimmed comment as a not helpful rating", async () => {
+      const { api } = await finishedTurn();
+      post.mockResolvedValue({});
+      let saved: boolean | undefined;
+      await act(async () => {
+        saved = await api().report(1, "outdated", "  The policy changed.  ");
+      });
+      expect(saved).toBe(true);
+      expect(post).toHaveBeenCalledWith("/ai.feedback", {
+        usageId: UUID,
+        rating: "down",
+        reason: "outdated",
+        comment: "The policy changed.",
+      });
+      expect(lastTurn(api().state).feedback).toMatchObject({
+        rating: "down",
+        pending: false,
+        saved: true,
+      });
+    });
+
+    it("omits an empty comment", async () => {
+      const { api } = await finishedTurn();
+      post.mockResolvedValue({});
+      await act(async () => {
+        await api().report(1, "inaccurate", "   ");
+      });
+      expect(post).toHaveBeenCalledWith("/ai.feedback", {
+        usageId: UUID,
+        rating: "down",
+        reason: "inaccurate",
+      });
+    });
+
+    it("resolves false and rolls the rating back when the report fails", async () => {
+      const { api } = await finishedTurn();
+      post.mockRejectedValue(new Error("boom"));
+      let saved: boolean | undefined;
+      await act(async () => {
+        saved = await api().report(1, "other", "x");
+      });
+      expect(saved).toBe(false);
+      expect(lastTurn(api().state).feedback).toMatchObject({
+        rating: null,
+        pending: false,
+        error: "failed",
+      });
+    });
+
+    it("does not report without a usageId", async () => {
+      const view = mount();
+      const stream = controlled();
+      act(() => view.api().ask("Q?", {}));
+      await stream.push(block(0), done("c"));
+      await stream.end();
+      post.mockReset();
+      let saved: boolean | undefined;
+      await act(async () => {
+        saved = await view.api().report(1, "other");
+      });
+      expect(saved).toBe(false);
+      expect(post).not.toHaveBeenCalled();
+    });
   });
 });

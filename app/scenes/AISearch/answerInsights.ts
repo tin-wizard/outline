@@ -1,14 +1,29 @@
-import type { Turn } from "./model";
-import { citedSources, isActive, sectionHeading } from "./model";
+import type { AnswerSegment, Turn } from "./model";
+import {
+  answerSegments,
+  citedSources,
+  isActive,
+  sectionHeading,
+} from "./model";
+
+type Block = Turn["blocks"][number];
+
+// Headings and table headers frame an answer; they make no claim of their own.
+const CLAIM_KINDS: Block["kind"][] = [
+  "paragraph",
+  "listItem",
+  "tableRow",
+  "code",
+];
 
 /** What the data held for a finished answer supports saying about it. */
 export type Verification =
   | {
       state: "verified";
-      /** Documents retrieved for the answer; undefined when not known. */
-      documents?: number;
       /** Distinct sources cited by the shown answer. */
       cited: number;
+      /** Every released claim block carries a citation (no uncited gap statement). */
+      everyCited: boolean;
     }
   | { state: "partial" }
   /** Finished, but the verifier left some statements out. */
@@ -18,7 +33,10 @@ export type Verification =
  * The calm verification line for a turn, from data the reducer already holds.
  * Only released (verified) blocks are ever shown, so a finished answer with
  * blocks and no failure is "verified"; a failed, stopped or cut-short one with
- * blocks is "partial", and one where the verifier dropped statements is "trimmed". Nothing is claimed while streaming or without blocks.
+ * blocks is "partial", and one where the verifier dropped statements is
+ * "trimmed". "Every statement cited" is only claimed when nothing was dropped
+ * and every released claim block has a citation. Nothing is claimed while
+ * streaming or without blocks.
  *
  * @param turn the turn.
  * @returns the line to show, or undefined when there is nothing to claim.
@@ -35,9 +53,49 @@ export function verificationOf(turn: Turn): Verification | undefined {
   }
   return {
     state: "verified",
-    documents: turn.sources?.length || undefined,
     cited: citedSources(turn).length,
+    everyCited: turn.blocks
+      .filter((b) => CLAIM_KINDS.includes(b.kind))
+      .every((b) => b.citations.length > 0),
   };
+}
+
+/** What the Sources panel's banner may say about how well the answer is covered. */
+export type Coverage =
+  | { kind: "all"; statements: number; documents: number }
+  /** Part of the question is not covered by the documents. */
+  | { kind: "gap" }
+  | { kind: "dropped" }
+  | { kind: "partial" };
+
+/**
+ * The coverage banner of the Sources panel. "All N statements match a passage"
+ * is claimed only when nothing was dropped, nothing failed and no gap
+ * statement is present; N counts the cited claim blocks actually released.
+ *
+ * @param turn the turn.
+ * @returns the banner, or undefined when there is nothing to claim.
+ */
+export function coverageOf(turn: Turn): Coverage | undefined {
+  const verification = verificationOf(turn);
+  if (!verification || isNotCovered(turn)) {
+    return undefined;
+  }
+  if (verification.state === "partial") {
+    return { kind: "partial" };
+  }
+  if (verification.state === "trimmed") {
+    return { kind: "dropped" };
+  }
+  if (gapBlocks(turn).length > 0) {
+    return { kind: "gap" };
+  }
+  const statements = turn.blocks.filter(
+    (b) => CLAIM_KINDS.includes(b.kind) && b.citations.length > 0
+  ).length;
+  return statements > 0
+    ? { kind: "all", statements, documents: verification.cited }
+    : undefined;
 }
 
 // The verifier's fixed lead for "what the documents do not cover".
@@ -62,13 +120,77 @@ export function isNotCovered(turn: Turn): boolean {
     turn.status === "done" &&
     !turn.problem &&
     turn.blocks.length > 0 &&
-    turn.blocks.every(
-      (b) =>
-        b.kind === "paragraph" &&
-        b.citations.length === 0 &&
-        GAP_LEAD.test(b.markdown.trim())
-    )
+    turn.blocks.every(isGapBlock)
   );
+}
+
+/**
+ * Whether a block is a gap statement: an uncited paragraph that opens with the
+ * verifier's fixed "The documents do not cover …" lead.
+ *
+ * @param block the block.
+ * @returns true for a gap statement.
+ */
+export function isGapBlock(block: Block): boolean {
+  return (
+    block.kind === "paragraph" &&
+    block.citations.length === 0 &&
+    GAP_LEAD.test(block.markdown.trim())
+  );
+}
+
+/**
+ * The gap statements of an answer, in order.
+ *
+ * @param turn the turn.
+ * @returns the blocks that say what the documents do not cover.
+ */
+export function gapBlocks(turn: Turn): Block[] {
+  return turn.blocks.filter(isGapBlock);
+}
+
+/** A part of an answer: normal blocks, a gap statement or a withheld stretch. */
+export type AnswerPart =
+  | { type: "blocks"; blocks: Block[] }
+  | { type: "gap"; block: Block }
+  | Extract<AnswerSegment, { type: "hidden" }>;
+
+/**
+ * Splits an answer into parts so gap statements can be shown as calm notices
+ * instead of prose. Gap statements are left out when `withoutGaps` is set (the
+ * caller shows them in its own card).
+ *
+ * @param turn the turn.
+ * @param withoutGaps drop the gap statements from the parts.
+ * @returns the parts in reading order.
+ */
+export function answerParts(turn: Turn, withoutGaps = false): AnswerPart[] {
+  const parts: AnswerPart[] = [];
+  for (const segment of answerSegments(turn)) {
+    if (segment.type === "hidden") {
+      parts.push(segment);
+      continue;
+    }
+    let run: Block[] = [];
+    const flush = () => {
+      if (run.length) {
+        parts.push({ type: "blocks", blocks: run });
+        run = [];
+      }
+    };
+    for (const block of segment.blocks) {
+      if (!isGapBlock(block)) {
+        run.push(block);
+        continue;
+      }
+      flush();
+      if (!withoutGaps) {
+        parts.push({ type: "gap", block });
+      }
+    }
+    flush();
+  }
+  return parts;
 }
 
 /** A follow-up the user can pick; the label is composed by the UI. */
