@@ -32,11 +32,13 @@ describe("ai-answers plugin entry", () => {
     expect(paths).toContain("aiConversations.delete");
     expect(paths).toContain("aiConversations.list");
     expect(paths).not.toContain("ai.ask");
+    expect(paths).not.toContain("ai.documents");
   });
 
   it("registers ai.ask with an API key", async () => {
     const paths = await registeredRoutes("test-key");
     expect(paths).toContain("ai.ask");
+    expect(paths).toContain("ai.documents");
     expect(paths).toContain("aiConversations.delete");
   });
 });
