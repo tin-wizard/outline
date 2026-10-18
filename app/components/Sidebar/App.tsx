@@ -68,7 +68,6 @@ function AppSidebar() {
   const [view, setView] = useSidebarView();
   useNewChatShortcut(tabbed);
   const showChats = showAIChats && (!tabbed || view === "chats");
-  const showLibrary = !tabbed || view === "library";
   const history = useHistory();
   const isMobile = useMobile();
 
@@ -212,18 +211,20 @@ function AppSidebar() {
                 <AIChats deleteOnly={!historyEnabled} />
               </Section>
             )}
-            {showLibrary &&
-              (tabbed ? (
-                <div
-                  role="tabpanel"
-                  id={sidebarPanelId("library")}
-                  aria-labelledby={sidebarTabId("library")}
-                >
-                  {library}
-                </div>
-              ) : (
-                library
-              ))}
+            {tabbed ? (
+              // Kept mounted while hidden: Starred and SharedWithMe load the
+              // stores that readyToShow waits for, or the sidebar stays blank.
+              <div
+                role="tabpanel"
+                id={sidebarPanelId("library")}
+                aria-labelledby={sidebarTabId("library")}
+                hidden={view !== "library"}
+              >
+                {library}
+              </div>
+            ) : (
+              library
+            )}
           </SidebarScrollProvider>
         </Scrollable>
       </DragActiveProvider>
