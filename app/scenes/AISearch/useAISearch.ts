@@ -125,7 +125,7 @@ export function useAISearch(): {
     const next = turn.feedback?.rating === rating ? null : rating;
     dispatch({ type: "feedbackStart", turnId, rating: next });
     void client
-      .post("ai.feedback", { usageId: turn.usageId, rating: next ?? "clear" })
+      .post("/ai.feedback", { usageId: turn.usageId, rating: next ?? "clear" })
       .then(() => dispatch({ type: "feedbackDone", turnId }))
       .catch((err) =>
         dispatch({

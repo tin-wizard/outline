@@ -192,7 +192,7 @@ describe("useAISearch", () => {
         ["down", "clear", null],
       ] as const) {
         await act(async () => api().rate(1, click));
-        expect(post).toHaveBeenLastCalledWith("ai.feedback", {
+        expect(post).toHaveBeenLastCalledWith("/ai.feedback", {
           usageId: UUID,
           rating,
         });
