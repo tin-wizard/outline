@@ -63,6 +63,8 @@ export const AIChatRow = observer(function AIChatRow({ conversation }: Props) {
         <EditableTitle
           title={conversation.title}
           onSubmit={handleSubmit}
+          // The row remounts as a div while editing; keep the input open.
+          isEditing={isEditing}
           onEditing={setIsEditing}
           canUpdate
           maxLength={MAX_TITLE_LENGTH}
