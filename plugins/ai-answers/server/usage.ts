@@ -7,7 +7,6 @@ import Redis from "@server/storage/redis";
 import {
   MAX_OUTPUT_TOKENS,
   STRUCTURED_SYSTEM_PROMPT,
-  SYSTEM_PROMPT,
   type Usage,
 } from "./contract";
 import env from "./env";
@@ -280,8 +279,7 @@ export function estimateUsage(
   sources: AnswerSource[]
 ): Usage {
   const chars =
-    // The longer prompt, so the estimate stays high for either endpoint.
-    Math.max(SYSTEM_PROMPT.length, STRUCTURED_SYSTEM_PROMPT.length) +
+    STRUCTURED_SYSTEM_PROMPT.length +
     question.length +
     sources.reduce(
       (sum, s) =>

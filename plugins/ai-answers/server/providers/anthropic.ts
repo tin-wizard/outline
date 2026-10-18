@@ -2,12 +2,9 @@ import type Anthropic from "@anthropic-ai/sdk";
 import {
   MAX_OUTPUT_TOKENS,
   STRUCTURED_SYSTEM_PROMPT,
-  SYSTEM_PROMPT,
-  type AnswerProvider,
   type AnswerRequest,
   type FinishReason,
   type ProviderCitation,
-  type ProviderSegment,
   type Usage,
 } from "../contract";
 import type { HistoryTurn } from "../conversation";
@@ -54,63 +51,6 @@ export interface StreamRequest extends AnswerRequest {
 /** The part of the SDK client this module needs; lets tests pass a fake. */
 export interface AnswerClient {
   messages: { create: Anthropic["messages"]["create"] };
-}
-
-/**
- * Creates a provider backed by the Anthropic Messages API, sending sources as
- * `search_result` blocks with citations enabled.
- *
- * @param client the Anthropic client.
- * @returns a provider returning unverified segments and token usage.
- */
-export function createAnthropicProvider(client: AnswerClient): AnswerProvider {
-  return {
-    async generate({ question, sources, signal }) {
-      const response = await client.messages.create(
-        {
-          model: env.AI_ANSWERS_MODEL,
-          max_tokens: MAX_OUTPUT_TOKENS,
-          system: SYSTEM_PROMPT,
-          messages: [
-            {
-              role: "user",
-              content: [
-                ...toSearchResults(sources),
-                // A pasted secret in the question must not reach the model either.
-                { type: "text" as const, text: redactSecrets(question).text },
-              ],
-            },
-          ],
-        },
-        { signal }
-      );
-
-      const segments: ProviderSegment[] = [];
-      for (const block of response.content) {
-        if (block.type !== "text") {
-          continue;
-        }
-        segments.push({
-          text: block.text,
-          citations: toCitations(block.citations ?? []),
-        });
-      }
-      return {
-        finishReason: response.stop_reason === "end_turn" ? "stop" : "other",
-        usage: response.usage
-          ? {
-              // Cache writes and reads are billed at (at least) the input price.
-              inputTokens:
-                response.usage.input_tokens +
-                (response.usage.cache_creation_input_tokens ?? 0) +
-                (response.usage.cache_read_input_tokens ?? 0),
-              outputTokens: response.usage.output_tokens,
-            }
-          : null,
-        segments,
-      };
-    },
-  };
 }
 
 /**

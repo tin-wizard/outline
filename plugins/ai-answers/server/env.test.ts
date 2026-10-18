@@ -1,5 +1,4 @@
 import { validate } from "class-validator";
-import { clampDeadline } from "./api/answers";
 import env from "./env";
 
 describe("AI answers environment", () => {
@@ -20,16 +19,11 @@ describe("AI answers environment", () => {
 
   // A validation error makes the base Environment exit the process, so a
   // typo in these settings must never produce one.
-  it.each([
-    [60_000, 30_000],
-    [-5, 1_000],
-    [NaN, 15_000],
-  ])(
+  it.each([60_000, -5, NaN])(
     "does not fail validation for a deadline of %s",
-    async (value, clamped) => {
+    async (value) => {
       env.AI_ANSWERS_DEADLINE_MS = value;
       expect(await validate(env)).toEqual([]);
-      expect(clampDeadline(value)).toEqual(clamped);
     }
   );
 

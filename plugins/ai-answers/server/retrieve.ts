@@ -47,7 +47,7 @@ const MAX_TITLE_TERMS = 4;
  */
 export async function retrieveSources(
   user: User,
-  body: T.DocumentsAnswerQuestionReq["body"],
+  body: Pick<T.AIAskReq["body"], "query" | "collectionId" | "documentId">,
   signal?: AbortSignal
 ): Promise<AnswerSource[]> {
   // The raw query never reaches the search provider; markers are not keywords.
@@ -59,11 +59,8 @@ export async function retrieveSources(
   }
 
   const filter = legacyParamsToFilter({
-    userId: body.userId,
     collectionId: body.collectionId,
     documentId: body.documentId,
-    statusFilter: body.statusFilter,
-    dateFilter: body.dateFilter,
   });
   if (filter) {
     await authorizeFilterFields(user, filter);

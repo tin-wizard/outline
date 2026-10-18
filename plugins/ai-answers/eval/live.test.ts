@@ -7,8 +7,11 @@ import {
   buildTeam,
   buildUser,
 } from "@server/test/factories";
-import { generateAnswerWithUsage } from "../server/generate";
-import { retrieveSources } from "../server/retrieve";
+import { BlockSplitter, blockToMarkdown, type Block } from "../server/blocks";
+import type { FinishReason, Usage } from "../server/contract";
+import { streamAnswer, type AnswerClient } from "../server/providers/anthropic";
+import { retrieveSources, type AnswerSource } from "../server/retrieve";
+import { AnswerVerifier } from "../server/verify";
 import cases from "./cases.json";
 import {
   buildFakeSecrets,
@@ -25,6 +28,59 @@ import {
 const enabled =
   process.env.AI_ANSWERS_EVAL_LIVE === "1" &&
   Boolean(process.env.ANTHROPIC_API_KEY);
+
+/**
+ * Runs one `ai.ask` turn without HTTP, metering or storage: the same stream,
+ * block splitter and verifier the endpoint uses.
+ */
+async function askOnce(
+  client: AnswerClient,
+  question: string,
+  sources: AnswerSource[]
+) {
+  const verifier = new AnswerVerifier(sources);
+  const splitter = new BlockSplitter();
+  const markdown: string[] = [];
+  let dropped = 0;
+  let allText = "";
+  let finishReason: FinishReason = "other";
+  let refused = false;
+  let usage: Usage | null = null;
+  const release = (blocks: Block[]) => {
+    for (const block of blocks) {
+      const verdict = verifier.verify(block);
+      if (verdict.ok) {
+        markdown.push(blockToMarkdown(verdict.block));
+      } else {
+        dropped++;
+      }
+    }
+  };
+  for await (const event of streamAnswer(client, {
+    question,
+    sources,
+    history: [],
+    signal: AbortSignal.timeout(120_000),
+  })) {
+    if (event.type === "text") {
+      allText += event.text;
+      release(splitter.push(event.text, event.citations));
+    } else {
+      finishReason = event.finishReason;
+      refused = event.refused;
+      usage = event.usage;
+    }
+  }
+  release(splitter.flush());
+  const verdict = verifier.finish(finishReason, allText);
+  const answered = verdict.ok && !refused;
+  return {
+    answer: answered ? markdown.join("\n\n") : null,
+    citations: answered ? verifier.released.flatMap((v) => v.citations) : [],
+    droppedSegments: dropped,
+    usage,
+  };
+}
 
 describe.skipIf(!enabled)("ai-answers live eval", () => {
   it(
@@ -85,11 +141,7 @@ describe.skipIf(!enabled)("ai-answers live eval", () => {
           const started = Date.now();
           try {
             const sources = await retrieveSources(user, { query: c.question });
-            const outcome = await generateAnswerWithUsage(
-              client,
-              c.question,
-              sources
-            );
+            const outcome = await askOnce(client, c.question, sources);
             const score = scoreCase(expectation, {
               answer: outcome.answer,
               citations: outcome.citations,

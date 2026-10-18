@@ -28,6 +28,7 @@ import {
   ASK_MAX_IDLE_MS,
   ASK_MIN_DEADLINE_MS,
   ASK_MIN_IDLE_MS,
+  REQUEST_HEADROOM_MS,
   ZERO_USAGE,
   type FinishReason,
   type Usage,
@@ -46,7 +47,6 @@ import { redactSecrets } from "../redact";
 import { retrieveSources, type AnswerSource } from "../retrieve";
 import { estimateUsage, record, reserveModelCall } from "../usage";
 import { AnswerVerifier, type AcceptedBlock } from "../verify";
-import { REQUEST_HEADROOM_MS } from "./answers";
 import * as T from "./schema";
 
 /** Why an answer ended without `done`. */
@@ -271,7 +271,7 @@ function citationsOf(
 }
 
 // Streams one AI turn as Server-Sent Events over POST (precedent:
-// server/routes/mcp/index.ts). Same guards as documents.answerQuestion: the
+// server/routes/mcp/index.ts). Guards: the
 // workspace preference, the role gate, abort on disconnect, a hard deadline,
 // the request transaction released before the model call, and budget,
 // unmetered flag and concurrency slot checked before any model call.
