@@ -90,7 +90,8 @@ const Page = observer(function Page({
   const isMobile = useMobile();
   const { collections, documents, aiConversations } = useStores();
   const params = useQuery();
-  const { state, streaming, ask, stop, reset, hydrate, rate } = useAISearch();
+  const { state, streaming, ask, stop, reset, hydrate, rate, report } =
+    useAISearch();
   const route = useConversationRoute({
     routeId: conversationId,
     enabled: historyEnabled,
@@ -302,9 +303,16 @@ const Page = observer(function Page({
                     scopeLabels={scopeLabels(turn.scope)}
                     onStop={stop}
                     onRate={rate}
+                    onReport={report}
                     onOpenSources={drawer.show}
+                    sourcesOpen={drawer.open && drawerTurn?.id === turn.id}
+                    onCloseSources={drawer.close}
                     onFollowUp={handleFollowUp}
                     onRetry={(failed) => submit(failed.question, failed.scope)}
+                    onRetryUnscoped={(failed) => {
+                      setScope({});
+                      submit(failed.question, {});
+                    }}
                   />
                 ))}
               </>

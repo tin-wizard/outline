@@ -39,7 +39,11 @@ const para = (markdown: string, citations: AskCitation[] = []): BlockInput => ({
 });
 
 function html(blocks: BlockInput[]): string {
-  return renderToStaticMarkup(<AnswerBody blocks={blocks} />);
+  return renderToStaticMarkup(
+    <ThemeProvider theme={theme}>
+      <AnswerBody blocks={blocks} />
+    </ThemeProvider>
+  );
 }
 
 function dom(blocks: BlockInput[]): HTMLElement {
@@ -331,23 +335,22 @@ describe("AnswerTurn sources", () => {
     const region = host.querySelector("[aria-live]");
     expect(region?.getAttribute("aria-live")).toBe("polite");
     expect(region?.getAttribute("aria-busy")).toBe("true");
-    expect(host.textContent).toContain("Writing answer…");
+    expect(host.textContent).toContain("Writing and checking each statement");
     expect(host.textContent).toContain("Stop");
   });
 
   it("puts phase text in its own status outside the aria-busy region", () => {
     const host = render(turn({ status: "searching", blocks: [] }));
     const status = host.querySelector('[role="status"]');
-    expect(status?.textContent).toBe("Searching your documents…");
+    expect(status?.textContent).toBe("Searching your documents");
     expect(status?.closest("[aria-live]")).toBeNull();
     expect(host.querySelector("[aria-live] [role=status]")).toBeNull();
   });
 
   it("explains the daily limit without offering a retry", () => {
     const host = render(turn({ status: "failed", problem: "quota" }));
-    expect(host.textContent).toContain(
-      "You've reached your daily AI limit. It resets at midnight UTC."
-    );
+    expect(host.textContent).toContain("You've reached your daily AI limit.");
+    expect(host.textContent).toContain("It resets at midnight UTC.");
     expect(host.textContent).not.toContain("Try again");
   });
 
@@ -355,14 +358,11 @@ describe("AnswerTurn sources", () => {
     const host = render(
       turn({ status: "failed", problem: "rateLimited", retryAfter: 42 })
     );
-    expect(host.textContent).toContain(
-      "Too many requests, try again in 42 seconds."
-    );
+    expect(host.textContent).toContain("Too many requests.");
+    expect(host.textContent).toContain("You can ask again in 42 seconds.");
     expect(host.textContent).toContain("Try again");
     const plain = render(turn({ status: "failed", problem: "rateLimited" }));
-    expect(plain.textContent).toContain(
-      "Too many requests, try again in a minute."
-    );
+    expect(plain.textContent).toContain("You can ask again in a minute.");
   });
 
   it("links every distinct cited section of a source", () => {
