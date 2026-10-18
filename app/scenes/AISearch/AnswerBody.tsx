@@ -1,11 +1,10 @@
 import * as React from "react";
-import { useTranslation } from "react-i18next";
 import styled from "styled-components";
 import { s } from "@shared/styles";
 import type { BlockInput, Group, Inline, ParsedItem } from "./markdown";
 import { groupBlocks } from "./markdown";
+import { CitationMarker } from "./CitationMarker";
 import type { CitationPreviewData } from "./CitationPreview";
-import { CitationPreview } from "./CitationPreview";
 
 interface Props {
   /** The verified blocks received so far. */
@@ -14,6 +13,13 @@ interface Props {
   onCitationClick?: (n: number, marker?: HTMLElement) => void;
   /** Preview card data by source number, built from the stream's events. */
   previews?: ReadonlyMap<number, CitationPreviewData>;
+  /**
+   * The answer is a comparison: the header cells after the first are document
+   * titles, tagged A, B and C in column order.
+   */
+  compare?: boolean;
+  /** Letters shown on citation chips instead of numbers (compare answers). */
+  letters?: ReadonlyMap<number, string>;
 }
 
 /**
@@ -25,27 +31,44 @@ interface Props {
  * @param props.blocks the blocks to render.
  * @param props.onCitationClick called with the source number of a marker.
  * @param props.previews hover and focus preview data by source number.
+ * @param props.compare tags the document columns of a comparison table.
+ * @param props.letters letters for citation chips of a comparison.
  * @returns the rendered answer.
  */
-export function AnswerBody({ blocks, onCitationClick, previews }: Props) {
+export function AnswerBody({
+  blocks,
+  onCitationClick,
+  previews,
+  compare,
+  letters,
+}: Props) {
   const groups = React.useMemo(() => groupBlocks(blocks), [blocks]);
   const marks = (citations: number[]) => (
     <Markers
       citations={citations}
       onClick={onCitationClick}
       previews={previews}
+      letters={letters}
     />
   );
 
-  return <Body>{groups.map((group, i) => renderGroup(group, i, marks))}</Body>;
+  return (
+    <Body>
+      {groups.map((group, i) => renderGroup(group, i, marks, compare))}
+    </Body>
+  );
 }
+
+/** Comparisons have at most three documents: A, B and C. */
+const COLUMN_TAGS = 3;
 
 const HEADING_TAGS = ["h3", "h4", "h5", "h6", "h6", "h6"] as const;
 
 function renderGroup(
   group: Group,
   key: number,
-  marks: (citations: number[]) => React.ReactNode
+  marks: (citations: number[]) => React.ReactNode,
+  compare?: boolean
 ) {
   switch (group.type) {
     case "heading": {
@@ -79,6 +102,11 @@ function renderGroup(
               <tr>
                 {group.header.map((cell, j) => (
                   <th key={j} scope="col">
+                    {compare && j > 0 && j <= COLUMN_TAGS && (
+                      <ColumnTag $index={j - 1} aria-hidden>
+                        {String.fromCharCode(64 + j)}
+                      </ColumnTag>
+                    )}
                     {renderInline(cell.inline)}
                   </th>
                 ))}
@@ -142,7 +170,9 @@ function Markers({
   citations,
   onClick,
   previews,
+  letters,
 }: {
+  letters?: ReadonlyMap<number, string>;
   citations: number[];
   onClick?: (n: number, marker?: HTMLElement) => void;
   previews?: ReadonlyMap<number, CitationPreviewData>;
@@ -153,6 +183,7 @@ function Markers({
         <CitationMarker
           key={n}
           n={n}
+          label={letters?.get(n)}
           onClick={onClick}
           preview={previews?.get(n)}
         />
@@ -161,93 +192,22 @@ function Markers({
   );
 }
 
-function CitationMarker({
-  n,
-  onClick,
-  preview,
-}: {
-  n: number;
-  onClick?: (n: number, marker?: HTMLElement) => void;
-  preview?: CitationPreviewData;
-}) {
-  const { t } = useTranslation();
-  const id = React.useId();
-  const [open, setOpen] = React.useState(false);
-  const handleClick = (event: React.MouseEvent<HTMLButtonElement>) =>
-    onClick?.(n, event.currentTarget);
-  const handleOpen = () => setOpen(true);
-  const handleClose = () => setOpen(false);
-  const handleKeyDown = (event: React.KeyboardEvent) => {
-    if (event.key === "Escape" && open) {
-      event.stopPropagation();
-      setOpen(false);
-    }
-  };
-  const showing = open && !!preview;
-
-  return (
-    <MarkerWrap
-      onMouseEnter={handleOpen}
-      onMouseLeave={handleClose}
-      onFocus={handleOpen}
-      onBlur={handleClose}
-      onKeyDown={handleKeyDown}
-    >
-      <Marker
-        type="button"
-        data-citation
-        aria-label={t("Source {{ number }}", { number: n })}
-        aria-describedby={showing ? id : undefined}
-        onClick={handleClick}
-      >
-        {n}
-      </Marker>
-      {showing && <CitationPreview id={id} preview={preview} />}
-    </MarkerWrap>
-  );
-}
-
-const MarkerWrap = styled.span`
-  position: relative;
-`;
-
-const Marker = styled.button`
-  display: inline-block;
-  min-width: 18px;
+const ColumnTag = styled.span<{ $index: number }>`
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
   height: 18px;
-  margin: 0 0 0 3px;
-  padding: 0 4px;
-  border: 0;
-  border-radius: 9px;
-  background: ${s("backgroundSecondary")};
-  color: ${s("textSecondary")};
+  margin-right: 6px;
+  border-radius: 4px;
+  background: ${(props) =>
+    [props.theme.textTertiary, props.theme.accent, props.theme.warning][
+      props.$index
+    ]};
+  color: ${s("background")};
   font-size: 11px;
-  font-weight: 600;
-  line-height: 18px;
-  vertical-align: super;
-  cursor: var(--pointer);
-
-  /* Touch: at least a 24px target (WCAG 2.5.8). */
-  @media (pointer: coarse) {
-    min-width: 24px;
-    height: 24px;
-    border-radius: 12px;
-    line-height: 24px;
-  }
-
-  &:hover,
-  &:focus-visible {
-    background: ${s("accent")};
-    color: ${s("accentText")};
-  }
-
-  &::before {
-    content: "[";
-  }
-
-  &::after {
-    content: "]";
-  }
+  font-weight: 700;
+  line-height: 1;
+  vertical-align: -3px;
 `;
 
 const TableWrapper = styled.div`
@@ -255,11 +215,14 @@ const TableWrapper = styled.div`
   margin: 0.5em 0;
 
   table {
+    width: 100%;
     border-collapse: collapse;
   }
 
   th,
   td {
+    /* Words stay whole; a table too wide for the column scrolls instead. */
+    overflow-wrap: normal;
     padding: 6px 10px;
     border: 1px solid ${s("divider")};
     text-align: left;

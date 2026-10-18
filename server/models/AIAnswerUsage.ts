@@ -19,8 +19,20 @@ export type AIAnswerOutcome =
   | "budget_blocked"
   | "quota_blocked";
 
+/** Why the asker reported an answer as not helpful. */
+export const AIFeedbackReasons = [
+  "inaccurate",
+  "incomplete",
+  "outdated",
+  "off_topic",
+  "other",
+] as const;
+
+export type AIFeedbackReason = (typeof AIFeedbackReasons)[number];
+
 /**
- * One metered AI answer request: token counts and cost, never content.
+ * One metered AI answer request: token counts and cost, never answer content.
+ * The only text is the asker's own redacted feedback comment.
  * Row-level security restricts rows to the acting tenant.
  */
 @Table({
@@ -76,6 +88,14 @@ class AIAnswerUsage extends Model<
   /** When the rating was last set; null while unrated. */
   @Column(DataType.DATE)
   feedbackAt: Date | null;
+
+  /** Why a not-helpful rating was given; null when none was chosen. */
+  @Column(DataType.TEXT)
+  feedbackReason: AIFeedbackReason | null;
+
+  /** The asker's redacted comment on a not-helpful rating, at most 500 characters. */
+  @Column(DataType.TEXT)
+  feedbackComment: string | null;
 }
 
 export default AIAnswerUsage;

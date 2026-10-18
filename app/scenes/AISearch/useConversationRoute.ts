@@ -99,9 +99,14 @@ export function useConversationRoute({
   }, [routeId, attempt, enabled, aiConversations, hydrate, reset]);
 
   const { conversationId, turns } = state;
-  const lastStatus = turns[turns.length - 1]?.status;
+  const lastTurn = turns[turns.length - 1];
+  // "Not covered" turns are stored like answers, so they get a URL and a sidebar row too.
+  const settled =
+    lastTurn?.status === "done" ||
+    (lastTurn?.status === "failed" &&
+      STORED_FAILURES.includes(lastTurn.problem ?? ""));
   React.useEffect(() => {
-    if (!enabled || !conversationId || lastStatus !== "done") {
+    if (!enabled || !conversationId || !settled) {
       return;
     }
     // Only answers given in this session are new; a hydrated conversation,
@@ -126,7 +131,7 @@ export function useConversationRoute({
   }, [
     enabled,
     conversationId,
-    lastStatus,
+    settled,
     turns.length,
     routeId,
     history,
@@ -136,3 +141,6 @@ export function useConversationRoute({
   const retry = React.useCallback(() => setAttempt((n) => n + 1), []);
   return { status, retry };
 }
+
+/** Failures the server stores as a turn (with history on), see ai.ask. */
+const STORED_FAILURES: string[] = ["no_answer", "compare_needs_two"];

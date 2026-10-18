@@ -17,3 +17,11 @@ describe("STRUCTURED_SYSTEM_PROMPT", () => {
     expect(STRUCTURED_SYSTEM_PROMPT).not.toMatch(/few sentences/i);
   });
 });
+
+describe("STRUCTURED_SYSTEM_PROMPT comparisons", () => {
+  it("forbids comparisons the sources do not state", () => {
+    expect(STRUCTURED_SYSTEM_PROMPT).toMatch(
+      /comparisons\b.*unless a single search result/i
+    );
+  });
+});

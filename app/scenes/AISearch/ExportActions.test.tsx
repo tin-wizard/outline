@@ -1,41 +1,23 @@
-import type * as React from "react";
+import type { MockInstance } from "vitest";
+import { createMemoryHistory } from "history";
+import { Provider } from "mobx-react";
 import { act } from "react";
+import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
+import { Router } from "react-router-dom";
 import { ThemeProvider } from "styled-components";
 import copy from "copy-to-clipboard";
 import { toast } from "sonner";
 import theme from "@shared/styles/theme";
+import { ActionContextProvider } from "~/hooks/useActionContext";
+import stores from "~/stores";
 import { ExportActions } from "./ExportActions";
 import { conversationToMarkdown } from "./exportMarkdown";
 import type { Turn } from "./model";
 
 vi.mock("copy-to-clipboard", () => ({ default: vi.fn() }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn() } }));
-vi.mock("~/env", () => ({ default: { ENVIRONMENT: "test" } }));
-const viewport = vi.hoisted(() => ({ mobile: false }));
-vi.mock("~/hooks/useMediaQuery", () => ({ default: () => viewport.mobile }));
-vi.mock("~/components/Button", () => ({
-  default: ({
-    children,
-    onClick,
-    disabled,
-    "aria-label": ariaLabel,
-  }: {
-    children?: React.ReactNode;
-    onClick?: React.MouseEventHandler<HTMLButtonElement>;
-    disabled?: boolean;
-    "aria-label"?: string;
-  }) => (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      aria-label={ariaLabel}
-    >
-      {children}
-    </button>
-  ),
-}));
+vi.mock("~/hooks/useMobile", () => ({ default: () => false }));
 
 const turn: Turn = {
   id: 1,
@@ -46,32 +28,111 @@ const turn: Turn = {
   blocks: [{ index: 0, kind: "paragraph", markdown: "A.", citations: [] }],
 };
 
-function mount(turns: Turn[], streaming = false, title?: string) {
+const roots: Root[] = [];
+let print: MockInstance;
+
+beforeAll(() => {
+  class ResizeObserverStub {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  globalThis.ResizeObserver = ResizeObserverStub;
+  (
+    globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+  ).IS_REACT_ACT_ENVIRONMENT = true;
+});
+
+beforeEach(() => {
+  print = vi.spyOn(window, "print").mockImplementation(() => undefined);
+});
+
+afterEach(() => {
+  act(() => roots.splice(0).forEach((root) => root.unmount()));
+  vi.clearAllMocks();
+  vi.useRealTimers();
+  print.mockRestore();
+  document.body.innerHTML = "";
+});
+
+function mount(
+  turns: Turn[],
+  streaming = false,
+  title?: string,
+  onSave?: () => void
+) {
   const host = document.createElement("div");
   document.body.appendChild(host);
+  const root = createRoot(host);
+  roots.push(root);
   act(() =>
-    createRoot(host).render(
+    root.render(
       <ThemeProvider theme={theme}>
-        <ExportActions turns={turns} streaming={streaming} title={title} />
+        <Provider rootStore={stores}>
+          <Router history={createMemoryHistory({ initialEntries: ["/ai"] })}>
+            <ActionContextProvider value={{ activeModels: [] }}>
+              <ExportActions
+                turns={turns}
+                streaming={streaming}
+                title={title}
+                onSave={onSave}
+              />
+            </ActionContextProvider>
+          </Router>
+        </Provider>
       </ThemeProvider>
     )
   );
-  const button = (name: string) =>
-    [...host.querySelectorAll("button")].find((b) =>
-      b.textContent?.includes(name)
-    ) as HTMLButtonElement;
-  return { host, button };
+  const trigger = host.querySelector<HTMLButtonElement>("button");
+  return { host, trigger };
+}
+
+const tick = () =>
+  act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
+
+async function open(trigger: HTMLButtonElement | null) {
+  await act(async () => {
+    // jsdom has no PointerEvent; Radix reads button, ctrlKey and pointerType.
+    const down = new MouseEvent("pointerdown", { bubbles: true, button: 0 });
+    Object.defineProperty(down, "pointerType", { value: "mouse" });
+    trigger?.dispatchEvent(down);
+  });
+  await tick();
+}
+
+const item = (label: string) =>
+  [...document.querySelectorAll<HTMLElement>("[role=menuitem]")].find((el) =>
+    el.textContent?.includes(label)
+  );
+
+async function choose(label: string, ...mountArgs: Parameters<typeof mount>) {
+  const { trigger } = mount(...mountArgs);
+  await open(trigger);
+  await act(async () => item(label)?.click());
 }
 
 describe("ExportActions", () => {
-  afterEach(() => {
-    vi.clearAllMocks();
-    document.body.innerHTML = "";
+  it("is one labelled icon button that opens the export menu", async () => {
+    const { trigger } = mount([turn]);
+    expect(document.querySelectorAll("button")).toHaveLength(1);
+    expect(trigger?.getAttribute("aria-label")).toBe("Export conversation");
+    expect(trigger?.textContent).toBe("");
+    await open(trigger);
+    expect(
+      [...document.querySelectorAll("[role=menuitem]")].map(
+        (el) => el.textContent
+      )
+    ).toEqual([
+      "Copy conversation as Markdown",
+      "Download as Markdown (.md)",
+      "Print / Save as PDF",
+    ]);
   });
 
-  it("copies the serializer output and confirms", () => {
-    const { button } = mount([turn]);
-    act(() => button("Copy conversation").click());
+  it("copies the serializer output and confirms", async () => {
+    await choose("Copy conversation", [turn]);
     expect(copy).toHaveBeenCalledWith(
       conversationToMarkdown([turn], { title: "AI Search" }),
       expect.anything()
@@ -79,73 +140,53 @@ describe("ExportActions", () => {
     expect(toast.success).toHaveBeenCalledWith("Copied");
   });
 
-  it("shows labelled icon buttons below desktop width", () => {
-    viewport.mobile = true;
-    try {
-      const { host } = mount([turn]);
-      const labels = [...host.querySelectorAll("button")].map((b) => [
-        b.textContent,
-        b.getAttribute("aria-label"),
-      ]);
-      expect(labels).toEqual([
-        ["", "Copy conversation as Markdown"],
-        ["", "Download as Markdown (.md)"],
-        ["", "Print / Save as PDF"],
-      ]);
-    } finally {
-      viewport.mobile = false;
-    }
-  });
-
-  it("uses the chat title as the heading", () => {
-    const { button } = mount([turn], false, "Hotel limits");
-    act(() => button("Copy conversation").click());
+  it("uses the chat title as the heading", async () => {
+    await choose("Copy conversation", [turn], false, "Hotel limits");
     expect(copy).toHaveBeenCalledWith(
       conversationToMarkdown([turn], { title: "Hotel limits" }),
       expect.anything()
     );
   });
 
-  it("downloads a Blob and revokes the object URL after a delay", () => {
-    vi.useFakeTimers();
+  it("downloads a Blob and revokes the object URL after a delay", async () => {
     const create = vi.fn(() => "blob:x");
     const revoke = vi.fn();
     Object.assign(URL, { createObjectURL: create, revokeObjectURL: revoke });
     const click = vi
       .spyOn(HTMLAnchorElement.prototype, "click")
       .mockImplementation(() => undefined);
-    const { button } = mount([turn]);
-    act(() => button("Download").click());
+    const { trigger } = mount([turn]);
+    await open(trigger);
+    vi.useFakeTimers();
+    act(() => item("Download")?.click());
     expect(create).toHaveBeenCalledTimes(1);
     expect(click).toHaveBeenCalled();
     expect(revoke).not.toHaveBeenCalled();
     vi.advanceTimersByTime(250);
     expect(revoke).toHaveBeenCalledWith("blob:x");
-    vi.useRealTimers();
   });
 
-  it("prints", () => {
-    const print = vi.spyOn(window, "print").mockImplementation(() => undefined);
-    const { button } = mount([turn]);
-    act(() => button("Print").click());
+  it("offers Save as draft document only when saving is allowed", async () => {
+    const onSave = vi.fn();
+    await choose("Save as draft document", [turn], false, undefined, onSave);
+    expect(onSave).toHaveBeenCalledTimes(1);
+    document.body.innerHTML = "";
+    const { trigger } = mount([turn]);
+    await open(trigger);
+    expect(item("Save as draft document")).toBeUndefined();
+  });
+
+  it("prints", async () => {
+    await choose("Print", [turn]);
     expect(print).toHaveBeenCalled();
   });
 
   it("is disabled while streaming and when nothing is exportable", () => {
-    for (const { host } of [
+    for (const { trigger } of [
       mount([turn], true),
       mount([{ ...turn, blocks: [] }]),
     ]) {
-      const buttons = [...host.querySelectorAll("button")];
-      expect(buttons).toHaveLength(3);
-      expect(buttons.every((b) => b.disabled)).toBe(true);
+      expect(trigger?.disabled).toBe(true);
     }
-  });
-
-  it("labels the group", () => {
-    const { host } = mount([turn]);
-    expect(host.querySelector("[role=group]")?.getAttribute("aria-label")).toBe(
-      "Export conversation"
-    );
   });
 });

@@ -3,30 +3,15 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { Composer } from "./Composer";
 
-// The real Button needs the action context provider.
-vi.mock("~/components/Button", () => ({
-  default: ({
-    children,
-    disabled,
-    type,
-  }: {
-    children?: React.ReactNode;
-    disabled?: boolean;
-    type?: "submit" | "button";
-  }) => (
-    <button type={type} disabled={disabled}>
-      {children}
-    </button>
-  ),
-}));
-
 beforeAll(() => {
   (
     globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
   ).IS_REACT_ACT_ENVIRONMENT = true;
 });
 
-function setup(props: { value?: string; busy?: boolean } = {}) {
+function setup(
+  props: { value?: string; busy?: boolean; followUp?: boolean } = {}
+) {
   const onSubmit = vi.fn();
   const onStop = vi.fn();
   const onChange = vi.fn();
@@ -43,6 +28,8 @@ function setup(props: { value?: string; busy?: boolean } = {}) {
         onSubmit={onSubmit}
         onStop={onStop}
         textareaRef={ref}
+        followUp={props.followUp}
+        chips={<button type="button">Chip</button>}
       />
     )
   );
@@ -108,13 +95,80 @@ describe("Composer keyboard", () => {
       `#${textarea.getAttribute("aria-describedby")}`
     );
     expect(hint?.textContent).toContain("Escape");
-    expect(host.querySelector("button")?.hasAttribute("aria-label")).toBe(
-      false
+  });
+
+  it("shows Stop instead of Send while busy, and Stop stops", () => {
+    const { host, onStop, onSubmit } = setup({ busy: true });
+    expect(host.querySelector('button[aria-label="Send"]')).toBeNull();
+    const stop = host.querySelector<HTMLButtonElement>(
+      'button[aria-label="Stop"]'
     );
-    expect(host.querySelector("button")?.disabled).toBe(true);
+    expect(stop?.type).toBe("button");
+    act(() => stop?.click());
+    expect(onStop).toHaveBeenCalledTimes(1);
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 
   it("limits the question to 500 characters", () => {
     expect(setup().textarea.maxLength).toBe(500);
+  });
+});
+
+describe("Composer card", () => {
+  it("has a round Send button that is disabled for a blank question", () => {
+    const filled = setup();
+    const send = filled.host.querySelector<HTMLButtonElement>(
+      'button[aria-label="Send"]'
+    );
+    expect(send?.type).toBe("submit");
+    expect(send?.disabled).toBe(false);
+    document.body.innerHTML = "";
+    const blank = setup({ value: "  " });
+    expect(
+      blank.host.querySelector<HTMLButtonElement>('button[aria-label="Send"]')
+        ?.disabled
+    ).toBe(true);
+  });
+
+  it("submits the form on Send", () => {
+    const { host, onSubmit } = setup();
+    const form = host.querySelector("form");
+    act(() => {
+      form?.dispatchEvent(
+        new Event("submit", { bubbles: true, cancelable: true })
+      );
+    });
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  it("describes the keys and keeps the chips in the bar", () => {
+    const { host, textarea } = setup();
+    const hint = host.querySelector(
+      `#${textarea.getAttribute("aria-describedby")}`
+    );
+    expect(hint?.textContent).toBe(
+      "Enter to send · Shift+Enter for a new line"
+    );
+    expect(host.textContent).toContain("Chip");
+  });
+
+  it("asks for a follow-up once there are answers", () => {
+    expect(setup().textarea.placeholder).toBe(
+      "Ask a question about your documents…"
+    );
+    document.body.innerHTML = "";
+    expect(setup({ followUp: true }).textarea.placeholder).toBe(
+      "Ask a follow-up about your documents…"
+    );
+  });
+
+  it("shows the counter only near the limit", () => {
+    expect(setup({ value: "a".repeat(449) }).host.textContent).not.toContain(
+      "/500"
+    );
+    document.body.innerHTML = "";
+    expect(setup({ value: "a".repeat(450) }).host.textContent).toContain(
+      "450/500"
+    );
   });
 });

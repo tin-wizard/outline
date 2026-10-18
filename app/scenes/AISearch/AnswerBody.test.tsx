@@ -39,7 +39,11 @@ const para = (markdown: string, citations: AskCitation[] = []): BlockInput => ({
 });
 
 function html(blocks: BlockInput[]): string {
-  return renderToStaticMarkup(<AnswerBody blocks={blocks} />);
+  return renderToStaticMarkup(
+    <ThemeProvider theme={theme}>
+      <AnswerBody blocks={blocks} />
+    </ThemeProvider>
+  );
 }
 
 function dom(blocks: BlockInput[]): HTMLElement {
@@ -252,13 +256,7 @@ describe("AnswerTurn sources", () => {
     host.innerHTML = renderToStaticMarkup(
       <ThemeProvider theme={theme}>
         <MemoryRouter>
-          <AnswerTurn
-            turn={t}
-            isLast
-            scopeLabels={[]}
-            onStop={() => {}}
-            onRetry={() => {}}
-          />
+          <AnswerTurn turn={t} isLast scopeLabels={[]} onRetry={() => {}} />
         </MemoryRouter>
       </ThemeProvider>
     );
@@ -316,7 +314,6 @@ describe("AnswerTurn sources", () => {
             })}
             isLast
             scopeLabels={["Eng"]}
-            onStop={() => {}}
             onRetry={() => {}}
           />
         </MemoryRouter>
@@ -331,23 +328,21 @@ describe("AnswerTurn sources", () => {
     const region = host.querySelector("[aria-live]");
     expect(region?.getAttribute("aria-live")).toBe("polite");
     expect(region?.getAttribute("aria-busy")).toBe("true");
-    expect(host.textContent).toContain("Writing answer…");
-    expect(host.textContent).toContain("Stop");
+    expect(host.textContent).toContain("Writing and checking each statement");
   });
 
   it("puts phase text in its own status outside the aria-busy region", () => {
     const host = render(turn({ status: "searching", blocks: [] }));
     const status = host.querySelector('[role="status"]');
-    expect(status?.textContent).toBe("Searching your documents…");
+    expect(status?.textContent).toBe("Searching your documents");
     expect(status?.closest("[aria-live]")).toBeNull();
     expect(host.querySelector("[aria-live] [role=status]")).toBeNull();
   });
 
   it("explains the daily limit without offering a retry", () => {
     const host = render(turn({ status: "failed", problem: "quota" }));
-    expect(host.textContent).toContain(
-      "You've reached your daily AI limit. It resets at midnight UTC."
-    );
+    expect(host.textContent).toContain("You've reached your daily AI limit.");
+    expect(host.textContent).toContain("It resets at midnight UTC.");
     expect(host.textContent).not.toContain("Try again");
   });
 
@@ -355,14 +350,11 @@ describe("AnswerTurn sources", () => {
     const host = render(
       turn({ status: "failed", problem: "rateLimited", retryAfter: 42 })
     );
-    expect(host.textContent).toContain(
-      "Too many requests, try again in 42 seconds."
-    );
+    expect(host.textContent).toContain("Too many requests.");
+    expect(host.textContent).toContain("You can ask again in 42 seconds.");
     expect(host.textContent).toContain("Try again");
     const plain = render(turn({ status: "failed", problem: "rateLimited" }));
-    expect(plain.textContent).toContain(
-      "Too many requests, try again in a minute."
-    );
+    expect(plain.textContent).toContain("You can ask again in a minute.");
   });
 
   it("links every distinct cited section of a source", () => {
@@ -406,7 +398,6 @@ describe("AnswerTurn sources", () => {
               turn={t}
               isLast
               scopeLabels={[]}
-              onStop={() => {}}
               onRetry={() => {}}
               onRate={() => {}}
             />
@@ -527,5 +518,49 @@ describe("AnswerTurn sources", () => {
     const host = render(turn({ notice: code }));
     expect(host.textContent).toContain(text);
     expect(host.textContent).not.toContain(code);
+  });
+});
+
+describe("AnswerBody compare tables", () => {
+  const compareBlocks: BlockInput[] = [
+    {
+      kind: "tableHeader",
+      markdown: "| Aspect | Travel Policy v3 | <img src=x onerror=alert(1)> |",
+      citations: [],
+    },
+    {
+      kind: "tableRow",
+      markdown: "| Limit | 100 EUR | 120 EUR |",
+      citations: [cite(1), cite(2)],
+    },
+  ];
+  const render = (compare: boolean): HTMLElement => {
+    const host = document.createElement("div");
+    host.innerHTML = renderToStaticMarkup(
+      <ThemeProvider theme={theme}>
+        <AnswerBody blocks={compareBlocks} compare={compare} />
+      </ThemeProvider>
+    );
+    return host;
+  };
+
+  it("tags the document columns A and B in order, not the aspect column", () => {
+    const heads = [...render(true).querySelectorAll("th")];
+    expect(heads.map((th) => th.textContent)).toEqual([
+      "Aspect",
+      "ATravel Policy v3",
+      "B<img src=x onerror=alert(1)>",
+    ]);
+    // Titles stay text: no element was created from them.
+    expect(render(true).querySelector("img")).toBeNull();
+  });
+
+  it("adds no tags outside compare mode", () => {
+    const heads = [...render(false).querySelectorAll("th")];
+    expect(heads.map((th) => th.textContent)).toEqual([
+      "Aspect",
+      "Travel Policy v3",
+      "<img src=x onerror=alert(1)>",
+    ]);
   });
 });

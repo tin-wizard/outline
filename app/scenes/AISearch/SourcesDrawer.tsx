@@ -1,12 +1,18 @@
-import { CloseIcon } from "outline-icons";
+import { CloseIcon, InfoIcon, ShieldIcon } from "outline-icons";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import styled, { css } from "styled-components";
+import { HEADER_HEIGHT } from "@shared/constants";
 import { depths, s } from "@shared/styles";
+import PlaceholderText from "~/components/PlaceholderText";
 import useMediaQuery from "~/hooks/useMediaQuery";
-import { SourceEntry } from "./AnswerTurn";
+import { coverageOf } from "./answerInsights";
+import type { Coverage } from "./answerInsights";
 import type { Turn } from "./model";
 import { citedSources, isActive } from "./model";
+import { compareLetters, isCompare } from "./compare";
+import { SourceCard } from "./SourceCard";
+import { toneColors } from "./tones";
 import { SHEET_QUERY } from "./useSourcesDrawer";
 
 interface Props {
@@ -35,6 +41,10 @@ export function SourcesDrawer({ turn, selected, autoFocus, onClose }: Props) {
   // Too narrow for a side pane next to the answer: a modal bottom sheet.
   const isSheet = useMediaQuery(SHEET_QUERY);
   const cited = React.useMemo(() => citedSources(turn), [turn]);
+  const letters = React.useMemo(
+    () => (isCompare(turn) ? compareLetters(turn) : undefined),
+    [turn]
+  );
 
   // Escape closes the drawer wherever focus is, unless something else on top
   // (a menu, dialog or popover) or the composer's Stop already handled it.
@@ -90,6 +100,24 @@ export function SourcesDrawer({ turn, selected, autoFocus, onClose }: Props) {
     }
   };
 
+  const coverage = coverageOf(turn);
+  const uncited = (turn.sources ?? []).filter(
+    (source) => !cited.some((c) => c.n === source.n)
+  );
+  const streaming = isActive(turn);
+  const uncitedText =
+    uncited.length === 1
+      ? t("1 found but not cited")
+      : t("{{ count }} found but not cited", { count: uncited.length });
+  const retrievalText = turn.retrieval
+    ? turn.retrieval.fetched === 1
+      ? t("1 candidate · {{ used }} used", { used: turn.retrieval.used })
+      : t("{{ fetched }} candidates · {{ used }} used", {
+          fetched: turn.retrieval.fetched,
+          used: turn.retrieval.used,
+        })
+    : undefined;
+
   return (
     <>
       {isSheet && <Backdrop aria-hidden onClick={onClose} data-print-hidden />}
@@ -101,10 +129,9 @@ export function SourcesDrawer({ turn, selected, autoFocus, onClose }: Props) {
         data-print-hidden
         onKeyDown={handleKeyDown}
       >
+        {isSheet && <Grab aria-hidden />}
         <Top>
-          <Title id="ai-sources-title">
-            {t("Sources ({{ count }})", { count: cited.length })}
-          </Title>
+          <Title id="ai-sources-title">{t("Sources")}</Title>
           <CloseButton
             ref={closeRef}
             type="button"
@@ -114,29 +141,101 @@ export function SourcesDrawer({ turn, selected, autoFocus, onClose }: Props) {
             <CloseIcon />
           </CloseButton>
         </Top>
-        <Question>{turn.question}</Question>
+        {coverage && <CoverageBanner coverage={coverage} />}
         {cited.length === 0 ? (
-          <Empty>
-            {isActive(turn)
-              ? t("Sources appear here as the answer is written.")
-              : t("This answer doesn't cite any sources.")}
-          </Empty>
+          streaming ? (
+            <>
+              <Hint>{t("Reading sources…")}</Hint>
+              <List>
+                {(turn.sources ?? []).map((source) => (
+                  <SourceCard
+                    key={source.n}
+                    id={`drawer-source-${source.n}`}
+                    source={{ ...source, sections: [], count: 0 }}
+                  />
+                ))}
+              </List>
+              <PlaceholderText />
+              <PlaceholderText delay={0.2} />
+            </>
+          ) : (
+            <Hint>{t("This answer doesn't cite any sources.")}</Hint>
+          )
         ) : (
           <List>
             {cited.map((source) => (
-              <Item
+              <SourceCard
                 key={source.n}
                 id={`drawer-source-${source.n}`}
-                tabIndex={-1}
-                data-selected={selected === source.n || undefined}
-              >
-                <SourceEntry {...source} />
-              </Item>
+                source={source}
+                letter={letters?.get(source.n)}
+                selected={selected === source.n}
+              />
             ))}
           </List>
         )}
+        {!streaming && (retrievalText || uncited.length > 0) && (
+          <Foot>
+            {uncited.length > 0 ? (
+              <details>
+                <summary>{retrievalText ?? uncitedText}</summary>
+                {retrievalText && <p>{uncitedText}</p>}
+                <ul>
+                  {uncited.map((source) => (
+                    <li key={source.n}>{source.title}</li>
+                  ))}
+                </ul>
+              </details>
+            ) : (
+              <p>{retrievalText}</p>
+            )}
+          </Foot>
+        )}
       </Drawer>
     </>
+  );
+}
+
+function CoverageBanner({ coverage }: { coverage: Coverage }) {
+  const { t } = useTranslation();
+  const ok = coverage.kind === "all";
+  let text: string;
+  switch (coverage.kind) {
+    case "all": {
+      const { statements, documents } = coverage;
+      text =
+        statements === 1
+          ? documents === 1
+            ? t("The statement matches a passage in this document.")
+            : t(
+                "The statement matches a passage in these {{ documents }} documents.",
+                { documents }
+              )
+          : documents === 1
+            ? t(
+                "All {{ statements }} statements match a passage in this document.",
+                { statements }
+              )
+            : t(
+                "All {{ statements }} statements match a passage in these {{ documents }} documents.",
+                { statements, documents }
+              );
+      break;
+    }
+    case "gap":
+      text = t("Part of your question isn't covered by these documents.");
+      break;
+    case "dropped":
+      text = t("Some statements could not be verified and were left out.");
+      break;
+    default:
+      text = t("This answer is incomplete, so not every part was verified.");
+  }
+  return (
+    <Banner $tone={ok ? "ok" : "warn"} role="note">
+      {ok ? <ShieldIcon size={18} /> : <InfoIcon size={18} />}
+      <span>{text}</span>
+    </Banner>
   );
 }
 
@@ -171,23 +270,34 @@ const Backdrop = styled.div`
 
 const Drawer = styled.aside`
   flex: none;
-  /* Leaves the answer column readable next to the drawer on small laptops. */
-  width: clamp(260px, 34%, 340px);
-  align-self: flex-start;
+  width: 320px;
   position: sticky;
-  top: 72px;
-  max-height: calc(100vh - 88px);
+  top: ${HEADER_HEIGHT}px;
+  align-self: flex-start;
+  height: calc(100vh - ${HEADER_HEIGHT}px);
   overflow-y: auto;
+  /* Reaches the edge of the scene, whose content is padded. */
+  margin: -4px -44px 0 0;
   padding: 12px 16px 16px;
-  border: 1px solid ${s("divider")};
-  border-radius: 12px;
+  border-inline-start: 1px solid ${s("divider")};
   background: ${s("background")};
   color: ${s("text")};
 
   @media ${SHEET_QUERY} {
     ${sheet}
     width: auto;
+    height: auto;
+    margin: 0;
   }
+`;
+
+const Grab = styled.span`
+  display: block;
+  width: 36px;
+  height: 4px;
+  margin: 0 auto 8px;
+  border-radius: 2px;
+  background: ${s("divider")};
 `;
 
 const Top = styled.div`
@@ -195,11 +305,12 @@ const Top = styled.div`
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  margin-bottom: 12px;
 `;
 
 const Title = styled.h2`
   margin: 0;
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
 `;
 
@@ -226,20 +337,28 @@ const CloseButton = styled.button`
   }
 `;
 
-const Question = styled.p`
-  margin: 4px 0 12px;
-  color: ${s("textSecondary")};
+const Banner = styled.div<{ $tone: "ok" | "warn" }>`
+  display: flex;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid ${(props) => toneColors(props.theme, props.$tone).border};
+  border-radius: 8px;
+  background: ${(props) => toneColors(props.theme, props.$tone).background};
   font-size: 13px;
-  overflow-wrap: anywhere;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  line-height: 1.45;
+
+  svg {
+    flex: none;
+    margin-top: 1px;
+    fill: ${(props) => toneColors(props.theme, props.$tone).text};
+  }
 `;
 
-const Empty = styled.p`
+const Hint = styled.p`
+  margin: 0 4px 10px;
   color: ${s("textSecondary")};
-  font-size: 14px;
+  font-size: 13px;
 `;
 
 const List = styled.ul`
@@ -249,18 +368,25 @@ const List = styled.ul`
   font-size: 14px;
 `;
 
-const Item = styled.li`
-  padding: 10px 8px;
-  border-top: 1px solid ${s("divider")};
-  overflow-wrap: anywhere;
+const Foot = styled.div`
+  margin: 14px 4px 0;
+  color: ${s("textTertiary")};
+  font-size: 12.5px;
 
-  &:focus-visible {
-    outline: 2px solid ${s("accent")};
-    outline-offset: -2px;
+  p {
+    margin: 6px 0 0;
   }
 
-  &[data-selected] {
-    background: ${s("backgroundSecondary")};
-    border-radius: 6px;
+  summary {
+    color: ${s("textSecondary")};
+    cursor: var(--pointer);
+  }
+
+  ul {
+    margin: 6px 0 0;
+    padding: 0;
+    list-style: none;
+    display: grid;
+    gap: 4px;
   }
 `;

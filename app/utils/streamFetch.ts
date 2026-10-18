@@ -21,15 +21,35 @@ export type AskFailure =
   | "unavailable"
   | "timeout"
   | "cancelled"
+  | "scope_forbidden"
+  | "compare_needs_two"
   | "error";
 
-export interface AskSource {
+/** Optional details of a retrieved source; absent on turns stored earlier. */
+export interface AskSourceDetails {
+  collectionId?: string;
+  collectionName?: string;
+  /** Hex colour of the collection, e.g. "#123456". */
+  collectionColor?: string;
+  /** ISO time of the last edit. */
+  updatedAt?: string;
+  updatedByName?: string;
+  /** ISO time; absent for drafts. */
+  publishedAt?: string;
+}
+
+export interface AskSource extends AskSourceDetails {
   /** 1-based citation number. */
   n: number;
   documentId: string;
   title: string;
   url: string;
-  collectionName?: string;
+}
+
+/** How many documents retrieval fetched (capped, not a total) and used. */
+export interface AskRetrieval {
+  fetched: number;
+  used: number;
 }
 
 export interface AskCitation {
@@ -73,8 +93,15 @@ export interface AskEvents {
     dropped?: number;
     usage: { inputTokens: number; outputTokens: number };
     timings: { retrievalMs: number; firstBlockMs?: number; totalMs: number };
+    /** Absent from servers that predate retrieval counts. */
+    retrieval?: AskRetrieval;
   };
-  failed: { reason: AskFailure; partial: boolean };
+  failed: {
+    reason: AskFailure;
+    partial: boolean;
+    /** For budget and quota: ISO time the limit resets. */
+    detail?: { resetsAt?: string };
+  };
 }
 
 /** A parsed server-sent event, discriminated by `event`. */

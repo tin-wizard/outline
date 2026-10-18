@@ -1,6 +1,6 @@
 import { computed, observable } from "mobx";
 import type AIConversationsStore from "~/stores/AIConversationsStore";
-import type { AskCitation, AskSource } from "~/utils/streamFetch";
+import type { AskCitation, AskRetrieval, AskSource } from "~/utils/streamFetch";
 import Model from "./base/Model";
 import Field from "./decorators/Field";
 
@@ -28,6 +28,20 @@ export interface StoredTurn {
   hasHiddenBlocks: boolean;
   /** Number of answer blocks the verifier left out. */
   droppedSegments?: number;
+  /** What the question was searched with; absent on older turns. */
+  scope?: StoredScope;
+  /** Present when the question was asked in compare mode. */
+  mode?: "compare";
+  timings?: { totalMs: number; firstBlockMs?: number };
+  retrieval?: AskRetrieval;
+}
+
+/** The scope of a stored turn; a missing name means it is no longer visible. */
+export interface StoredScope {
+  collections: { id: string; name?: string }[];
+  documents: { id: string; title?: string }[];
+  dateFrom?: string;
+  dateTo?: string;
 }
 
 /** A conversation with the AI Search assistant, owned by the current user. */

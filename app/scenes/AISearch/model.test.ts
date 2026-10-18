@@ -71,6 +71,7 @@ describe("chatReducer", () => {
         title: "A",
         sections: [{ url: "/doc/a#h-x" }],
         collectionName: "Eng",
+        count: 2,
       },
     ]);
   });
@@ -618,5 +619,216 @@ describe("hydrate", () => {
       turns: [stored()],
     });
     expect(after.turns.map((t) => t.question)).toEqual(["Q?"]);
+  });
+});
+
+describe("source details, timings, retrieval and failure detail", () => {
+  const COLLECTION = "0b8c7a4e-5b2f-4f5e-9d3a-1f2e3d4c5b6a";
+  const sourcesEvent = (extra: Record<string, unknown>): AskEvent => ({
+    event: "sources",
+    data: [
+      { n: 1, documentId: "d", title: "A", url: "/doc/a", ...extra },
+    ] as never,
+  });
+
+  it("keeps well-formed source details", () => {
+    const state = run([
+      sourcesEvent({
+        collectionId: COLLECTION,
+        collectionName: "Engineering",
+        collectionColor: "#3633ff",
+        updatedAt: "2026-10-14T10:00:00.000Z",
+        updatedByName: "Priya",
+        publishedAt: "2026-01-01T00:00:00.000Z",
+      }),
+    ]);
+    expect(state.turns[0].sources?.[0]).toEqual({
+      n: 1,
+      documentId: "d",
+      title: "A",
+      url: "/doc/a",
+      collectionId: COLLECTION,
+      collectionName: "Engineering",
+      collectionColor: "#3633ff",
+      updatedAt: "2026-10-14T10:00:00.000Z",
+      updatedByName: "Priya",
+      publishedAt: "2026-01-01T00:00:00.000Z",
+    });
+  });
+
+  it("drops malformed details without throwing", () => {
+    const state = run([
+      sourcesEvent({
+        collectionId: "not-a-uuid",
+        collectionName: 7,
+        collectionColor: "red; background: url(x)",
+        updatedAt: "yesterday-ish",
+        updatedByName: "x".repeat(500),
+        publishedAt: {},
+      }),
+    ]);
+    expect(state.turns[0].sources?.[0]).toEqual({
+      n: 1,
+      documentId: "d",
+      title: "A",
+      url: "/doc/a",
+    });
+  });
+
+  it("joins source details onto cited sources and counts the citing blocks", () => {
+    const state = run([
+      sourcesEvent({
+        collectionName: "Eng",
+        collectionColor: "#123456",
+        updatedAt: "2026-10-14T10:00:00.000Z",
+        updatedByName: "Priya",
+      }),
+      block(0),
+      block(1),
+      done("c1"),
+    ]);
+    expect(citedSources(state.turns[0])[0]).toMatchObject({
+      collectionColor: "#123456",
+      updatedAt: "2026-10-14T10:00:00.000Z",
+      updatedByName: "Priya",
+      count: 2,
+    });
+  });
+
+  const doneWith = (data: Record<string, unknown>): AskEvent => ({
+    event: "done",
+    data: {
+      conversationId: null,
+      usageId: null,
+      usage: { inputTokens: 1, outputTokens: 1 },
+      timings: { retrievalMs: 1, totalMs: 6200 },
+      ...data,
+    } as never,
+  });
+
+  it("keeps the total time and retrieval counts from done", () => {
+    const state = run([
+      block(0),
+      doneWith({ retrieval: { fetched: 20, used: 5 } }),
+    ]);
+    expect(state.turns[0].timings).toEqual({ totalMs: 6200 });
+    expect(state.turns[0].retrieval).toEqual({ fetched: 20, used: 5 });
+  });
+
+  it("ignores malformed timings and retrieval", () => {
+    const state = run([
+      block(0),
+      doneWith({
+        timings: { totalMs: "slow" },
+        retrieval: { fetched: -1, used: 2.5 },
+      }),
+    ]);
+    expect(state.turns[0].status).toBe("done");
+    expect(state.turns[0].timings).toBeUndefined();
+    expect(state.turns[0].retrieval).toBeUndefined();
+    expect(
+      run([block(0), doneWith({ timings: null, retrieval: "many" })]).turns[0]
+        .retrieval
+    ).toBeUndefined();
+  });
+
+  it("keeps a valid reset time and the scope_forbidden reason", () => {
+    const failed = (data: Record<string, unknown>): AskEvent => ({
+      event: "failed",
+      data: { partial: false, ...data } as never,
+    });
+    const budget = run([
+      failed({
+        reason: "budget",
+        detail: { resetsAt: "2026-11-01T00:00:00.000Z" },
+      }),
+    ]).turns[0];
+    expect(budget.problem).toBe("budget");
+    expect(budget.resetsAt).toBe("2026-11-01T00:00:00.000Z");
+    expect(
+      run([failed({ reason: "quota", detail: { resetsAt: "soon" } })]).turns[0]
+        .resetsAt
+    ).toBeUndefined();
+    expect(run([failed({ reason: "scope_forbidden" })]).turns[0].problem).toBe(
+      "scope_forbidden"
+    );
+  });
+
+  describe("hydrate", () => {
+    const stored = (patch: Partial<StoredTurn>): StoredTurn => ({
+      id: "t",
+      position: 0,
+      question: "Q?",
+      outcome: "answered",
+      usageId: null,
+      createdAt: "2026-10-18T10:00:00.000Z",
+      sources: [],
+      blocks: [],
+      hasHiddenBlocks: false,
+      ...patch,
+    });
+    const hydrate = (turn: StoredTurn) =>
+      chatReducer(initialChatState, {
+        type: "hydrate",
+        conversationId: "c",
+        turns: [turn],
+      }).turns[0];
+
+    it("carries timings, retrieval, scope and source details", () => {
+      const turn = hydrate(
+        stored({
+          timings: { totalMs: 4100, firstBlockMs: 900 },
+          retrieval: { fetched: 12, used: 4 },
+          scope: {
+            collections: [
+              { id: COLLECTION, name: "Engineering" },
+              { id: "bad", name: "x" },
+            ],
+            documents: [{ id: COLLECTION }],
+            dateFrom: "2026-01-01",
+          },
+          sources: [
+            {
+              n: 1,
+              documentId: "d",
+              title: "A",
+              url: "/doc/a",
+              collectionColor: "#abcdef",
+              updatedAt: "2026-02-01T00:00:00.000Z",
+            },
+          ],
+        })
+      );
+      expect(turn.timings).toEqual({ totalMs: 4100 });
+      expect(turn.retrieval).toEqual({ fetched: 12, used: 4 });
+      expect(turn.storedScope).toEqual({
+        collections: [{ id: COLLECTION, name: "Engineering" }],
+        documents: [{ id: COLLECTION }],
+        dateFrom: "2026-01-01",
+        dateTo: undefined,
+      });
+      expect(turn.sources?.[0].collectionColor).toBe("#abcdef");
+    });
+
+    it("renders older turns without the new fields", () => {
+      const turn = hydrate(stored({}));
+      expect(turn.timings).toBeUndefined();
+      expect(turn.retrieval).toBeUndefined();
+      expect(turn.storedScope).toBeUndefined();
+      expect(turn.status).toBe("done");
+    });
+
+    it("survives malformed new fields", () => {
+      const turn = hydrate(
+        stored({
+          timings: { totalMs: -5 },
+          retrieval: { fetched: "a" } as never,
+          scope: { collections: "x", documents: null } as never,
+        })
+      );
+      expect(turn.timings).toBeUndefined();
+      expect(turn.retrieval).toBeUndefined();
+      expect(turn.storedScope).toBeUndefined();
+    });
   });
 });

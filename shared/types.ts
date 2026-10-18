@@ -508,6 +508,8 @@ export enum TeamPreference {
   AIAnswers = "aiAnswers",
   /** Whether AI answers are kept as a per-user conversation history. */
   AIConversationHistory = "aiConversationHistory",
+  /** Whether members can compare documents side by side in AI answers. */
+  AICompare = "aiCompare",
   /** List of disabled embed provider titles. */
   DisabledEmbeds = "disabledEmbeds",
 }
@@ -528,6 +530,7 @@ export type TeamPreferences = {
   [TeamPreference.MCP]?: boolean;
   [TeamPreference.AIAnswers]?: boolean;
   [TeamPreference.AIConversationHistory]?: boolean;
+  [TeamPreference.AICompare]?: boolean;
   [TeamPreference.DisabledEmbeds]?: string[];
 };
 

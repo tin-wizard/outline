@@ -281,14 +281,27 @@ describe("aiConversations", () => {
       const [turn] = data.turns;
       expect(turn.question).toEqual("What is BOSS?");
       expect(turn.hasHiddenBlocks).toEqual(false);
+      await doc.reload();
+      const collection = await doc.$get("collection");
       expect(turn.sources).toEqual([
         {
           n: 1,
           documentId: doc.id,
           title: "Renamed Guide",
           url: `/doc/renamed-guide-${doc.urlId}`,
+          collectionId: doc.collectionId,
+          collectionName: collection?.name,
+          ...(collection?.color ? { collectionColor: collection.color } : {}),
+          updatedAt: doc.updatedAt.toISOString(),
+          updatedByName: user.name,
+          publishedAt: doc.publishedAt?.toISOString(),
         },
       ]);
+      expect(data.startedAt).toEqual(data.createdAt);
+      expect(turn.createdAt).toEqual(expect.any(String));
+      expect(turn.scope).toBeUndefined();
+      expect(turn.timings).toBeUndefined();
+      expect(turn.retrieval).toBeUndefined();
       expect(turn.blocks).toEqual([
         {
           kind: "paragraph",
@@ -434,6 +447,143 @@ describe("aiConversations", () => {
         { hidden: true, kind: "paragraph" },
       ]);
       expect(turns[0].sources).toEqual([]);
+    });
+
+    it("returns scope, timings and retrieval counts, with names re-authorised now", async () => {
+      const user = await enable(await buildUser());
+      const owner = await buildUser({ teamId: user.teamId });
+      const open = await buildCollection({
+        teamId: user.teamId,
+        userId: user.id,
+        name: "Engineering",
+        color: "#123456",
+      });
+      const shared = await buildCollection({
+        teamId: user.teamId,
+        userId: owner.id,
+        name: "Partners",
+      });
+      const doc = await buildDocument({
+        teamId: user.teamId,
+        userId: user.id,
+        collectionId: open.id,
+        title: "Runbook",
+      });
+      const later = await buildDocument({
+        teamId: user.teamId,
+        userId: owner.id,
+        collectionId: shared.id,
+        title: "Partner Plan",
+      });
+      const id = await appendConversationTurn(user, {
+        question: "Where is the runbook?",
+        released: [released("The runbook is here.", [doc])],
+        outcome: "answered",
+        usageId: null,
+        scope: {
+          collectionIds: [open.id, shared.id],
+          documentIds: [doc.id, later.id],
+          dateFrom: "2026-01-01",
+          dateTo: "2026-10-18",
+        },
+        retrieval: { fetched: 7, used: 2 },
+        timings: { totalMs: 6200, firstBlockMs: 900 },
+      });
+      if (!id) {
+        throw new Error("not stored");
+      }
+
+      const read = async () => {
+        const res = await post("info", user, { id });
+        expect(res.status).toEqual(200);
+        return (await res.json()).data.turns[0];
+      };
+      let turn = await read();
+      expect(turn.scope).toEqual({
+        collections: [
+          { id: open.id, name: "Engineering" },
+          { id: shared.id, name: "Partners" },
+        ],
+        documents: [
+          { id: doc.id, title: "Runbook" },
+          { id: later.id, title: "Partner Plan" },
+        ],
+        dateFrom: "2026-01-01",
+        dateTo: "2026-10-18",
+      });
+      expect(turn.timings).toEqual({ totalMs: 6200, firstBlockMs: 900 });
+      expect(turn.retrieval).toEqual({ fetched: 7, used: 2 });
+      expect(turn.sources[0].collectionColor).toEqual("#123456");
+
+      // Access to "Partners" is revoked: its name and its document's title go.
+      await shared.update({ permission: null });
+      turn = await read();
+      expect(turn.scope.collections).toEqual([
+        { id: open.id, name: "Engineering" },
+        { id: shared.id },
+      ]);
+      expect(turn.scope.documents).toEqual([
+        { id: doc.id, title: "Runbook" },
+        { id: later.id },
+      ]);
+      expect(JSON.stringify(turn)).not.toContain("Partner");
+      // The answer itself only cites the still readable runbook.
+      expect(turn.hasHiddenBlocks).toEqual(false);
+    });
+
+    it("returns the compare mode of a turn, stored in its scope", async () => {
+      const user = await enable(await buildUser());
+      const doc = await buildDocument({
+        teamId: user.teamId,
+        userId: user.id,
+        title: "Runbook",
+      });
+      const id = await appendConversationTurn(user, {
+        question: "Compare the runbooks",
+        released: [released("The runbook is here.", [doc])],
+        outcome: "answered",
+        usageId: null,
+        scope: { collectionIds: [], documentIds: [], mode: "compare" },
+      });
+      if (!id) {
+        throw new Error("not stored");
+      }
+      const [stored] = await AIConversationTurn.findAll({
+        where: { conversationId: id },
+      });
+      expect(stored.scope).toEqual({
+        collectionIds: [],
+        documentIds: [],
+        mode: "compare",
+      });
+      const turn = (await (await post("info", user, { id })).json()).data
+        .turns[0];
+      expect(turn.mode).toEqual("compare");
+      expect(turn.scope).toEqual({ collections: [], documents: [] });
+    });
+
+    it("omits the last editor's name when that user is gone", async () => {
+      const user = await enable(await buildUser());
+      const editor = await buildUser({ teamId: user.teamId });
+      const doc = await buildDocument({
+        teamId: user.teamId,
+        userId: user.id,
+        title: "Runbook",
+      });
+      await sequelize.query(
+        `UPDATE "documents" SET "lastModifiedById" = :editor WHERE "id" = :id`,
+        { replacements: { editor: editor.id, id: doc.id } }
+      );
+      await editor.destroy();
+      const id = await store(user, "Where is the runbook?", [
+        released("The runbook is here.", [doc]),
+      ]);
+
+      const res = await post("info", user, { id });
+      const [source] = (await res.json()).data.turns[0].sources;
+      expect(source.title).toEqual("Runbook");
+      expect(source.updatedByName).toBeUndefined();
+      expect(source.updatedAt).toEqual(expect.any(String));
     });
 
     it("returns the same 404 for missing and foreign ids", async () => {

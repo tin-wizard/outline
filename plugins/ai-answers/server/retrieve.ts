@@ -1,9 +1,10 @@
 import type { Filter } from "@shared/helpers/FilterHelper";
 import type { Document, User } from "@server/models";
 import { DocumentHelper } from "@server/models/helpers/DocumentHelper";
+import type { StoredScope } from "@server/models/AIConversationTurn";
 import {
   authorizeFilterFields,
-  legacyParamsToFilter,
+  combineFilters,
 } from "@server/models/helpers/Filters";
 import { expandDocumentIdLeaves } from "@server/routes/api/documents/documents";
 import SearchProviderManager from "@server/utils/SearchProviderManager";
@@ -42,6 +43,94 @@ const MAX_CHARS_PER_DOCUMENT = 20_000;
 const MIN_AND_RESULTS = 2;
 const MAX_TITLE_TERMS = 4;
 
+/** Most collections one question may be scoped to. */
+export const MAX_SCOPE_COLLECTIONS = 10;
+
+/** Most documents one question may be scoped to (each with its children). */
+export const MAX_SCOPE_DOCUMENTS = 20;
+
+/** The scope fields of an `ai.ask` request. */
+export type ScopeParams = Partial<
+  Pick<
+    T.AIAskReq["body"],
+    | "collectionId"
+    | "collectionIds"
+    | "documentId"
+    | "documentIds"
+    | "dateFrom"
+    | "dateTo"
+  >
+>;
+
+/** Retrieved sources and how many candidates were fetched before the cut. */
+export interface Retrieval {
+  sources: AnswerSource[];
+  /**
+   * Readable, not AI-excluded documents the search stages returned before
+   * the cut to `MAX_DOCUMENTS`, at most `FETCH_LIMIT` (20). Not a total.
+   */
+  candidatesFetched: number;
+}
+
+/**
+ * The scope of a question with the single and the list parameters merged,
+ * deduplicated, in request order.
+ *
+ * @param params the scope parameters of the request.
+ * @returns the scope as stored with the turn.
+ */
+export function askScope(params: ScopeParams): StoredScope {
+  const unique = (one: string | undefined, many: string[] | undefined) => [
+    ...new Set([...(one ? [one] : []), ...(many ?? [])]),
+  ];
+  return {
+    collectionIds: unique(params.collectionId, params.collectionIds),
+    documentIds: unique(params.documentId, params.documentIds),
+    ...(params.dateFrom ? { dateFrom: params.dateFrom } : {}),
+    ...(params.dateTo ? { dateTo: params.dateTo } : {}),
+  };
+}
+
+/**
+ * The search filter of a scope, ANDing collections, documents and the
+ * updatedAt range (whole UTC days, both ends inclusive).
+ *
+ * @param scope the scope.
+ * @returns the filter, or undefined when the scope is empty.
+ */
+export function scopeFilter(scope: StoredScope): Filter | undefined {
+  const leaves: Filter[] = [];
+  if (scope.collectionIds.length > 0) {
+    leaves.push({
+      field: "collectionId",
+      operator: "in",
+      value: scope.collectionIds,
+    });
+  }
+  if (scope.documentIds.length > 0) {
+    leaves.push({
+      field: "documentId",
+      operator: "in",
+      value: scope.documentIds,
+    });
+  }
+  if (scope.dateFrom) {
+    leaves.push({
+      field: "updatedAt",
+      operator: "gte",
+      value: utcDayStart(scope.dateFrom, 0),
+    });
+  }
+  if (scope.dateTo) {
+    leaves.push({
+      field: "updatedAt",
+      operator: "lt",
+      value: utcDayStart(scope.dateTo, 1),
+    });
+  }
+  return combineFilters(leaves);
+}
+
 /**
  * Finds the documents the user may read that best match a question, and cuts
  * them down to the sections most relevant to it. Permissions are enforced by
@@ -49,28 +138,48 @@ const MAX_TITLE_TERMS = 4;
  * Documents in collections excluded from AI answers are dropped for everyone.
  *
  * @param user the user asking the question.
- * @param body the validated request body.
+ * @param body the question and its scope.
  * @param signal aborts between retrieval stages when the caller goes away.
  * @returns the sources, best match first; empty when nothing matches.
+ * @throws AuthorizationError when any scoped collection or document is not
+ * readable, unknown or in another workspace (one error for all three).
  */
 export async function retrieveSources(
   user: User,
-  body: Pick<T.AIAskReq["body"], "query" | "collectionId" | "documentId">,
+  body: { query: string } & ScopeParams,
   signal?: AbortSignal
 ): Promise<AnswerSource[]> {
+  return (await retrieveWithCounts(user, body, signal)).sources;
+}
+
+/**
+ * Like `retrieveSources`, also reporting how many candidates were fetched.
+ *
+ * @param user the user asking the question.
+ * @param body the question and its scope.
+ * @param signal aborts between retrieval stages when the caller goes away.
+ * @returns the sources and the candidate count.
+ * @throws AuthorizationError when any scoped collection or document is not
+ * readable, unknown or in another workspace.
+ */
+export async function retrieveWithCounts(
+  user: User,
+  body: { query: string } & ScopeParams,
+  signal?: AbortSignal
+): Promise<Retrieval> {
   // The raw query never reaches the search provider; markers are not keywords.
   const keywords = toKeywords(
     redactSecrets(body.query).text.replace(/\[REDACTED:[a-z_]+\]/g, " ")
   );
   if (keywords.length === 0) {
-    return [];
+    return { sources: [], candidatesFetched: 0 };
   }
 
-  const filter = legacyParamsToFilter({
-    collectionId: body.collectionId,
-    documentId: body.documentId,
-  });
+  const filter = scopeFilter(askScope(body));
   if (filter) {
+    // Authorises every collection id of the `in` leaf; the expansion below
+    // authorises every document id. Unknown, foreign and unreadable ids all
+    // raise the same AuthorizationError.
     await authorizeFilterFields(user, filter);
   }
   const resolvedFilter = filter
@@ -114,6 +223,7 @@ export async function retrieveSources(
     );
   }
   signal?.throwIfAborted();
+  const candidatesFetched = Math.min(documents.length, FETCH_LIMIT);
   documents = documents.slice(0, MAX_DOCUMENTS);
 
   const sources: AnswerSource[] = [];
@@ -134,7 +244,14 @@ export async function retrieveSources(
       });
     }
   }
-  return sources;
+  return { sources, candidatesFetched };
+}
+
+/** ISO time of 00:00 UTC on `date` (YYYY-MM-DD) plus `days`. */
+function utcDayStart(date: string, days: number): string {
+  const start = new Date(`${date}T00:00:00.000Z`);
+  start.setUTCDate(start.getUTCDate() + days);
+  return start.toISOString();
 }
 
 /**

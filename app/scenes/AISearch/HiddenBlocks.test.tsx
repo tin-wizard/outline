@@ -47,13 +47,7 @@ describe("a resumed answer", () => {
     return renderToStaticMarkup(
       <ThemeProvider theme={theme}>
         <MemoryRouter>
-          <AnswerTurn
-            turn={turn}
-            isLast
-            scopeLabels={[]}
-            onStop={() => {}}
-            onRetry={() => {}}
-          />
+          <AnswerTurn turn={turn} isLast scopeLabels={[]} onRetry={() => {}} />
         </MemoryRouter>
       </ThemeProvider>
     );

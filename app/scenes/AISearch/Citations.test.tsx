@@ -57,15 +57,7 @@ const wrap = (node: React.ReactNode) => (
 function renderTurn(t: Turn): HTMLElement {
   const host = document.createElement("div");
   host.innerHTML = renderToStaticMarkup(
-    wrap(
-      <AnswerTurn
-        turn={t}
-        isLast
-        scopeLabels={[]}
-        onStop={() => {}}
-        onRetry={() => {}}
-      />
-    )
+    wrap(<AnswerTurn turn={t} isLast scopeLabels={[]} onRetry={() => {}} />)
   );
   return host;
 }
@@ -176,11 +168,66 @@ describe("citation previews", () => {
       )
     );
     const tip = host.querySelector("#p1");
-    expect(tip?.getAttribute("role")).toBe("tooltip");
+    expect(tip?.getAttribute("role")).toBe("dialog");
     expect(tip?.textContent).toContain("<b>Doc</b>");
     expect(tip?.textContent).toContain("Eng");
     expect(tip?.textContent).toContain("<img src=x onerror=alert(1)>");
     expect(host.querySelector("img, b, a")).toBeNull();
+  });
+
+  it("shows heading, highlighted passage, update info, count and a safe link", () => {
+    const host = document.createElement("div");
+    host.innerHTML = renderToStaticMarkup(
+      wrap(
+        <CitationPreview
+          id="p1"
+          preview={{
+            title: "BOSS API",
+            collectionName: "Engineering",
+            collectionColor: "#3633ff",
+            updatedAt: "2026-10-14T10:00:00.000Z",
+            updatedByName: "Priya <i>Raman</i>",
+            quote: "client-credentials grant",
+            heading: "Authentication",
+            url: "/doc/boss-abc#h-authentication",
+            count: 2,
+          }}
+        />
+      )
+    );
+    const text = host.textContent ?? "";
+    expect(text).toContain("§ Authentication");
+    expect(text).toContain("Engineering");
+    expect(text).toContain("Updated Oct 14, 2026 by Priya <i>Raman</i>");
+    expect(text).toContain("Cited 2× in this answer");
+    expect(host.querySelector("mark")?.textContent).toBe(
+      "client-credentials grant"
+    );
+    const link = host.querySelector("a");
+    expect(link?.getAttribute("href")).toBe("/doc/boss-abc#h-authentication");
+    expect(link?.textContent).toContain("Open at section");
+    expect(host.querySelector("i")).toBeNull();
+  });
+
+  it("links only paths that pass isDocPath and says once for a single citation", () => {
+    const render = (url: string) => {
+      const el = document.createElement("div");
+      el.innerHTML = renderToStaticMarkup(
+        wrap(
+          <CitationPreview
+            id="p1"
+            preview={{ title: "T", url, count: 1, quote: "q" }}
+          />
+        )
+      );
+      return el;
+    };
+    expect(render("javascript:alert(1)").querySelector("a")).toBeNull();
+    expect(render("/doc/a/../b").querySelector("a")).toBeNull();
+    expect(render("https://evil.example/doc/a").querySelector("a")).toBeNull();
+    expect(render("/doc/a-abc").textContent).toContain(
+      "Cited once in this answer"
+    );
   });
 
   describe("on the marker", () => {
@@ -233,14 +280,14 @@ describe("citation previews", () => {
       expect(marker().getAttribute("type")).toBe("button");
       expect(marker().getAttribute("aria-label")).toBe("Source 1");
       expect(marker().hasAttribute("aria-describedby")).toBe(false);
-      expect(host.querySelector('[role="tooltip"]')).toBeNull();
+      expect(host.querySelector('[role="dialog"]')).toBeNull();
     });
 
     it("shows the preview on focus, links it by aria-describedby and closes on Escape", () => {
       act(() => {
         marker().dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
       });
-      const tip = host.querySelector('[role="tooltip"]');
+      const tip = host.querySelector('[role="dialog"]');
       expect(tip?.textContent).toContain("the quote");
       expect(marker().getAttribute("aria-describedby")).toBe(tip?.id);
       act(() => {
@@ -248,7 +295,29 @@ describe("citation previews", () => {
           new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
         );
       });
-      expect(host.querySelector('[role="tooltip"]')).toBeNull();
+      expect(host.querySelector('[role="dialog"]')).toBeNull();
+    });
+
+    it("keeps the card while the pointer moves into it, then closes it", () => {
+      vi.useFakeTimers();
+      try {
+        const wrapper = marker().parentElement as HTMLElement;
+        act(() => {
+          wrapper.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+          wrapper.dispatchEvent(new MouseEvent("mouseout", { bubbles: true }));
+        });
+        // React derives mouseenter/leave from over/out; the card survives the grace period.
+        act(() => {
+          vi.advanceTimersByTime(100);
+        });
+        expect(host.querySelector('[role="dialog"]')).not.toBeNull();
+        act(() => {
+          vi.advanceTimersByTime(100);
+        });
+        expect(host.querySelector('[role="dialog"]')).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("still activates the source entry on click", () => {

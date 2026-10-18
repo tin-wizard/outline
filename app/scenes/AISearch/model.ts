@@ -3,9 +3,10 @@ import type {
   AskCitation,
   AskEvent,
   AskFailure,
+  AskRetrieval,
   AskSource,
 } from "~/utils/streamFetch";
-import type { StoredTurn } from "~/models/AIConversation";
+import type { StoredScope, StoredTurn } from "~/models/AIConversation";
 import type { BlockInput } from "./markdown";
 
 /** Why a turn did not produce a complete answer. */
@@ -14,7 +15,8 @@ export type TurnProblem =
   | "unauthorized"
   | "forbidden"
   | "rateLimited"
-  | "network";
+  | "network"
+  | "compare_disabled";
 
 export type TurnStatus =
   | "searching"
@@ -24,6 +26,20 @@ export type TurnStatus =
   | "stopped";
 
 export type Rating = "up" | "down";
+
+/** Why an answer is reported inaccurate; mirrors the `ai.feedback` enum. */
+export const REPORT_REASONS = [
+  "inaccurate",
+  "incomplete",
+  "outdated",
+  "off_topic",
+  "other",
+] as const;
+
+export type ReportReason = (typeof REPORT_REASONS)[number];
+
+/** The longest report comment the server accepts. */
+export const MAX_REPORT_COMMENT = 500;
 
 export interface Feedback {
   /** The current rating, null when none (or cleared). */
@@ -39,9 +55,27 @@ export interface Feedback {
   hidden?: boolean;
 }
 
+/** The time windows offered by the date chip; `custom` uses `dateFrom`/`dateTo`. */
+export type DatePreset = "week" | "month" | "year" | "custom";
+
+/** A document picked as the scope; the title is only for display. */
+export interface ScopeDocument {
+  id: string;
+  title: string;
+}
+
+/**
+ * What a question is limited to. Collections and specific documents are
+ * mutually exclusive in the UI (see scope.ts): picking one clears the other.
+ */
 export interface Scope {
-  collectionId?: string;
-  documentId?: string;
+  collectionIds?: string[];
+  documents?: ScopeDocument[];
+  datePreset?: DatePreset;
+  /** YYYY-MM-DD, UTC, inclusive. */
+  dateFrom?: string;
+  dateTo?: string;
+  mode?: "answer" | "compare";
 }
 
 export interface Turn {
@@ -67,6 +101,14 @@ export interface Turn {
   feedback?: Feedback;
   /** Seconds the server asked us to wait after a 429. */
   retryAfter?: number;
+  /** ISO time a budget or quota limit resets, when the server said. */
+  resetsAt?: string;
+  /** Server-measured duration of the answer; absent on older turns. */
+  timings?: { totalMs: number };
+  /** Candidates fetched (capped) and documents used; absent on older turns. */
+  retrieval?: AskRetrieval;
+  /** The scope of a resumed turn, as stored; names only while still visible. */
+  storedScope?: StoredScope;
   /**
    * The conversation id before this turn's `conversation` event. An id is
    * only kept once `done` or `failed` confirms the turn was stored; a turn cut
@@ -125,6 +167,12 @@ export interface CitedSource {
   /** Distinct sections of this source, in citation order. */
   sections: CitedSection[];
   collectionName?: string;
+  collectionColor?: string;
+  /** ISO time of the last edit, when the server sent it. */
+  updatedAt?: string;
+  updatedByName?: string;
+  /** In how many blocks of the answer this source is cited. */
+  count: number;
 }
 
 /**
@@ -137,9 +185,15 @@ export interface CitedSource {
 export function citedSources(turn: Turn): CitedSource[] {
   const byNumber = new Map<
     number,
-    { first: AskCitation; sections: CitedSection[] }
+    { first: AskCitation; sections: CitedSection[]; count: number }
   >();
   for (const block of turn.blocks) {
+    for (const n of new Set(block.citations.map((c) => c.n))) {
+      const counted = byNumber.get(n);
+      if (counted) {
+        counted.count += 1;
+      }
+    }
     for (const citation of block.citations) {
       const entry = byNumber.get(citation.n);
       const quote = citation.quote?.trim() || undefined;
@@ -148,6 +202,7 @@ export function citedSources(turn: Turn): CitedSource[] {
         byNumber.set(citation.n, {
           first: citation,
           sections: [{ url: citation.url, quote, heading }],
+          count: 1,
         });
         continue;
       }
@@ -162,13 +217,19 @@ export function citedSources(turn: Turn): CitedSource[] {
   }
   return [...byNumber.values()]
     .sort((a, b) => a.first.n - b.first.n)
-    .map(({ first, sections }) => ({
-      n: first.n,
-      title: first.title,
-      sections,
-      collectionName: turn.sources?.find((s) => s.n === first.n)
-        ?.collectionName,
-    }));
+    .map(({ first, sections, count }) => {
+      const source = turn.sources?.find((s) => s.n === first.n);
+      return {
+        n: first.n,
+        title: first.title,
+        sections,
+        count,
+        collectionName: source?.collectionName,
+        collectionColor: source?.collectionColor,
+        updatedAt: source?.updatedAt,
+        updatedByName: source?.updatedByName,
+      };
+    });
 }
 
 /**
@@ -225,6 +286,8 @@ const FAILURES = [
   "unavailable",
   "timeout",
   "cancelled",
+  "scope_forbidden",
+  "compare_needs_two",
   "error",
 ];
 function isBlockKind(kind: string): kind is BlockInput["kind"] {
@@ -270,6 +333,107 @@ function validSource(source: AskSource): boolean {
     typeof source.title === "string" &&
     typeof source.url === "string"
   );
+}
+
+const MAX_NAME_LENGTH = 200;
+const HEX_COLOR = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
+
+function cleanName(value: unknown): string | undefined {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text && text.length <= MAX_NAME_LENGTH ? text : undefined;
+}
+
+function cleanDate(value: unknown): string | undefined {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value))
+    ? value
+    : undefined;
+}
+
+/**
+ * Keeps the details of a source that are well-formed and drops the rest, so a
+ * bad value (an odd colour, a junk date) never reaches the UI.
+ */
+function cleanSource(source: AskSource): AskSource {
+  const collectionId =
+    typeof source.collectionId === "string" && isUUID(source.collectionId)
+      ? source.collectionId
+      : undefined;
+  const collectionColor =
+    typeof source.collectionColor === "string" &&
+    HEX_COLOR.test(source.collectionColor)
+      ? source.collectionColor
+      : undefined;
+  return {
+    n: source.n,
+    documentId: source.documentId,
+    title: source.title,
+    url: source.url,
+    ...(collectionId ? { collectionId } : {}),
+    ...(cleanName(source.collectionName)
+      ? { collectionName: cleanName(source.collectionName) }
+      : {}),
+    ...(collectionColor ? { collectionColor } : {}),
+    ...(cleanDate(source.updatedAt)
+      ? { updatedAt: cleanDate(source.updatedAt) }
+      : {}),
+    ...(cleanName(source.updatedByName)
+      ? { updatedByName: cleanName(source.updatedByName) }
+      : {}),
+    ...(cleanDate(source.publishedAt)
+      ? { publishedAt: cleanDate(source.publishedAt) }
+      : {}),
+  };
+}
+
+function cleanTimings(value: unknown): Turn["timings"] {
+  const totalMs =
+    value && typeof value === "object" && "totalMs" in value
+      ? value.totalMs
+      : undefined;
+  return typeof totalMs === "number" && Number.isFinite(totalMs) && totalMs >= 0
+    ? { totalMs }
+    : undefined;
+}
+
+function cleanRetrieval(value: unknown): AskRetrieval | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const fetched = "fetched" in value ? value.fetched : undefined;
+  const used = "used" in value ? value.used : undefined;
+  return typeof fetched === "number" &&
+    typeof used === "number" &&
+    Number.isInteger(fetched) &&
+    Number.isInteger(used) &&
+    fetched >= 0 &&
+    used >= 0
+    ? { fetched, used }
+    : undefined;
+}
+
+function cleanScope(value: StoredScope | undefined): StoredScope | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const collections = (
+    Array.isArray(value.collections) ? value.collections : []
+  ).flatMap((c) =>
+    c && typeof c.id === "string" && isUUID(c.id)
+      ? [{ id: c.id, name: cleanName(c.name) }]
+      : []
+  );
+  const documents = (
+    Array.isArray(value.documents) ? value.documents : []
+  ).flatMap((d) =>
+    d && typeof d.id === "string" && isUUID(d.id)
+      ? [{ id: d.id, title: cleanName(d.title) }]
+      : []
+  );
+  const dateFrom = cleanDate(value.dateFrom);
+  const dateTo = cleanDate(value.dateTo);
+  return collections.length || documents.length || dateFrom || dateTo
+    ? { collections, documents, dateFrom, dateTo }
+    : undefined;
 }
 
 /**
@@ -386,7 +550,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         }
         case "sources":
           return Array.isArray(event.data)
-            ? update({ sources: event.data.filter(validSource) })
+            ? update({
+                sources: event.data.filter(validSource).map(cleanSource),
+              })
             : state;
         case "block": {
           const { index, kind, markdown, citations } = event.data;
@@ -417,6 +583,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             {
               status: "done",
               droppedSegments: cleanCount(event.data.dropped),
+              timings: cleanTimings(event.data.timings),
+              retrieval: cleanRetrieval(event.data.retrieval),
               usageId:
                 typeof event.data.usageId === "string" &&
                 isUUID(event.data.usageId)
@@ -433,6 +601,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             problem: FAILURES.includes(event.data.reason)
               ? event.data.reason
               : "error",
+            resetsAt: cleanDate(event.data.detail?.resetsAt),
           });
         default:
           return state;
@@ -488,9 +657,9 @@ function hydrateTurn(stored: StoredTurn, i: number): Turn | undefined {
   if (!stored || typeof stored.question !== "string") {
     return undefined;
   }
-  const sources = (Array.isArray(stored.sources) ? stored.sources : []).filter(
-    validSource
-  );
+  const sources = (Array.isArray(stored.sources) ? stored.sources : [])
+    .filter(validSource)
+    .map(cleanSource);
   const blocks: Turn["blocks"] = [];
   const hiddenBlocks: number[] = [];
   (Array.isArray(stored.blocks) ? stored.blocks : []).forEach((b, index) => {
@@ -518,12 +687,15 @@ function hydrateTurn(stored: StoredTurn, i: number): Turn | undefined {
   return {
     id: i + 1,
     question: stored.question,
-    scope: {},
+    scope: stored.mode === "compare" ? { mode: "compare" } : {},
     status: answered ? "done" : "failed",
     sources,
     blocks,
     ...(hiddenBlocks.length ? { hiddenBlocks } : {}),
     droppedSegments: cleanCount(stored.droppedSegments),
+    timings: cleanTimings(stored.timings),
+    retrieval: cleanRetrieval(stored.retrieval),
+    storedScope: cleanScope(stored.scope),
     ...(answered
       ? {}
       : {

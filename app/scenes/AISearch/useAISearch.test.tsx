@@ -50,12 +50,12 @@ describe("useAISearch", () => {
   it("streams events into the turn and follows up with the conversation id", async () => {
     const { api } = mount();
     const first = controlled();
-    act(() => api().ask("First?", { collectionId: "col" }));
+    act(() => api().ask("First?", { collectionIds: ["col"] }));
     expect(api().streaming).toBe(true);
     expect(mocked.mock.calls[0][0]).toBe("ai.ask");
     expect(mocked.mock.calls[0][1]).toMatchObject({
       query: "First?",
-      collectionId: "col",
+      collectionIds: ["col"],
       conversationId: undefined,
     });
 
@@ -125,6 +125,53 @@ describe("useAISearch", () => {
     });
     await act(async () => api().ask("Q?", {}));
     expect(lastTurn(api().state)).toMatchObject({ status: "failed", problem });
+  });
+
+  it("maps a 403 compare_disabled to its own problem", async () => {
+    const { api } = mount();
+    // eslint-disable-next-line require-yield
+    mocked.mockImplementationOnce(async function* () {
+      throw new StreamRequestError("x", 403, "compare_disabled");
+    });
+    await act(async () => api().ask("Q?", { mode: "compare" }));
+    expect(lastTurn(api().state).problem).toBe("compare_disabled");
+  });
+
+  it("sends the scope: ids, dates and mode, with presets fixed to dates", async () => {
+    const { api } = mount();
+    controlled();
+    act(() =>
+      api().ask("Q?", {
+        documents: [{ id: "d1", title: "Not sent" }],
+        datePreset: "week",
+        mode: "compare",
+      })
+    );
+    const body = mocked.mock.calls[0][1] as Record<string, unknown>;
+    expect(body).toMatchObject({
+      query: "Q?",
+      documentIds: ["d1"],
+      mode: "compare",
+    });
+    expect(body.dateFrom).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(JSON.stringify(body)).not.toContain("Not sent");
+    expect(lastTurn(api().state).scope.dateFrom).toBe(body.dateFrom);
+    expect(body).not.toHaveProperty("collectionIds");
+  });
+
+  it("shows compare_needs_two as a calm problem", async () => {
+    const { api } = mount();
+    const stream = controlled();
+    act(() => api().ask("Q?", { mode: "compare" }));
+    await stream.push({
+      event: "failed",
+      data: { reason: "compare_needs_two", partial: false },
+    });
+    await stream.end();
+    expect(lastTurn(api().state)).toMatchObject({
+      status: "failed",
+      problem: "compare_needs_two",
+    });
   });
 
   it("passes the Retry-After seconds of a 429 to the turn", async () => {
@@ -243,6 +290,70 @@ describe("useAISearch", () => {
       await stream.end();
       post.mockReset();
       await act(async () => view.api().rate(1, "up"));
+      expect(post).not.toHaveBeenCalled();
+    });
+
+    it("reports with a reason and a trimmed comment as a not helpful rating", async () => {
+      const { api } = await finishedTurn();
+      post.mockResolvedValue({});
+      let saved: boolean | undefined;
+      await act(async () => {
+        saved = await api().report(1, "outdated", "  The policy changed.  ");
+      });
+      expect(saved).toBe(true);
+      expect(post).toHaveBeenCalledWith("/ai.feedback", {
+        usageId: UUID,
+        rating: "down",
+        reason: "outdated",
+        comment: "The policy changed.",
+      });
+      expect(lastTurn(api().state).feedback).toMatchObject({
+        rating: "down",
+        pending: false,
+        saved: true,
+      });
+    });
+
+    it("omits an empty comment", async () => {
+      const { api } = await finishedTurn();
+      post.mockResolvedValue({});
+      await act(async () => {
+        await api().report(1, "inaccurate", "   ");
+      });
+      expect(post).toHaveBeenCalledWith("/ai.feedback", {
+        usageId: UUID,
+        rating: "down",
+        reason: "inaccurate",
+      });
+    });
+
+    it("resolves false and rolls the rating back when the report fails", async () => {
+      const { api } = await finishedTurn();
+      post.mockRejectedValue(new Error("boom"));
+      let saved: boolean | undefined;
+      await act(async () => {
+        saved = await api().report(1, "other", "x");
+      });
+      expect(saved).toBe(false);
+      expect(lastTurn(api().state).feedback).toMatchObject({
+        rating: null,
+        pending: false,
+        error: "failed",
+      });
+    });
+
+    it("does not report without a usageId", async () => {
+      const view = mount();
+      const stream = controlled();
+      act(() => view.api().ask("Q?", {}));
+      await stream.push(block(0), done("c"));
+      await stream.end();
+      post.mockReset();
+      let saved: boolean | undefined;
+      await act(async () => {
+        saved = await view.api().report(1, "other");
+      });
+      expect(saved).toBe(false);
       expect(post).not.toHaveBeenCalled();
     });
   });
