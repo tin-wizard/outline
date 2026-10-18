@@ -145,6 +145,31 @@ describe("error cards", () => {
     expect(host.textContent?.includes("Try again")).toBe(retry);
   });
 
+  it("explains compare_needs_two calmly, with no retry", () => {
+    const host = render({
+      ...base,
+      blocks: [],
+      status: "failed",
+      problem: "compare_needs_two",
+    });
+    expect(host.textContent).toContain(
+      "Compare needs at least two documents in scope."
+    );
+    expect(host.textContent).not.toContain("Try again");
+  });
+
+  it("explains compare_disabled", () => {
+    const host = render({
+      ...base,
+      blocks: [],
+      status: "failed",
+      problem: "compare_disabled",
+    });
+    expect(host.textContent).toContain(
+      "Compare isn't turned on for this workspace."
+    );
+  });
+
   it("never claims nothing was charged", () => {
     const host = render({
       ...base,

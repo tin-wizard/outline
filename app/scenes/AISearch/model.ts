@@ -15,7 +15,8 @@ export type TurnProblem =
   | "unauthorized"
   | "forbidden"
   | "rateLimited"
-  | "network";
+  | "network"
+  | "compare_disabled";
 
 export type TurnStatus =
   | "searching"
@@ -54,9 +55,27 @@ export interface Feedback {
   hidden?: boolean;
 }
 
+/** The time windows offered by the date chip; `custom` uses `dateFrom`/`dateTo`. */
+export type DatePreset = "week" | "month" | "year" | "custom";
+
+/** A document picked as the scope; the title is only for display. */
+export interface ScopeDocument {
+  id: string;
+  title: string;
+}
+
+/**
+ * What a question is limited to. Collections and specific documents are
+ * mutually exclusive in the UI (see scope.ts): picking one clears the other.
+ */
 export interface Scope {
-  collectionId?: string;
-  documentId?: string;
+  collectionIds?: string[];
+  documents?: ScopeDocument[];
+  datePreset?: DatePreset;
+  /** YYYY-MM-DD, UTC, inclusive. */
+  dateFrom?: string;
+  dateTo?: string;
+  mode?: "answer" | "compare";
 }
 
 export interface Turn {
@@ -268,6 +287,7 @@ const FAILURES = [
   "timeout",
   "cancelled",
   "scope_forbidden",
+  "compare_needs_two",
   "error",
 ];
 function isBlockKind(kind: string): kind is BlockInput["kind"] {
@@ -667,7 +687,7 @@ function hydrateTurn(stored: StoredTurn, i: number): Turn | undefined {
   return {
     id: i + 1,
     question: stored.question,
-    scope: {},
+    scope: stored.mode === "compare" ? { mode: "compare" } : {},
     status: answered ? "done" : "failed",
     sources,
     blocks,

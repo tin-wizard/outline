@@ -22,6 +22,7 @@ export type AskFailure =
   | "timeout"
   | "cancelled"
   | "scope_forbidden"
+  | "compare_needs_two"
   | "error";
 
 /** Optional details of a retrieved source; absent on turns stored earlier. */

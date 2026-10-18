@@ -17,6 +17,7 @@ import type {
   TurnProblem,
 } from "./model";
 import { chatReducer, initialChatState, isActive } from "./model";
+import { buildAskParams, resolveScope } from "./scope";
 
 /**
  * Maps a request error to the problem shown to the user.
@@ -30,7 +31,9 @@ export function problemFor(err: unknown): TurnProblem {
       case 401:
         return "unauthorized";
       case 403:
-        return "forbidden";
+        return err.code === "compare_disabled"
+          ? "compare_disabled"
+          : "forbidden";
       case 429:
         return "rateLimited";
       default:
@@ -84,7 +87,9 @@ export function useAISearch(): {
   }, [state.conversationId]);
   const streaming = isActive(state.turns[state.turns.length - 1]);
 
-  const ask = React.useCallback((question: string, scope: Scope) => {
+  const ask = React.useCallback((question: string, chosen: Scope) => {
+    // Presets such as "past week" are fixed to dates at the moment of asking.
+    const scope = resolveScope(chosen);
     controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
@@ -99,8 +104,7 @@ export function useAISearch(): {
           {
             query: question,
             conversationId: conversationRef.current ?? undefined,
-            collectionId: scope.collectionId,
-            documentId: scope.documentId,
+            ...buildAskParams(scope),
           },
           { signal: controller.signal }
         )) {

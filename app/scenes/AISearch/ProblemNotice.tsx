@@ -160,6 +160,20 @@ function contentFor(
           "Answers never use documents you can't open. Ask again without a scope."
         ),
       };
+    case "compare_needs_two":
+      return {
+        icon: <InfoIcon size={20} />,
+        title: t("Compare needs at least two documents in scope."),
+        body: t(
+          "Choose a wider scope, or turn Compare off to ask a normal question."
+        ),
+      };
+    case "compare_disabled":
+      return {
+        icon: <InfoIcon size={20} />,
+        title: t("Compare isn't turned on for this workspace."),
+        body: t("Turn Compare off to ask a normal question."),
+      };
     case "forbidden":
       return {
         icon: <PadlockIcon size={20} />,

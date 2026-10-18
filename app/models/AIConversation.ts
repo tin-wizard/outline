@@ -30,6 +30,8 @@ export interface StoredTurn {
   droppedSegments?: number;
   /** What the question was searched with; absent on older turns. */
   scope?: StoredScope;
+  /** Present when the question was asked in compare mode. */
+  mode?: "compare";
   timings?: { totalMs: number; firstBlockMs?: number };
   retrieval?: AskRetrieval;
 }
