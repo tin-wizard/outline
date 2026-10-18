@@ -12,7 +12,7 @@ import { ActionContextProvider } from "~/hooks/useActionContext";
 import { useMenuAction } from "~/hooks/useMenuAction";
 import useStores from "~/hooks/useStores";
 import type AIConversation from "~/models/AIConversation";
-import { downloadMarkdown } from "~/scenes/AISearch/download";
+import { download } from "~/utils/download";
 import {
   conversationToMarkdown,
   exportFilename,
@@ -64,9 +64,10 @@ export const AIChatMenu = observer(function AIChatMenu({
         conversationId: conversation.id,
         turns: full.turns ?? [],
       });
-      downloadMarkdown(
+      download(
         conversationToMarkdown(turns, { title: conversation.title }),
-        exportFilename(conversation.title, new Date())
+        exportFilename(conversation.title, new Date()),
+        "text/markdown;charset=utf-8"
       );
     } catch {
       toast.error(t("Could not export the chat"));

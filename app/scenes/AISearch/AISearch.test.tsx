@@ -15,12 +15,17 @@ import { streamFetch } from "~/utils/streamFetch";
 import { AISearch } from "./AISearch";
 import { block, controlled, done } from "~/test/askStream";
 
-const { mockFetchCollection, mockFetchDocument, mockFetchConversation } =
-  vi.hoisted(() => ({
-    mockFetchCollection: vi.fn(() => Promise.resolve()),
-    mockFetchDocument: vi.fn(() => Promise.resolve()),
-    mockFetchConversation: vi.fn(),
-  }));
+const {
+  mockFetchCollection,
+  mockFetchDocument,
+  mockFetchConversation,
+  mockFetchPage,
+} = vi.hoisted(() => ({
+  mockFetchCollection: vi.fn(() => Promise.resolve()),
+  mockFetchDocument: vi.fn(() => Promise.resolve()),
+  mockFetchConversation: vi.fn(),
+  mockFetchPage: vi.fn(),
+}));
 
 vi.mock("~/utils/streamFetch", async (importOriginal) => ({
   ...(await importOriginal<typeof StreamModule>()),
@@ -35,7 +40,11 @@ vi.mock("~/hooks/useStores", () => {
   const stores = {
     collections: { get: () => undefined, fetch: mockFetchCollection },
     documents: { get: () => undefined, fetch: mockFetchDocument },
-    aiConversations: { fetch: mockFetchConversation, get: () => undefined },
+    aiConversations: {
+      fetch: mockFetchConversation,
+      fetchPage: mockFetchPage,
+      get: () => undefined,
+    },
   };
   return { default: () => stores };
 });
@@ -93,6 +102,7 @@ beforeEach(() => {
   mockFetchCollection.mockClear();
   mockFetchDocument.mockClear();
   mockFetchConversation.mockReset();
+  mockFetchPage.mockReset().mockResolvedValue([]);
   enabled.mockReturnValue(true);
   historyEnabled.mockReturnValue(false);
 });
@@ -482,7 +492,10 @@ describe("AISearch page, stored conversations", () => {
     expect(history.location.search).toBe(`?collectionId=${UUID}`);
     expect(history.action).toBe("REPLACE");
     // The sidebar list is refreshed, and the stored chat is not loaded again.
-    expect(mockFetchConversation).toHaveBeenCalledTimes(1);
+    expect(mockFetchPage).toHaveBeenCalledWith({ limit: 25 });
+    expect(mockFetchConversation).not.toHaveBeenCalledWith(CONVERSATION, {
+      force: true,
+    });
     expect(mocked).toHaveBeenCalledTimes(1);
   });
 

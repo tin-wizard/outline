@@ -121,9 +121,8 @@ export function useConversationRoute({
     }
     known.current = { id: conversationId, turns: turns.length };
     // Brings the new chat, or the bumped one, into the sidebar list.
-    void aiConversations
-      .fetch(conversationId, { force: true })
-      .catch(() => undefined);
+    // Metadata only; the first page holds the newest chats.
+    void aiConversations.fetchPage({ limit: 25 }).catch(() => undefined);
   }, [
     enabled,
     conversationId,

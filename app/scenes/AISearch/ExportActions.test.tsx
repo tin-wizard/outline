@@ -106,7 +106,8 @@ describe("ExportActions", () => {
     );
   });
 
-  it("downloads a Blob and revokes the object URL", () => {
+  it("downloads a Blob and revokes the object URL after a delay", () => {
+    vi.useFakeTimers();
     const create = vi.fn(() => "blob:x");
     const revoke = vi.fn();
     Object.assign(URL, { createObjectURL: create, revokeObjectURL: revoke });
@@ -117,7 +118,10 @@ describe("ExportActions", () => {
     act(() => button("Download").click());
     expect(create).toHaveBeenCalledTimes(1);
     expect(click).toHaveBeenCalled();
+    expect(revoke).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(250);
     expect(revoke).toHaveBeenCalledWith("blob:x");
+    vi.useRealTimers();
   });
 
   it("prints", () => {

@@ -7,7 +7,7 @@ import { breakpoints } from "@shared/styles";
 import Button from "~/components/Button";
 import CopyToClipboard from "~/components/CopyToClipboard";
 import useMediaQuery from "~/hooks/useMediaQuery";
-import { downloadMarkdown } from "./download";
+import { download } from "~/utils/download";
 import { conversationToMarkdown, exportFilename } from "./exportMarkdown";
 import type { Turn } from "./model";
 
@@ -43,9 +43,10 @@ export function ExportActions({ turns, streaming, title }: Props) {
   const handleCopied = () => toast.success(t("Copied"));
 
   const handleDownload = () =>
-    downloadMarkdown(
+    download(
       markdown(),
-      exportFilename(turns[0]?.question ?? "", new Date())
+      exportFilename(turns[0]?.question ?? "", new Date()),
+      "text/markdown;charset=utf-8"
     );
 
   const handlePrint = () => window.print();
