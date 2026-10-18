@@ -101,6 +101,7 @@ export const TeamPreferenceDefaults: TeamPreferences = {
   [TeamPreference.AIAnswers]: false,
   // Off until an admin opts in: turning AI answers on stores nothing by itself.
   [TeamPreference.AIConversationHistory]: false,
+  [TeamPreference.AICompare]: false,
   [TeamPreference.DisabledEmbeds]: [],
 };
 

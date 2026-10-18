@@ -50,6 +50,15 @@ function Features() {
     [team, t]
   );
 
+  const handleAICompareChange = React.useCallback(
+    async (checked: boolean) => {
+      team.setPreference(TeamPreference.AICompare, checked);
+      await team.save();
+      toast.success(t("Settings saved"));
+    },
+    [team, t]
+  );
+
   const handleGuidanceMCPChange = React.useCallback(
     async (ev: React.ChangeEvent<HTMLTextAreaElement>) => {
       team.guidanceMCP = ev.target.value || null;
@@ -196,6 +205,24 @@ function Features() {
             name={TeamPreference.AIConversationHistory}
             checked={team.getPreference(TeamPreference.AIConversationHistory)}
             onChange={handleAIConversationHistoryChange}
+          />
+        </SettingRow>
+      )}
+
+      {aiAnswersAvailable && team.getPreference(TeamPreference.AIAnswers) && (
+        <SettingRow
+          name={TeamPreference.AICompare}
+          label={t("Compare documents")}
+          description={t(
+            "Lets members compare documents side by side in AI Search. Comparison tables only show values quoted from each source."
+          )}
+          border={false}
+        >
+          <Switch
+            id={TeamPreference.AICompare}
+            name={TeamPreference.AICompare}
+            checked={team.getPreference(TeamPreference.AICompare)}
+            onChange={handleAICompareChange}
           />
         </SettingRow>
       )}

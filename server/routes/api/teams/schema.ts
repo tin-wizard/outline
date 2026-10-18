@@ -79,6 +79,8 @@ export const TeamsUpdateSchema = BaseSchema.extend({
         [TeamPreference.AIAnswers]: z.boolean(),
         /** Whether AI answers are kept as a per-user conversation history. */
         [TeamPreference.AIConversationHistory]: z.boolean(),
+        /** Whether members can compare documents side by side in AI answers. */
+        [TeamPreference.AICompare]: z.boolean(),
         /** List of disabled embed provider titles. */
         [TeamPreference.DisabledEmbeds]: z.array(z.string()),
       })
