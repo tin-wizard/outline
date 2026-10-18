@@ -8,6 +8,7 @@ import type {
 } from "@server/models/AIConversationTurn";
 import { sequelize } from "@server/storage/database";
 import { isHistoryEnabled } from "./access";
+import { safeCitationTarget } from "./anchors";
 import type { AskCitation, AskSource } from "./api/ask";
 import { blockToMarkdown } from "./blocks";
 import {
@@ -32,17 +33,8 @@ export const MAX_STORED_TURNS = 100;
 /** Longest conversation title, in characters. */
 export const MAX_TITLE_CHARS = 80;
 
-/**
- * An editor heading id (`h-` slug plus an occurrence suffix; letters may be
- * any script or emoji): nothing that could leave a URL fragment.
- */
-const SAFE_ANCHOR = /^h-[^\s"'<>`#\\]{0,200}$/u;
-
 /** Largest dropped-block count stored (smallint column). */
 const MAX_DROPPED = 32_767;
-
-/** Longest stored heading text of a citation, in characters. */
-const MAX_HEADING_CHARS = 120;
 
 /** What `ai.ask` hands over to store a turn: never free-form model text. */
 export interface StoreTurnInput {
@@ -232,7 +224,8 @@ export async function appendConversationTurn(
 /**
  * One of the user's stored conversations in the shape of the Redis store, to
  * seed it when an old conversation is continued. Only the newest turns are
- * kept, and an answer only when every block of it is still readable.
+ * kept; a turn citing a source the user can no longer read is left out,
+ * question included.
  *
  * @param user the owner.
  * @param id the conversation id.
@@ -256,20 +249,23 @@ export async function getConversationForResume(
       id,
       teamId: user.teamId,
       userId: user.id,
-      turns: presented.map((turn, i) => {
+      // A hidden turn feeds nothing back, not even its question.
+      turns: presented.flatMap((turn, i) => {
+        if (turn.hasHiddenBlocks) {
+          return [];
+        }
         const answer = joinBlockMarkdown(
           turn.blocks.filter((b): b is VisibleBlock => !("hidden" in b))
         );
-        const keep =
-          !turn.hasHiddenBlocks &&
-          answer.trim() !== "" &&
-          answer.length <= MAX_ANSWER_CHARS;
-        return {
-          question: turn.question,
-          answer: keep ? answer : null,
-          citedDocumentIds: keep ? turns[i].citedDocumentIds : [],
-          at: turn.createdAt.getTime(),
-        };
+        const keep = answer.trim() !== "" && answer.length <= MAX_ANSWER_CHARS;
+        return [
+          {
+            question: turn.question,
+            answer: keep ? answer : null,
+            citedDocumentIds: keep ? turns[i].citedDocumentIds : [],
+            at: turn.createdAt.getTime(),
+          },
+        ];
       }),
     };
   } catch {
@@ -365,15 +361,15 @@ export async function presentTurns(
           markdown: block.markdown,
           citations: block.citations.map((c) => {
             const source = sourceOf(c.documentId);
+            const target = safeCitationTarget(c);
             return {
               n: source.n,
               documentId: c.documentId,
               title: source.title,
-              url:
-                c.anchor && SAFE_ANCHOR.test(c.anchor)
-                  ? `${source.url}#${c.anchor}`
-                  : source.url,
-              ...(c.heading ? { heading: c.heading } : {}),
+              url: target.anchor
+                ? `${source.url}#${target.anchor}`
+                : source.url,
+              ...(target.heading ? { heading: target.heading } : {}),
               ...(c.quote ? { quote: c.quote } : {}),
             };
           }),
@@ -409,14 +405,10 @@ function toStoredBlocks(released: AcceptedBlock[]): {
     markdown: redactSecrets(blockToMarkdown(r.block)).text,
     citations: r.citations.map((c): StoredCitation => {
       const quote = redactSecrets(c.quote).text;
-      const anchor = c.anchor && SAFE_ANCHOR.test(c.anchor) ? c.anchor : "";
-      // Already plain text from the editor and checked for secrets; redact
-      // again as stored text must be.
-      const heading = c.headingText
-        ? [...redactSecrets(c.headingText).text]
-            .slice(0, MAX_HEADING_CHARS)
-            .join("")
-        : "";
+      const { anchor, heading } = safeCitationTarget({
+        anchor: c.anchor,
+        heading: c.headingText,
+      });
       return {
         documentId: c.documentId,
         ...(quote ? { quote } : {}),

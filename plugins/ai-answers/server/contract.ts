@@ -9,9 +9,6 @@ export interface Usage {
 /** Per-request timeout of the Anthropic client; also the longest allowed answer deadline. */
 export const CLIENT_TIMEOUT_MS = 30_000;
 
-/** Answer deadline used when the configured one is missing or invalid. */
-export const DEFAULT_DEADLINE_MS = 15_000;
-
 /**
  * Time allowed for retrieval, serialising documents and writing the response
  * on top of the answer deadline. The socket timeout of `ai.ask` is its

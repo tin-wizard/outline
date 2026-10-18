@@ -438,9 +438,9 @@ describe("getConversationForResume", () => {
 
     const resumed = await getConversationForResume(user, id!);
     expect(resumed?.id).toEqual(id);
+    // The revoked turn is left out entirely, question included.
     expect(resumed?.turns.map((t) => [t.question, t.answer])).toEqual([
       ["First?", "Kept answer text here."],
-      ["Second?", null],
     ]);
 
     const other = await enable(await buildUser({ teamId: user.teamId }));

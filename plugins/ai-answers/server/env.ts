@@ -2,11 +2,7 @@ import { IsBoolean, IsOptional, IsString } from "class-validator";
 import { Environment } from "@server/env";
 import { Public } from "@server/utils/decorators/Public";
 import environment from "@server/utils/environment";
-import {
-  ASK_DEFAULT_DEADLINE_MS,
-  ASK_DEFAULT_IDLE_MS,
-  DEFAULT_DEADLINE_MS,
-} from "./contract";
+import { ASK_DEFAULT_DEADLINE_MS, ASK_DEFAULT_IDLE_MS } from "./contract";
 
 class AIAnswersPluginEnvironment extends Environment {
   /**
@@ -56,22 +52,10 @@ class AIAnswersPluginEnvironment extends Environment {
   );
 
   /**
-   * Hard deadline in milliseconds for the model call of an answer: when it
-   * passes, the call is aborted and the retrieved documents are returned
-   * without an answer. Redis and database work around the call is not bounded
-   * by it. Clamped to 1000-30000 (the client timeout) at use; defaults to
-   * 15000. Deliberately not validated here: a failing validator exits the
-   * process, and a typo must not take the site down.
-   */
-  @IsOptional()
-  public AI_ANSWERS_DEADLINE_MS =
-    this.toOptionalNumber(environment.AI_ANSWERS_DEADLINE_MS) ??
-    DEFAULT_DEADLINE_MS;
-
-  /**
    * Total cap in milliseconds of one streamed AI Search answer (`ai.ask`).
    * Clamped to 10000-50000 at use, so it stays below the 60 s concurrency
-   * slot lifetime; defaults to 45000. Not validated, like the deadline above.
+   * slot lifetime; defaults to 45000. Deliberately not validated: a failing
+   * validator exits the process, and a typo must not take the site down.
    */
   @IsOptional()
   public AI_ASK_DEADLINE_MS =

@@ -280,6 +280,8 @@ function watchHeartbeat() {
 async function enable(user: User) {
   const team = await Team.findByPk(user.teamId, { rejectOnEmpty: true });
   team.setPreference(TeamPreference.AIAnswers, true);
+  // History is off by default; most tests here exercise it on.
+  team.setPreference(TeamPreference.AIConversationHistory, true);
   await team.save();
   return user;
 }
@@ -715,12 +717,10 @@ describe("#ai.ask", () => {
 
   describe("request lifecycle", () => {
     const original = {
-      deadline: env.AI_ANSWERS_DEADLINE_MS,
       askDeadline: env.AI_ASK_DEADLINE_MS,
       idle: env.AI_ASK_IDLE_MS,
     };
     afterEach(() => {
-      env.AI_ANSWERS_DEADLINE_MS = original.deadline;
       env.AI_ASK_DEADLINE_MS = original.askDeadline;
       env.AI_ASK_IDLE_MS = original.idle;
     });
@@ -761,9 +761,8 @@ describe("#ai.ask", () => {
       await expectSlotsFree(user.teamId);
     });
 
-    it("arms its own limits, not the old endpoint's answer deadline", async () => {
+    it("arms its configured total and idle limits", async () => {
       const { user } = await setup();
-      env.AI_ANSWERS_DEADLINE_MS = 1000;
       env.AI_ASK_DEADLINE_MS = 20_000;
       env.AI_ASK_IDLE_MS = 7_000;
       upstream(() => anthropicEvents([cited]));
@@ -1100,7 +1099,9 @@ describe("#ai.ask", () => {
       });
       expect(bodies).toHaveLength(2);
       const sent = JSON.stringify(bodies[1]);
-      expect(sent).toContain("<prior_question>");
+      // Nothing from a turn whose source is gone: no answer, no question.
+      expect(sent).not.toContain("<prior_question>");
+      expect(sent).not.toContain("How many days of holiday?");
       expect(sent).not.toContain("<prior_answer>");
       expect(sent).not.toContain("twenty five");
     });
@@ -1235,6 +1236,32 @@ describe("#ai.ask", () => {
       expect(data.turns[0].blocks[0].citations[0].heading).toEqual("Leave");
       expect(done?.data.dropped).toEqual(0);
       expect(data.turns[0].droppedSegments).toEqual(0);
+    });
+
+    it("applies the stored path's anchor and heading rules to the live stream", async () => {
+      const { user } = await setup();
+      upstream(() => anthropicEvents([cited]));
+      const original = verify.AnswerVerifier.prototype.verify;
+      vi.spyOn(verify.AnswerVerifier.prototype, "verify").mockImplementation(
+        function (this: verify.AnswerVerifier, block) {
+          const verdict = original.call(this, block);
+          return verdict.ok
+            ? {
+                ...verdict,
+                citations: verdict.citations.map((c) => ({
+                  ...c,
+                  anchor: 'h-x"><img src=x>',
+                  headingText: "Keys AKIAIOSFODNN7EXAMPLE",
+                })),
+              }
+            : verdict;
+        }
+      );
+      const events = await askEvents(user);
+      const block = events.find((e) => e.event === "block");
+      expect(block?.data.citations[0].url).not.toContain("#");
+      expect(block?.data.citations[0].heading).toBeUndefined();
+      // The stored path uses the same helper (history.test.ts, anchors.test.ts).
     });
 
     it("stores only the question when the answer fails, never partial blocks", async () => {
@@ -1543,9 +1570,39 @@ describe("#ai.ask", () => {
       });
       expect(bodies).toHaveLength(2);
       const sent = JSON.stringify(bodies[1]);
-      expect(sent).toContain("<prior_question>");
+      expect(sent).not.toContain("<prior_question>");
+      expect(sent).not.toContain("How many days of holiday?");
       expect(sent).not.toContain("<prior_answer>");
       expect(sent).not.toContain("twenty five");
+      // The owner still sees their own question.
+      const info = await server.post("/api/aiConversations.info", user, {
+        body: { id },
+      });
+      expect((await info.json()).data.turns[0].question).toEqual(
+        "How many days of holiday?"
+      );
+    });
+
+    it("stores nothing when only AI answers is on (history defaults to off)", async () => {
+      const user = await buildUser();
+      const team = await Team.findByPk(user.teamId, { rejectOnEmpty: true });
+      team.setPreference(TeamPreference.AIAnswers, true);
+      await team.save();
+      const collection = await buildCollection({
+        teamId: user.teamId,
+        userId: user.id,
+      });
+      await buildDocument({
+        teamId: user.teamId,
+        userId: user.id,
+        collectionId: collection.id,
+        title: "Holidays",
+        text: `# Leave\n${FACT}`,
+      });
+      upstream(() => anthropicEvents([cited]));
+      const events = await askEvents(user);
+      expect(events.at(-1)?.data.conversationId).toEqual(events[0].data.id);
+      expect(await AIConversation.findByPk(events[0].data.id)).toBeNull();
     });
 
     it("starts a new conversation for another user's stored conversation", async () => {

@@ -14,6 +14,7 @@ import type { APIContext } from "@server/types";
 import { releaseRequestTransaction } from "@server/storage/requestContext";
 import { RateLimiterStrategy } from "@server/utils/RateLimiter";
 import { assertAIAnswersAllowed, isHistoryEnabled } from "../access";
+import { safeCitationTarget } from "../anchors";
 import { getClient } from "../anthropicClient";
 import {
   BlockSplitter,
@@ -265,13 +266,18 @@ function citationsOf(
       return [];
     }
     const quote = redactSecrets(c.quote).text;
+    // Same rules as the stored history (see safeCitationTarget).
+    const { anchor, heading } = safeCitationTarget({
+      anchor: c.anchor,
+      heading: c.headingText,
+    });
     return [
       {
         n: source.n,
         documentId: source.documentId,
         title: source.title,
-        url: c.anchor ? `${source.url}#${c.anchor}` : source.url,
-        ...(c.headingText ? { heading: c.headingText } : {}),
+        url: anchor ? `${source.url}#${anchor}` : source.url,
+        ...(heading ? { heading } : {}),
         ...(quote ? { quote } : {}),
       },
     ];

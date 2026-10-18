@@ -249,6 +249,11 @@ export async function buildStandaloneQuery(
     return redactSecrets(question).text;
   }
   const readable = await readableDocuments(user, previous.citedDocumentIds);
+  // A turn citing a source the user can no longer read adds nothing, not
+  // even its question (it may have been a cited heading).
+  if (!previous.citedDocumentIds.every((id) => readable.has(id))) {
+    return redactSecrets(question).text;
+  }
   const titles = [
     ...new Set(
       previous.citedDocumentIds
@@ -260,9 +265,10 @@ export async function buildStandaloneQuery(
 }
 
 /**
- * The prior turns of a conversation for the model's context. An answer is kept
+ * The prior turns of a conversation for the model's context. A turn is kept
  * only when every document it cited is still readable by the user now and not
- * excluded from AI answers; otherwise only its question is kept.
+ * excluded from AI answers; otherwise it is left out entirely, question
+ * included, since a question can repeat words of its sources (a cited heading).
  *
  * @param user the user asking.
  * @param conversation the user's conversation, as loaded from the store.
@@ -277,16 +283,14 @@ export async function historyForModel(
     user,
     turns.flatMap((t) => t.citedDocumentIds)
   );
-  return turns.map((t) => ({
-    question: redactSecrets(t.question).text,
-    // An answer without citations has no verified claims to carry forward.
-    answer:
-      t.answer !== null &&
-      t.citedDocumentIds.length > 0 &&
-      t.citedDocumentIds.every((id) => readable.has(id))
-        ? t.answer
-        : null,
-  }));
+  return turns
+    .filter((t) => t.citedDocumentIds.every((id) => readable.has(id)))
+    .map((t) => ({
+      question: redactSecrets(t.question).text,
+      // An answer without citations has no verified claims to carry forward.
+      answer:
+        t.answer !== null && t.citedDocumentIds.length > 0 ? t.answer : null,
+    }));
 }
 
 const REDIS_TIMEOUT_MS = 2000;

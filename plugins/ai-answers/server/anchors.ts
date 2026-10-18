@@ -6,6 +6,8 @@ import { headingOf } from "./text";
 
 type Content = Parameters<typeof DocumentHelper.toProsemirror>[0];
 
+const SAFE_ANCHOR = /^h-[^\s"'<>`#\\]{0,200}$/u;
+
 // Comparison key: letters and digits only, so markdown escapes, emphasis
 // markers and emoji cannot make an editor heading and its Markdown differ.
 const keyOf = (text: string) =>
@@ -42,6 +44,33 @@ export function sectionAnchors(
 
 /** Longest heading text of a section target, in characters. */
 export const MAX_HEADING_CHARS = 120;
+
+/**
+ * The anchor and heading text of a citation as they may be shown or stored:
+ * the anchor only when it looks like an editor heading id (`h-` and nothing
+ * that could leave a URL fragment; any script or emoji allowed), the heading
+ * only when redaction would not change it, capped at 120 characters. Used by
+ * both the live stream and the stored history so the rules cannot diverge.
+ *
+ * @param citation the citation's anchor and heading text, if any.
+ * @returns the parts that are safe, omitted otherwise.
+ */
+export function safeCitationTarget(citation: {
+  anchor?: string;
+  heading?: string;
+}): { anchor?: string; heading?: string } {
+  const anchor =
+    citation.anchor && SAFE_ANCHOR.test(citation.anchor)
+      ? citation.anchor
+      : undefined;
+  const heading = citation.heading
+    ? [...citation.heading].slice(0, MAX_HEADING_CHARS).join("").trim()
+    : "";
+  return {
+    ...(anchor ? { anchor } : {}),
+    ...(heading && redactSecrets(heading).text === heading ? { heading } : {}),
+  };
+}
 
 /** The editor heading a section belongs to. */
 export interface SectionTarget {

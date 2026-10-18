@@ -1,6 +1,6 @@
 import { DocumentHelper } from "@server/models/helpers/DocumentHelper";
 import { buildDocument } from "@server/test/factories";
-import { sectionAnchors, sectionTargets } from "./anchors";
+import { safeCitationTarget, sectionAnchors, sectionTargets } from "./anchors";
 import { redactSecrets } from "./redact";
 import { splitIntoSections } from "./text";
 
@@ -105,5 +105,28 @@ describe("sectionTargets headings", () => {
       "# Keys AKIAIOSFODNN7EXAMPLE\nbody\n\n# Next\nmore"
     );
     expect(headings).toEqual([undefined, "Next"]);
+  });
+});
+
+describe("safeCitationTarget", () => {
+  it("keeps editor ids in any script and plain, unredacted heading text", () => {
+    expect(
+      safeCitationTarget({ anchor: "h-cafe-🎉-日本語-1", heading: "Café 🎉" })
+    ).toEqual({ anchor: "h-cafe-🎉-日本語-1", heading: "Café 🎉" });
+  });
+
+  it("drops anchors that could leave a URL fragment", () => {
+    for (const anchor of ['h-x"><script>', "h-a b", "x-intro", "h-a#b"]) {
+      expect(safeCitationTarget({ anchor })).toEqual({});
+    }
+  });
+
+  it("drops heading text the redactor would change and caps its length", () => {
+    expect(
+      safeCitationTarget({ heading: "Keys AKIAIOSFODNN7EXAMPLE" })
+    ).toEqual({});
+    expect(safeCitationTarget({ heading: "a".repeat(200) }).heading).toEqual(
+      "a".repeat(120)
+    );
   });
 });
