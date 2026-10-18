@@ -32,6 +32,16 @@ export interface StoredBlock {
   citations: StoredCitation[];
 }
 
+/** The scope a question was asked in: ids only, names are resolved on read. */
+export interface StoredScope {
+  collectionIds: string[];
+  documentIds: string[];
+  /** First day of the updatedAt range (YYYY-MM-DD, UTC). */
+  dateFrom?: string;
+  /** Last day of the updatedAt range, inclusive (YYYY-MM-DD, UTC). */
+  dateTo?: string;
+}
+
 /**
  * One question and its verified answer blocks in a stored AI conversation.
  * Document titles and urls are not stored; they are resolved on read.
@@ -89,6 +99,26 @@ class AIConversationTurn extends Model<
   @Default(0)
   @Column(DataType.SMALLINT)
   droppedSegments: number;
+
+  /** The scope the question was asked in; null when it had none. */
+  @Column(DataType.JSONB)
+  scope: StoredScope | null;
+
+  /** Milliseconds from the request to the end of an answered turn. */
+  @Column(DataType.INTEGER)
+  totalMs: number | null;
+
+  /** Milliseconds from the request to the first released block. */
+  @Column(DataType.INTEGER)
+  firstBlockMs: number | null;
+
+  /** Candidate documents retrieval fetched before the cut (at most 20). */
+  @Column(DataType.SMALLINT)
+  retrievalFetched: number | null;
+
+  /** Documents sent to the model. */
+  @Column(DataType.SMALLINT)
+  retrievalUsed: number | null;
 }
 
 export default AIConversationTurn;
