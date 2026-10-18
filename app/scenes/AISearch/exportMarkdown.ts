@@ -1,6 +1,6 @@
 import { isDocPath } from "./AnswerTurn";
 import type { Turn } from "./model";
-import { citedSources } from "./model";
+import { answerSegments, citedSources } from "./model";
 
 export interface TurnOptions {
   /** Prefix the answer with the quoted question. */
@@ -62,22 +62,32 @@ function sourcesMarkdown(turn: Turn, origin: string): string {
   return lines.length ? `Sources\n\n${lines.join("\n")}` : "";
 }
 
+/** Plain line standing in for a block withheld because a source changed. */
+export const HIDDEN_BLOCK_MARKDOWN =
+  "_(A part of this answer is no longer available.)_";
+
 /** Blocks of one list or table stay on consecutive lines. */
 function joinBlocks(turn: Turn): string {
-  let out = "";
-  let previous: string | undefined;
-  for (const block of turn.blocks) {
-    if (previous !== undefined) {
-      const tight =
-        (previous === "listItem" && block.kind === "listItem") ||
-        ((previous === "tableHeader" || previous === "tableRow") &&
-          block.kind === "tableRow");
-      out += tight ? "\n" : "\n\n";
+  const chunks = answerSegments(turn).map((segment) => {
+    if (segment.type === "hidden") {
+      return HIDDEN_BLOCK_MARKDOWN;
     }
-    out += block.markdown;
-    previous = block.kind;
-  }
-  return out;
+    let out = "";
+    let previous: string | undefined;
+    for (const block of segment.blocks) {
+      if (previous !== undefined) {
+        const tight =
+          (previous === "listItem" && block.kind === "listItem") ||
+          ((previous === "tableHeader" || previous === "tableRow") &&
+            block.kind === "tableRow");
+        out += tight ? "\n" : "\n\n";
+      }
+      out += block.markdown;
+      previous = block.kind;
+    }
+    return out;
+  });
+  return chunks.join("\n\n");
 }
 
 /**

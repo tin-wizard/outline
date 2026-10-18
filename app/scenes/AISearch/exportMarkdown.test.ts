@@ -140,6 +140,34 @@ describe("turnToMarkdown", () => {
   });
 });
 
+describe("hidden blocks", () => {
+  it("leaves a plain line where a block is withheld", () => {
+    const base = make();
+    const turn = make({
+      hiddenBlocks: [1],
+      blocks: [
+        base.blocks[0],
+        { index: 2, kind: "paragraph", markdown: "After.", citations: [] },
+      ],
+    });
+    expect(
+      turnToMarkdown(turn, {
+        ...both,
+        includeQuestion: false,
+        includeSources: false,
+      })
+    ).toBe(
+      "Ask your manager [1].\n\n_(A part of this answer is no longer available.)_\n\nAfter."
+    );
+  });
+
+  it("emits one line for adjacent hidden blocks", () => {
+    const turn = make({ hiddenBlocks: [1, 2], blocks: make().blocks });
+    const md = turnToMarkdown(turn, { ...both, includeSources: false });
+    expect(md.match(/no longer available/g)).toHaveLength(1);
+  });
+});
+
 describe("conversationToMarkdown", () => {
   it("joins turns under an escaped title (golden)", () => {
     const second = make({
