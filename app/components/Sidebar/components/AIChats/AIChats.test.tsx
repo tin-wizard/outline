@@ -66,7 +66,7 @@ const tick = () =>
     await new Promise((r) => setTimeout(r, 0));
   });
 
-async function mount(url = "/ai") {
+async function mount(url = "/ai", deleteOnly = false) {
   const history = createMemoryHistory({ initialEntries: [url] });
   const host = document.createElement("div");
   document.body.appendChild(host);
@@ -78,7 +78,7 @@ async function mount(url = "/ai") {
         <Provider rootStore={stores}>
           <Router history={history}>
             <ActionContextProvider value={{ activeModels: [] }}>
-              <AIChats />
+              <AIChats deleteOnly={deleteOnly} />
             </ActionContextProvider>
           </Router>
         </Provider>
@@ -273,5 +273,42 @@ describe("AIChats", () => {
       await stores.aiConversations.delete(leave);
     });
     expect(host.textContent).not.toContain("Renamed");
+  });
+});
+
+describe("AIChats with history turned off", () => {
+  it("lists saved chats for deletion only, with a notice", async () => {
+    reply.mockResolvedValue({
+      data: [row(ID1, "Leave policy", 0), row(ID2, "Handbook", 3, true)],
+      pagination: {},
+    });
+    const { host } = await mount("/ai", true);
+    expect(host.textContent).toContain(
+      "Chat history is turned off for your workspace. You can delete your saved chats here."
+    );
+    expect(host.textContent).toContain("Leave policy");
+    // No links to resume, no search, no rename/pin/export menu.
+    expect(host.querySelector('a[href^="/ai/"]')).toBeNull();
+    expect(host.querySelector('input[type="search"]')).toBeNull();
+    expect(host.querySelector('button[aria-label="Chat options"]')).toBeNull();
+
+    const openModal = vi.spyOn(stores.dialogs, "openModal");
+    await act(async () =>
+      host
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="Delete chat “Leave policy”"]'
+        )!
+        .click()
+    );
+    expect(openModal).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Delete chat" })
+    );
+    openModal.mockRestore();
+  });
+
+  it("renders nothing when no chats are saved", async () => {
+    reply.mockResolvedValue({ data: [], pagination: {} });
+    const { host } = await mount("/ai", true);
+    expect(host.textContent).toBe("");
   });
 });

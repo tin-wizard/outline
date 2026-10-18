@@ -44,11 +44,7 @@ export const AIChatMenu = observer(function AIChatMenu({
   onClose,
 }: Props) {
   const { t } = useTranslation();
-  const { aiConversations, dialogs } = useStores();
-  const history = useHistory();
-  const active = useRouteMatch<{ conversationId: string }>(
-    "/ai/:conversationId"
-  );
+  const { aiConversations } = useStores();
 
   const handleTogglePin = React.useCallback(async () => {
     try {
@@ -77,12 +73,7 @@ export const AIChatMenu = observer(function AIChatMenu({
     }
   }, [aiConversations, conversation, t]);
 
-  const handleDelete = React.useCallback(async () => {
-    await aiConversations.delete(conversation);
-    if (active?.params.conversationId === conversation.id) {
-      history.push(aiPath());
-    }
-  }, [aiConversations, conversation, active, history]);
+  const handleDelete = useConfirmDeleteChat(conversation);
 
   const actions = React.useMemo(
     () => [
@@ -114,22 +105,7 @@ export const AIChatMenu = observer(function AIChatMenu({
         section,
         icon: <TrashIcon />,
         dangerous: true,
-        perform: () =>
-          dialogs.openModal({
-            title: t("Delete chat"),
-            content: (
-              <ConfirmationDialog
-                onSubmit={handleDelete}
-                submitText={t("Delete")}
-                savingText={`${t("Deleting")}…`}
-                danger
-              >
-                {t(
-                  "Are you sure you want to delete this chat? The conversation will be permanently removed and cannot be recovered."
-                )}
-              </ConfirmationDialog>
-            ),
-          }),
+        perform: handleDelete,
       }),
     ],
     [
@@ -139,7 +115,6 @@ export const AIChatMenu = observer(function AIChatMenu({
       handleTogglePin,
       handleExport,
       handleDelete,
-      dialogs,
     ]
   );
 
@@ -158,3 +133,46 @@ export const AIChatMenu = observer(function AIChatMenu({
     </ActionContextProvider>
   );
 });
+
+/**
+ * Returns a callback that asks for confirmation, then permanently deletes the
+ * chat, leaving its page when it is open.
+ *
+ * @param conversation the chat to delete.
+ * @returns opens the confirmation dialog.
+ */
+export function useConfirmDeleteChat(conversation: AIConversation) {
+  const { t } = useTranslation();
+  const { aiConversations, dialogs } = useStores();
+  const history = useHistory();
+  const active = useRouteMatch<{ conversationId: string }>(
+    "/ai/:conversationId"
+  );
+
+  const handleDelete = React.useCallback(async () => {
+    await aiConversations.delete(conversation);
+    if (active?.params.conversationId === conversation.id) {
+      history.push(aiPath());
+    }
+  }, [aiConversations, conversation, active, history]);
+
+  return React.useCallback(
+    () =>
+      dialogs.openModal({
+        title: t("Delete chat"),
+        content: (
+          <ConfirmationDialog
+            onSubmit={handleDelete}
+            submitText={t("Delete")}
+            savingText={`${t("Deleting")}…`}
+            danger
+          >
+            {t(
+              "Are you sure you want to delete this chat? The conversation will be permanently removed and cannot be recovered."
+            )}
+          </ConfirmationDialog>
+        ),
+      }),
+    [dialogs, handleDelete, t]
+  );
+}

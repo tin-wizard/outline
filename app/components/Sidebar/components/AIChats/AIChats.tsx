@@ -11,24 +11,66 @@ import { aiPath } from "~/utils/routeHelpers";
 import Header from "../Header";
 import PlaceholderCollections from "../PlaceholderCollections";
 import SidebarLink from "../SidebarLink";
+import { AIChatDeleteRow } from "./AIChatDeleteRow";
 import { AIChatRow } from "./AIChatRow";
 import type { ConversationGroupKey } from "./groupConversations";
 import { groupConversations } from "./groupConversations";
 import { useAIConversationList } from "./useAIConversationList";
 
+interface Props {
+  /**
+   * History is turned off for the workspace: list saved chats only so they
+   * can be deleted (no links, search, rename, pin or export), and render
+   * nothing when there are none.
+   */
+  deleteOnly?: boolean;
+}
+
 /**
  * The "Chats" section of the sidebar: the user's AI Search conversations,
  * grouped by recency with pinned ones first, a search box and a New chat
- * link. Render it only when `useAIHistoryEnabled()` is true.
+ * link. Render it when AI answers are available; pass `deleteOnly` when
+ * `useAIHistoryEnabled()` is false.
  *
+ * @param props.deleteOnly show saved chats for deletion only.
  * @returns the section.
  */
-export const AIChats = observer(function AIChats() {
+export const AIChats = observer(function AIChats({ deleteOnly }: Props) {
   const { t } = useTranslation();
   const [query, setQuery] = React.useState("");
   const { items, loading, error, end, searching, loadMore, retry } =
     useAIConversationList(query);
   const groups = React.useMemo(() => groupConversations(items), [items]);
+
+  if (deleteOnly) {
+    if (!items.length) {
+      return null;
+    }
+    return (
+      <Flex column>
+        <Header id="ai-chats" title={t("Chats")}>
+          <Note>
+            {t(
+              "Chat history is turned off for your workspace. You can delete your saved chats here."
+            )}
+          </Note>
+          {items.map((conversation) => (
+            <AIChatDeleteRow
+              key={conversation.id}
+              conversation={conversation}
+            />
+          ))}
+          {!loading && !end && (
+            <SidebarLink
+              onClick={loadMore}
+              label={`${t("Show more")}…`}
+              depth={0}
+            />
+          )}
+        </Header>
+      </Flex>
+    );
+  }
 
   const labels: Record<ConversationGroupKey, string> = {
     pinned: t("Pinned"),

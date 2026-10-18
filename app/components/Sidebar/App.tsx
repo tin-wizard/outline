@@ -53,7 +53,9 @@ function AppSidebar() {
   const aiEnabled = useAIAnswersEnabled();
   // Chats are listed while using AI Search; the rest of the sidebar is unchanged.
   const onAIRoute = !!useRouteMatch(aiPath());
-  const showAIChats = useAIHistoryEnabled() && onAIRoute;
+  const historyEnabled = useAIHistoryEnabled();
+  // With history off, saved chats stay listed (delete only) until removed.
+  const showAIChats = aiEnabled && onAIRoute;
   const history = useHistory();
   const isMobile = useMobile();
 
@@ -159,7 +161,7 @@ function AppSidebar() {
           <SidebarScrollProvider value={scrollArea}>
             {showAIChats && (
               <Section>
-                <AIChats />
+                <AIChats deleteOnly={!historyEnabled} />
               </Section>
             )}
             {sectionOrder.map((section) => (
