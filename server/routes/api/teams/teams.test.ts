@@ -84,6 +84,25 @@ describe("#team.update", () => {
     expect(admin.team.getPreference(TeamPreference.AIAnswers)).toBe(true);
   });
 
+  it("should update the AI conversation history team preference", async () => {
+    const admin = await buildAdmin();
+    expect(admin.team.getPreference(TeamPreference.AIConversationHistory)).toBe(
+      true
+    );
+    const res = await server.post("/api/teams.update", admin, {
+      body: {
+        preferences: {
+          [TeamPreference.AIConversationHistory]: false,
+        },
+      },
+    });
+    expect(res.status).toEqual(200);
+    await admin.team.reload();
+    expect(admin.team.getPreference(TeamPreference.AIConversationHistory)).toBe(
+      false
+    );
+  });
+
   it("should fail upon sending unknown team preference", async () => {
     const admin = await buildAdmin();
     const res = await server.post("/api/team.update", admin, {

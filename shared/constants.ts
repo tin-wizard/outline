@@ -99,6 +99,7 @@ export const TeamPreferenceDefaults: TeamPreferences = {
   [TeamPreference.EmailDisplay]: EmailDisplay.Members,
   [TeamPreference.MCP]: true,
   [TeamPreference.AIAnswers]: false,
+  [TeamPreference.AIConversationHistory]: true,
   [TeamPreference.DisabledEmbeds]: [],
 };
 

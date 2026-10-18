@@ -506,6 +506,8 @@ export enum TeamPreference {
   MCP = "mcp",
   /** Whether members can ask questions and receive AI generated answers. */
   AIAnswers = "aiAnswers",
+  /** Whether AI answers are kept as a per-user conversation history. */
+  AIConversationHistory = "aiConversationHistory",
   /** List of disabled embed provider titles. */
   DisabledEmbeds = "disabledEmbeds",
 }
@@ -525,6 +527,7 @@ export type TeamPreferences = {
   [TeamPreference.EmailDisplay]?: EmailDisplay;
   [TeamPreference.MCP]?: boolean;
   [TeamPreference.AIAnswers]?: boolean;
+  [TeamPreference.AIConversationHistory]?: boolean;
   [TeamPreference.DisabledEmbeds]?: string[];
 };
 
