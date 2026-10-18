@@ -31,6 +31,8 @@ import {
   ASK_DEFAULT_DEADLINE_MS,
   ASK_DEFAULT_IDLE_MS,
   ASK_MAX_DEADLINE_MS,
+  ASK_MAX_IDLE_MS,
+  ASK_MIN_DEADLINE_MS,
 } from "../contract";
 import {
   createConversation,
@@ -215,6 +217,38 @@ function hangingUpstream(first: object[]) {
         { headers: { "Content-Type": "text/event-stream" } }
       );
     })
+  );
+  return state;
+}
+
+/**
+ * Sends `first` events, then hangs; on abort the body ends cleanly instead of
+ * erroring, so the SDK stream finishes without throwing.
+ */
+function closingUpstream(first: object[]) {
+  const state = { aborted: false };
+  mswServer.use(
+    http.post(
+      ANTHROPIC,
+      ({ request }) =>
+        new HttpResponse(
+          new ReadableStream({
+            start(controller) {
+              for (const event of first) {
+                controller.enqueue(frame(event));
+              }
+              request.signal.addEventListener("abort", () => {
+                state.aborted = true;
+                controller.close();
+              });
+            },
+            cancel() {
+              state.aborted = true;
+            },
+          }),
+          { headers: { "Content-Type": "text/event-stream" } }
+        )
+    )
   );
   return state;
 }
@@ -853,6 +887,72 @@ describe("#ai.ask", () => {
       expect(rows).toHaveLength(1);
       expect(rows[0].outcome).toEqual("error");
       await expectSlotsFree(user.teamId);
+    });
+
+    describe("when the aborted stream ends without throwing (QA B1)", () => {
+      it("reports a stall after message_start as timeout", async () => {
+        const { user } = await setup();
+        env.AI_ASK_IDLE_MS = 1000;
+        const state = closingUpstream(anthropicEvents([], { final: false }));
+        const events = await askEvents(user);
+        expect(events.at(-1)).toEqual({
+          event: "failed",
+          data: { reason: "timeout", partial: false },
+        });
+        expect(state.aborted).toEqual(true);
+        const rows = await rowsFor(user.teamId);
+        expect(rows).toHaveLength(1);
+        expect(rows[0].outcome).toEqual("error");
+        expect(rows[0].inputTokens).toEqual(100);
+        const [turn] = await turnsOf(events[0].data.id);
+        expect(turn.outcome).toEqual("timeout");
+        expect(turn.blocks).toEqual([]);
+        await expectSlotsFree(user.teamId);
+      });
+
+      it("reports the total cap as timeout, partial after a released block", async () => {
+        const { user } = await setup();
+        env.AI_ASK_IDLE_MS = ASK_MAX_IDLE_MS;
+        env.AI_ASK_DEADLINE_MS = ASK_MIN_DEADLINE_MS;
+        closingUpstream(firstBlock());
+        const events = await askEvents(user);
+        expect(events.filter((e) => e.event === "block")).toHaveLength(1);
+        expect(events.at(-1)).toEqual({
+          event: "failed",
+          data: { reason: "timeout", partial: true },
+        });
+        const rows = await rowsFor(user.teamId);
+        expect(rows.map((r) => r.outcome)).toEqual(["error"]);
+        expect(rows[0].outputTokens).toEqual(
+          Math.ceil(`${FACT}\n\n`.length / 3)
+        );
+        await expectSlotsFree(user.teamId);
+      }, 20_000);
+
+      it("bills and stores nothing more when the client disconnects", async () => {
+        const { user } = await setup();
+        const state = closingUpstream(firstBlock());
+        const controller = new AbortController();
+        const res = await ask(user, undefined, { signal: controller.signal });
+        let seen = "";
+        try {
+          for await (const chunk of res.body) {
+            seen += chunk.toString();
+            if (seen.includes("event: block")) {
+              controller.abort();
+            }
+          }
+        } catch {
+          // The aborted body rejects; that is the disconnect.
+        }
+        await waitFor(() => state.aborted);
+        const rows = await rowsFor(user.teamId, true);
+        expect(rows.map((r) => r.outcome)).toEqual(["error"]);
+        expect(
+          await AIConversationTurn.count({ where: { userId: user.id } })
+        ).toEqual(0);
+        await expectSlotsFree(user.teamId);
+      });
     });
 
     it("does nothing when the client is gone before the handler runs", async () => {

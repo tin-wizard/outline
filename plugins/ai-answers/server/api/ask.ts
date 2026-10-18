@@ -692,7 +692,15 @@ router.post(
               usage = event.usage;
             }
           }
+          // An aborted stream may end without throwing (QA B1): with no final
+          // usage it was cut, so it fails like the throw path below.
+          const cut = signal.aborted && !usage;
           await freeSlot();
+          if (cut) {
+            await bill({ usage: streamedUsage(), outcome: "error" });
+            await finish([], { failed: aborted() });
+            return;
+          }
           release(splitter.flush());
         } catch (error) {
           Logger.warn("AI answers stream failed", {
