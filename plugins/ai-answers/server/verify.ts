@@ -10,6 +10,8 @@ export interface AnswerCitation {
   title: string;
   url: string;
   heading?: string;
+  /** The editor's heading id for the first cited section, when known. */
+  anchor?: string;
   quote: string;
 }
 
@@ -746,26 +748,28 @@ function resolveCitation(
   if (quote.length < MIN_QUOTE_LENGTH || !passage.includes(quote)) {
     return undefined;
   }
-  const entry = citationFor(source, section, citation.quote);
+  const entry = citationFor(source, citation.sectionIndex, citation.quote);
   return { key: citationKey(entry), passage, entry };
 }
 
 function citationFor(
   source: AnswerSource,
-  section: string,
+  at: number,
   quote: string
 ): AnswerCitation {
+  const anchor = source.anchors?.[at];
   return {
     documentId: source.document.id,
     title: source.document.title,
     url: source.document.url,
-    heading: headingOf(section),
+    heading: headingOf(source.sections[at]),
+    ...(anchor ? { anchor } : {}),
     quote: truncate(quote),
   };
 }
 
 function citationKey(citation: AnswerCitation): string {
-  return `${citation.documentId}:${citation.heading ?? ""}`;
+  return `${citation.documentId}:${citation.anchor ?? citation.heading ?? ""}`;
 }
 
 /** Splits text into sentences and lines; an invented one must not ride along with a real one. */
@@ -915,7 +919,7 @@ function findVerbatim(
       containsWhole(section, needle)
     );
     if (at !== -1) {
-      return citationFor(source, source.sections[at], text);
+      return citationFor(source, at, text);
     }
   }
   return undefined;
@@ -1098,7 +1102,7 @@ function verifyCode(block: Block, ctx: PreparedSources): BlockVerdict {
       return {
         ok: true,
         block: clean,
-        citations: [citationFor(source, source.sections[at], text)],
+        citations: [citationFor(source, at, text)],
         modelCited: false,
       };
     }

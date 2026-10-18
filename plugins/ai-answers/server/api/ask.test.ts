@@ -2,7 +2,9 @@ import { http, HttpResponse } from "msw";
 import { Transaction } from "sequelize";
 import { vi } from "vitest";
 import { TeamPreference } from "@shared/types";
+import { ProsemirrorHelper } from "@shared/utils/ProsemirrorHelper";
 import { AIAnswerUsage, Team, type User } from "@server/models";
+import { DocumentHelper } from "@server/models/helpers/DocumentHelper";
 import {
   buildAdmin,
   buildCollection,
@@ -352,6 +354,32 @@ describe("#ai.ask", () => {
   });
 
   describe("streaming", () => {
+    it("anchors a citation to the editor's id for a repeated heading containing a link", async () => {
+      const user = await enable(await buildUser());
+      const quote = "Linux holiday installs need twenty five days.";
+      const document = await buildDocument({
+        teamId: user.teamId,
+        userId: user.id,
+        title: "Holidays",
+        text: `# Install\nMac holiday notes here.\n\n## See [docs](https://example.com)\nFirst.\n\n# Install\n${quote}`,
+      });
+      const expected = ProsemirrorHelper.getAnchors(
+        DocumentHelper.toProsemirror(document)
+      ).map((a) => a.id);
+      expect(expected).toEqual(["h-install", "h-see-docs", "h-install-1"]);
+      upstream(() =>
+        anthropicEvents([{ text: quote, citations: [{ quote }] }])
+      );
+
+      const res = await ask(user);
+      const { events } = parseSse(await res.text());
+
+      const block = events.find((e) => e.event === "block");
+      expect(block?.data.citations[0].url).toEqual(
+        `/doc/holidays-${document.urlId}#${expected[2]}`
+      );
+    });
+
     it("streams conversation, status, sources, blocks and done in order", async () => {
       const { user, document } = await setup();
       const bodies = upstream(() => anthropicEvents([cited]));

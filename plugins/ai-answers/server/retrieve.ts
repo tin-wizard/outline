@@ -10,8 +10,9 @@ import SearchProviderManager from "@server/utils/SearchProviderManager";
 import { dropAIExcluded } from "@server/utils/aiExclusion";
 import type * as T from "./api/schema";
 import { redactSecrets } from "./redact";
+import { sectionAnchors } from "./anchors";
 import {
-  selectSections,
+  selectSectionIndices,
   splitIntoSections,
   toKeywordAndQuery,
   toKeywordQuery,
@@ -22,6 +23,11 @@ import {
 export interface AnswerSource {
   document: Document;
   sections: string[];
+  /**
+   * The editor's heading id for each section (see `sectionAnchors`), aligned
+   * with `sections`; undefined entries have no safe anchor.
+   */
+  anchors?: (string | undefined)[];
 }
 
 const MAX_DOCUMENTS = 5;
@@ -114,13 +120,15 @@ export async function retrieveSources(
     const { text: markdown } = redactSecrets(
       await DocumentHelper.toMarkdown(document, { includeTitle: false })
     );
-    const sections = selectSections(
-      splitIntoSections(markdown),
-      keywords,
-      MAX_CHARS_PER_DOCUMENT
-    );
-    if (sections.length > 0) {
-      sources.push({ document, sections });
+    const all = splitIntoSections(markdown);
+    const allAnchors = sectionAnchors(document, all);
+    const chosen = selectSectionIndices(all, keywords, MAX_CHARS_PER_DOCUMENT);
+    if (chosen.length > 0) {
+      sources.push({
+        document,
+        sections: chosen.map((i) => all[i]),
+        anchors: chosen.map((i) => allAnchors[i]),
+      });
     }
   }
   return sources;

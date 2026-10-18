@@ -1,5 +1,4 @@
 import Router from "koa-router";
-import { safeSlugify } from "@shared/editor/lib/headingToSlug";
 import { toError } from "@shared/utils/error";
 import { NotFoundError } from "@server/errors";
 import Logger from "@server/logging/Logger";
@@ -264,7 +263,7 @@ function citationsOf(
         n: source.n,
         documentId: source.documentId,
         title: source.title,
-        url: c.heading ? `${source.url}#${safeSlugify(c.heading)}` : source.url,
+        url: c.anchor ? `${source.url}#${c.anchor}` : source.url,
         ...(quote ? { quote } : {}),
       },
     ];

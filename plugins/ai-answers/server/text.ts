@@ -199,6 +199,25 @@ export function selectSections(
   keywords: string[],
   budgetChars: number
 ): string[] {
+  return selectSectionIndices(sections, keywords, budgetChars).map(
+    (index) => sections[index]
+  );
+}
+
+/**
+ * Same selection as `selectSections`, returning the chosen positions so
+ * per-section data (such as anchors) can follow the sections.
+ *
+ * @param sections the sections of one document, in document order.
+ * @param keywords the keywords from `toKeywords`.
+ * @param budgetChars the maximum total characters to return.
+ * @returns the indices of the chosen sections, in document order.
+ */
+export function selectSectionIndices(
+  sections: string[],
+  keywords: string[],
+  budgetChars: number
+): number[] {
   const scored = sections.map((text, index) => {
     const lower = text.toLowerCase();
     const heading = (headingOf(text) ?? "").toLowerCase();
@@ -230,7 +249,7 @@ export function selectSections(
     used += item.text.length;
   }
 
-  return chosen.sort((a, b) => a.index - b.index).map((item) => item.text);
+  return chosen.sort((a, b) => a.index - b.index).map((item) => item.index);
 }
 
 /**
