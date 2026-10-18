@@ -1,5 +1,10 @@
 import type { Block } from "./blocks";
-import { type FinishReason, type ProviderCitation } from "./contract";
+import {
+  MAX_COMPARE_SOURCES,
+  type AnswerMode,
+  type FinishReason,
+  type ProviderCitation,
+} from "./contract";
 import { redactSecrets } from "./redact";
 import type { AnswerSource } from "./retrieve";
 import { headingOf } from "./text";
@@ -371,6 +376,27 @@ export function prepareSources(sources: AnswerSource[]): PreparedSources {
 }
 
 /**
+ * The sources a comparison puts side by side: the first `MAX_COMPARE_SOURCES`
+ * whose redacted titles differ, so every table column maps to one document.
+ *
+ * @param sources the retrieved sources, best first.
+ * @returns at most three sources with distinct titles, in order.
+ */
+export function compareSources(sources: AnswerSource[]): AnswerSource[] {
+  const seen = new Set<string>();
+  return sources
+    .filter((source) => {
+      const title = compareTitle(source);
+      if (seen.has(title)) {
+        return false;
+      }
+      seen.add(title);
+      return true;
+    })
+    .slice(0, MAX_COMPARE_SOURCES);
+}
+
+/**
  * Decides whether one Markdown block may be released. Every block must be at
  * most 4000 characters and is dropped for the abstention sentinel. Non-code
  * blocks are redacted, lose model-written link syntax (only the visible text is
@@ -402,76 +428,30 @@ export function verifyBlock(
   sources: AnswerSource[] | PreparedSources
 ): BlockVerdict {
   const ctx = Array.isArray(sources) ? prepareSources(sources) : sources;
-  if (
-    block.text.length > MAX_BLOCK_LENGTH ||
-    block.cells.join("").length > MAX_BLOCK_LENGTH ||
-    block.text.normalize("NFKC").length > MAX_BLOCK_LENGTH
-  ) {
-    return {
-      ok: false,
-      reason: "long",
-      block: { ...block, text: "", cells: [], inlineCode: [] },
-    };
+  if (isTooLong(block)) {
+    return dropEmptied(block, "long");
   }
   if (block.kind === "code") {
     return verifyCode(block, ctx);
   }
-
-  const redact = (value: string) => redactSecrets(value).text;
-  const redacted: Block = {
-    ...block,
-    text: redact(block.text),
-    cells: block.cells.map(redact),
-  };
+  const sanitised = sanitise(block, ctx);
+  if ("ok" in sanitised) {
+    return sanitised;
+  }
+  const { clean, cells: cleaned, text } = sanitised;
   const drop = (reason: BlockDropReason): DroppedBlock => ({
     ok: false,
     reason,
-    block: redacted,
+    block: clean,
   });
-  if (SENTINEL_PATTERN.test(redacted.text)) {
-    return drop("sentinel");
-  }
-
-  const table = block.kind === "tableHeader" || block.kind === "tableRow";
-  const cleaned: string[] = [];
-  for (const part of table ? redacted.cells : [redacted.text]) {
-    const result = stripMarkup(part);
-    if (typeof result !== "string") {
-      return drop(result.reason);
-    }
-    cleaned.push(result);
-  }
-  const text = table ? cleaned.join(" | ") : cleaned[0];
-  const clean: Block = {
-    ...redacted,
-    text,
-    cells: table ? cleaned : [],
-    inlineCode: [...text.matchAll(CODE_SPAN_PATTERN)].map((m) => m[1]),
-  };
-
-  if (!/[\p{L}\p{N}]/u.test(text)) {
-    return drop("empty");
-  }
   const structural = block.kind === "heading" || block.kind === "tableHeader";
-  const found = addressesIn(text);
-  const isNovel = (token: string) =>
-    !containsToken(ctx.known.text, normalise(token.replace(/[.,;:!?]+$/, "")));
-  if (found.urls.some((url) => structural || isNovel(url))) {
-    return drop("url");
-  }
-  if (found.emails.some((email) => structural || isNovel(email))) {
-    return drop("email");
-  }
-  if (found.domains.some(isNovel)) {
-    return drop("url");
-  }
   const accept = (
     backing: AnswerCitation[],
     modelCited: boolean
   ): AcceptedBlock => ({
     ok: true,
     block: clean,
-    citations: [...new Map(backing.map((c) => [citationKey(c), c])).values()],
+    citations: uniqueCitations(backing),
     modelCited,
   });
 
@@ -581,9 +561,11 @@ export class AnswerVerifier {
 
   /**
    * @param sources the sources that were sent, in order.
+   * @param mode "compare" applies the comparison rules (see `verifyCompare`).
    */
-  public constructor(sources: AnswerSource[]) {
+  public constructor(sources: AnswerSource[], mode: AnswerMode = "answer") {
     this.prepared = prepareSources(sources);
+    this.mode = mode;
   }
 
   /**
@@ -597,6 +579,9 @@ export class AnswerVerifier {
     block: Block,
     citations: ProviderCitation[] = block.citations
   ): BlockVerdict {
+    if (this.mode === "compare") {
+      return this.verifyCompare(block, citations);
+    }
     const verdict = verifyBlock(block, citations, this.prepared);
     if (block.kind === "tableRow" && !this.tables.has(block.tableId)) {
       return { ok: false, reason: "table", block: verdict.block };
@@ -623,6 +608,50 @@ export class AnswerVerifier {
 
   private prepared: PreparedSources;
   private tables = new Set<number>();
+  private mode: AnswerMode;
+  /** Set by the first table header of a comparison, released or not. */
+  private comparison?: { tableId: number; columns?: number[] };
+
+  /**
+   * Comparison rules: one table whose header is a structural label and the
+   * exact titles of two or three distinct sources; each body row an aspect
+   * label from the sources' vocabulary and, per source column, an em dash or
+   * a near-verbatim value backed by a cited passage of that column's source
+   * only (else the whole row is dropped). Outside the table only statements
+   * of what the documents do not cover are released. Rows of a dropped or
+   * second header are dropped.
+   */
+  private verifyCompare(
+    block: Block,
+    citations: ProviderCitation[]
+  ): BlockVerdict {
+    let verdict: BlockVerdict;
+    if (block.kind === "tableHeader") {
+      if (this.comparison) {
+        return dropEmptied(block, "table");
+      }
+      const header = verifyCompareHeader(block, this.prepared);
+      this.comparison = { tableId: block.tableId, columns: header.columns };
+      verdict = header.verdict;
+    } else if (block.kind === "tableRow") {
+      const columns =
+        this.comparison?.tableId === block.tableId
+          ? this.comparison.columns
+          : undefined;
+      if (!columns) {
+        return dropEmptied(block, "table");
+      }
+      verdict = verifyCompareRow(block, citations, this.prepared, columns);
+    } else if (block.kind === "paragraph") {
+      verdict = verifyCompareGap(block, this.prepared);
+    } else {
+      return dropEmptied(block, "structure");
+    }
+    if (verdict.ok) {
+      this.released.push(verdict);
+    }
+    return verdict;
+  }
 }
 
 /** Matches the abstention sentinel, also when Markdown-escaped. */
@@ -1112,4 +1141,334 @@ function verifyCode(block: Block, ctx: PreparedSources): BlockVerdict {
     }
   }
   return { ok: false, reason: "code", block: clean };
+}
+
+/** Whether a block is over the length cap, checked before any pattern runs. */
+function isTooLong(block: Block): boolean {
+  return (
+    block.text.length > MAX_BLOCK_LENGTH ||
+    block.cells.join("").length > MAX_BLOCK_LENGTH ||
+    block.text.normalize("NFKC").length > MAX_BLOCK_LENGTH
+  );
+}
+
+/** A dropped block with its content removed, for blocks never inspected. */
+function dropEmptied(block: Block, reason: BlockDropReason): DroppedBlock {
+  return {
+    ok: false,
+    reason,
+    block: { ...block, text: "", cells: [], inlineCode: [] },
+  };
+}
+
+function uniqueCitations(backing: AnswerCitation[]): AnswerCitation[] {
+  return [...new Map(backing.map((c) => [citationKey(c), c])).values()];
+}
+
+/** A non-code block after redaction and markup stripping. */
+interface SanitisedBlock {
+  clean: Block;
+  /** The cleaned cells of a table row; empty otherwise. */
+  cells: string[];
+  /** The cleaned visible text. */
+  text: string;
+}
+
+/**
+ * Redacts a non-code block, reduces model-written links to their text and
+ * drops it for the sentinel, images, leftover link syntax, HTML, no letters or
+ * digits, and URLs, emails or bare domains not in the sent sections (any URL
+ * or email in a heading or table header).
+ */
+function sanitise(
+  block: Block,
+  ctx: PreparedSources
+): SanitisedBlock | DroppedBlock {
+  const redact = (value: string) => redactSecrets(value).text;
+  const redacted: Block = {
+    ...block,
+    text: redact(block.text),
+    cells: block.cells.map(redact),
+  };
+  const drop = (reason: BlockDropReason): DroppedBlock => ({
+    ok: false,
+    reason,
+    block: redacted,
+  });
+  if (SENTINEL_PATTERN.test(redacted.text)) {
+    return drop("sentinel");
+  }
+
+  const table = block.kind === "tableHeader" || block.kind === "tableRow";
+  const cleaned: string[] = [];
+  for (const part of table ? redacted.cells : [redacted.text]) {
+    const result = stripMarkup(part);
+    if (typeof result !== "string") {
+      return drop(result.reason);
+    }
+    cleaned.push(result);
+  }
+  const text = table ? cleaned.join(" | ") : cleaned[0];
+  const clean: Block = {
+    ...redacted,
+    text,
+    cells: table ? cleaned : [],
+    inlineCode: [...text.matchAll(CODE_SPAN_PATTERN)].map((m) => m[1]),
+  };
+
+  if (!/[\p{L}\p{N}]/u.test(text)) {
+    return drop("empty");
+  }
+  const structural = block.kind === "heading" || block.kind === "tableHeader";
+  const found = addressesIn(text);
+  const isNovel = (token: string) =>
+    !containsToken(ctx.known.text, normalise(token.replace(/[.,;:!?]+$/, "")));
+  if (found.urls.some((url) => structural || isNovel(url))) {
+    return drop("url");
+  }
+  if (found.emails.some((email) => structural || isNovel(email))) {
+    return drop("email");
+  }
+  if (found.domains.some(isNovel)) {
+    return drop("url");
+  }
+  return { clean, cells: cleaned, text };
+}
+
+/** Labels a comparison table's first header cell may use. */
+const COMPARE_LABELS = new Set(
+  "aspect aspects item topic feature field detail property setting rule criterion attribute".split(
+    " "
+  )
+);
+
+/** The em dash a comparison cell holds when its source has no value. */
+const EMPTY_CELL = "—";
+
+/** Longest value in a comparison cell. */
+const MAX_COMPARE_CELL_LENGTH = 200;
+
+/**
+ * Words that compare, rank or derive; a comparison cell or aspect with one
+ * must be copied whole from a source.
+ */
+const COMPARATIVE_WORDS = new Set(
+  (
+    "more less least most higher highest lower lowest greater greatest fewer fewest better best worse worst " +
+    "cheaper cheapest costlier pricier dearer larger largest smaller smallest bigger biggest longer shorter " +
+    "faster slower stricter looser stronger weaker newer older earlier later than difference differences " +
+    "differ differs different vs versus halve halves halved double doubles doubled triple triples tripled " +
+    "twice increase increases increased decrease decreases decreased reduce reduces reduced exceed exceeds " +
+    "compared comparison unlike whereas same unchanged both"
+  ).split(" ")
+);
+
+/** Arrows, inequality signs, deltas and strikethrough that state a change. */
+const COMPARATIVE_SYMBOLS = /[→←⇒⇐↑↓<>±Δ]|->|~~/u;
+
+/** A source's title as the client shows it and a comparison header must copy. */
+function compareTitle(source: AnswerSource): string {
+  return normalise(redactSecrets(source.document.title || "Untitled").text);
+}
+
+function hasComparative(text: string): boolean {
+  return (
+    COMPARATIVE_SYMBOLS.test(text) ||
+    splitWords(text).some((word) => COMPARATIVE_WORDS.has(word))
+  );
+}
+
+function hasPolarity(text: string): boolean {
+  return splitWords(text).some((word) => POLARITY_WORDS.has(stem(word)));
+}
+
+/** Whether the text is a whole, bounded unit of one of the sections. */
+function isWholeCopyIn(text: string, sections: FlatSection[]): boolean {
+  const needle = verbatimNeedle(text);
+  return !!needle && sections.some((section) => containsWhole(section, needle));
+}
+
+/**
+ * The header of a comparison: a structural label, then the exact titles of
+ * two or three distinct sources, which become the columns.
+ */
+function verifyCompareHeader(
+  block: Block,
+  ctx: PreparedSources
+): { verdict: BlockVerdict; columns?: number[] } {
+  if (isTooLong(block)) {
+    return { verdict: dropEmptied(block, "long") };
+  }
+  const sanitised = sanitise(block, ctx);
+  if ("ok" in sanitised) {
+    return { verdict: sanitised };
+  }
+  const drop = {
+    verdict: {
+      ok: false as const,
+      reason: "structure" as const,
+      block: sanitised.clean,
+    },
+  };
+  const [label, ...titles] = sanitised.cells.map(normalise);
+  if (
+    titles.length < 2 ||
+    titles.length > MAX_COMPARE_SOURCES ||
+    !COMPARE_LABELS.has(label)
+  ) {
+    return drop;
+  }
+  const known = ctx.sources.map(compareTitle);
+  const columns: number[] = [];
+  for (const title of titles) {
+    const matches = known.flatMap((t, i) => (t === title ? [i] : []));
+    // An ambiguous or repeated title cannot tell which document a column is.
+    if (matches.length !== 1 || columns.includes(matches[0])) {
+      return drop;
+    }
+    columns.push(matches[0]);
+  }
+  return {
+    verdict: {
+      ok: true,
+      block: sanitised.clean,
+      citations: [],
+      modelCited: false,
+    },
+    columns,
+  };
+}
+
+/** A resolved citation of a comparison row, kept with its source. */
+interface CompareCitation {
+  sourceIndex: number;
+  entry: AnswerCitation;
+  passage: Passage;
+  sections: FlatSection[];
+}
+
+/**
+ * A comparison body row: an aspect label, then per column an em dash or a
+ * value supported by a cited passage of that column's source. One cell that
+ * fails drops the row.
+ */
+function verifyCompareRow(
+  block: Block,
+  citations: ProviderCitation[],
+  ctx: PreparedSources,
+  columns: number[]
+): BlockVerdict {
+  if (isTooLong(block)) {
+    return dropEmptied(block, "long");
+  }
+  const sanitised = sanitise(block, ctx);
+  if ("ok" in sanitised) {
+    return sanitised;
+  }
+  const drop = (reason: BlockDropReason): DroppedBlock => ({
+    ok: false,
+    reason,
+    block: sanitised.clean,
+  });
+  const [aspect, ...values] = sanitised.cells.map((cell) => cell.trim());
+  if (values.length !== columns.length || hasLongRun(sanitised.text)) {
+    return drop("structure");
+  }
+  if (!isAspectLabel(aspect, ctx)) {
+    return drop("structure");
+  }
+  const valid: CompareCitation[] = citations.flatMap((c) => {
+    const resolved = resolveCitation(c, ctx.sources);
+    return resolved
+      ? [
+          {
+            sourceIndex: c.sourceIndex,
+            entry: resolved.entry,
+            passage: toPassage(resolved.passage),
+            sections: ctx.flat[c.sourceIndex].slice(
+              c.sectionIndex,
+              c.endSectionIndex
+            ),
+          },
+        ]
+      : [];
+  });
+  const backing: AnswerCitation[] = [];
+  for (const [i, value] of values.entries()) {
+    if (value === EMPTY_CELL) {
+      continue;
+    }
+    // Only a passage of this column's own document may back its cell.
+    const support = valid.find(
+      (c) => c.sourceIndex === columns[i] && isCellSupported(value, c)
+    );
+    if (!support) {
+      return drop(valid.length > 0 ? "unsupported" : "uncited");
+    }
+    backing.push(support.entry);
+  }
+  if (backing.length === 0) {
+    return drop("unsupported");
+  }
+  return {
+    ok: true,
+    block: sanitised.clean,
+    citations: uniqueCitations(backing),
+    modelCited: true,
+  };
+}
+
+/**
+ * An aspect label: a label whose every word comes from the sent sections or
+ * the structural vocabulary, not an instruction, and without comparative words
+ * unless copied whole from a section.
+ */
+function isAspectLabel(text: string, ctx: PreparedSources): boolean {
+  return (
+    isLabel(text, ctx, 0) &&
+    !IMPERATIVE_WORDS.has(splitWords(text).find(Boolean) ?? "") &&
+    (!hasComparative(text) || ctx.flat.some((s) => isWholeCopyIn(text, s)))
+  );
+}
+
+/**
+ * A near-verbatim value: short, with letters or digits, every word (function
+ * words too) and every number, URL, email, code-like token and acronym in the
+ * cited passage; yes/no words, comparative words and symbols such as ✓ only
+ * in a whole copy of a cited section.
+ */
+function isCellSupported(value: string, citation: CompareCitation): boolean {
+  const { passage } = citation;
+  if (
+    value.length > MAX_COMPARE_CELL_LENGTH ||
+    !/[\p{L}\p{N}]/u.test(value) ||
+    supportRatio(value, passage, true) !== 1 ||
+    !splitWords(value)
+      .filter(Boolean)
+      .every((word) => passage.words.has(stem(word))) ||
+    !codeLikeTokensKnown(value, passage.text)
+  ) {
+    return false;
+  }
+  return (
+    !(
+      hasComparative(value) ||
+      hasPolarity(value) ||
+      /[\p{So}\p{Sm}]/u.test(value)
+    ) || isWholeCopyIn(value, citation.sections)
+  );
+}
+
+/** Outside the comparison table only "not covered" statements are released. */
+function verifyCompareGap(block: Block, ctx: PreparedSources): BlockVerdict {
+  if (isTooLong(block)) {
+    return dropEmptied(block, "long");
+  }
+  const sanitised = sanitise(block, ctx);
+  if ("ok" in sanitised) {
+    return sanitised;
+  }
+  return sentencesOf(sanitised.text).every((s) => isGapStatement(s, ctx))
+    ? { ok: true, block: sanitised.clean, citations: [], modelCited: false }
+    : { ok: false, reason: "unsupported", block: sanitised.clean };
 }
