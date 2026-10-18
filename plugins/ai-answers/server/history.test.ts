@@ -236,6 +236,73 @@ describe("appendConversationTurn", () => {
     ).toBeNull();
   });
 
+  it("stores a url-safe citation anchor and drops an unsafe one", async () => {
+    const user = await enable(await buildUser());
+    const block = released("BOSS API is the booking service.", [randomUUID()]);
+    const [citation] = block.citations;
+    const id = await appendConversationTurn(user, {
+      question: "Anchors?",
+      released: [
+        {
+          ...block,
+          citations: [
+            { ...citation, heading: "Intro", anchor: "h-intro-2" },
+            { ...citation, anchor: 'h-x"><script>' },
+          ],
+        },
+      ],
+      outcome: "answered",
+      usageId: null,
+    });
+    const [turn] = await AIConversationTurn.findAll({
+      where: { conversationId: id! },
+    });
+    expect(turn.blocks[0].citations).toEqual([
+      {
+        documentId: citation.documentId,
+        quote: "a supporting quote",
+        heading: "Intro",
+        anchor: "h-intro-2",
+      },
+      { documentId: citation.documentId, quote: "a supporting quote" },
+    ]);
+  });
+
+  it("keeps positions consistent when two turns of a new conversation are stored at once", async () => {
+    const user = await enable(await buildUser());
+    const conversationId = randomUUID();
+    // Hold each transaction open after it created the conversation, so the
+    // others start before it commits.
+    const create = AIConversationTurn.create.bind(AIConversationTurn);
+    vi.spyOn(AIConversationTurn, "create").mockImplementation(
+      async (...args) => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        return create(...args);
+      }
+    );
+    const results = await Promise.all(
+      ["One?", "Two?", "Three?"].map((question) =>
+        appendConversationTurn(user, {
+          conversationId,
+          question,
+          released: [],
+          outcome: "no_answer",
+          usageId: null,
+        })
+      )
+    );
+    vi.restoreAllMocks();
+    expect(results).toEqual([conversationId, conversationId, conversationId]);
+    const turns = await AIConversationTurn.findAll({
+      where: { conversationId },
+      order: [["position", "ASC"]],
+    });
+    expect(turns.map((t) => t.position)).toEqual([0, 1, 2]);
+    expect(
+      await AIConversation.count({ where: { id: conversationId } })
+    ).toEqual(1);
+  });
+
   it("returns null and logs no content when storing fails", async () => {
     const user = await enable(await buildUser());
     const warn = vi.spyOn(Logger, "warn");

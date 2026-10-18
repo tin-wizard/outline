@@ -46,3 +46,17 @@ export function assertHistoryAllowed(user: User): void {
     throw AuthorizationError("AI conversation history is not enabled");
   }
 }
+
+/**
+ * Throws unless the user may delete their stored AI conversations. Unlike the
+ * other history routes this does not depend on the AI answers or history
+ * preferences, so stored chats can always be deleted by their owner.
+ *
+ * @param user the authenticated user.
+ * @throws AuthorizationError for guests and viewers.
+ */
+export function assertHistoryDeletable(user: User): void {
+  if (user.isGuest || user.isViewer) {
+    throw AuthorizationError("AI answers are not available for your role");
+  }
+}

@@ -1,5 +1,4 @@
 import isUUID from "validator/lib/isUUID";
-import { safeSlugify } from "@shared/editor/lib/headingToSlug";
 import Logger from "@server/logging/Logger";
 import { AIConversation, AIConversationTurn, Document } from "@server/models";
 import type { User } from "@server/models";
@@ -32,6 +31,9 @@ export const MAX_STORED_TURNS = 100;
 
 /** Longest conversation title, in characters. */
 export const MAX_TITLE_CHARS = 80;
+
+/** An editor heading id (`safeSlugify` output plus an occurrence suffix). */
+const SAFE_ANCHOR = /^h-[A-Za-z0-9%-]{0,200}$/;
 
 /** What `ai.ask` hands over to store a turn: never free-form model text. */
 export interface StoreTurnInput {
@@ -133,35 +135,40 @@ export async function appendConversationTurn(
       .join("");
 
     return await sequelize.transaction(async (transaction) => {
-      const existing = requestedId
-        ? await AIConversation.findOne({
-            where: { id: requestedId, teamId: user.teamId, userId: user.id },
-            lock: transaction.LOCK.UPDATE,
-            transaction,
-          })
-        : null;
-      // A foreign id fails on the primary key and stores nothing.
-      const conversation =
-        existing ??
-        (await AIConversation.create(
-          {
-            ...(requestedId ? { id: requestedId } : {}),
-            teamId: user.teamId,
-            userId: user.id,
-            title: conversationTitle(input.question),
-          },
-          { transaction }
-        ));
-      const position = existing
-        ? await AIConversationTurn.count({
-            where: {
-              conversationId: conversation.id,
-              teamId: user.teamId,
-              userId: user.id,
-            },
-            transaction,
-          })
-        : 0;
+      const values = {
+        teamId: user.teamId,
+        userId: user.id,
+        title: conversationTitle(input.question),
+      };
+      let conversation: AIConversation | null;
+      if (requestedId) {
+        // ON CONFLICT DO NOTHING: a concurrent first turn waits for the other
+        // insert to commit instead of failing on the primary key.
+        await AIConversation.bulkCreate([{ ...values, id: requestedId }], {
+          ignoreDuplicates: true,
+          transaction,
+        });
+        // The row lock serialises turns, so positions stay consecutive. A
+        // foreign id is not found here and stores nothing.
+        conversation = await AIConversation.findOne({
+          where: { id: requestedId, teamId: user.teamId, userId: user.id },
+          lock: transaction.LOCK.UPDATE,
+          transaction,
+        });
+      } else {
+        conversation = await AIConversation.create(values, { transaction });
+      }
+      if (!conversation) {
+        return null;
+      }
+      const position = await AIConversationTurn.count({
+        where: {
+          conversationId: conversation.id,
+          teamId: user.teamId,
+          userId: user.id,
+        },
+        transaction,
+      });
       if (position >= MAX_STORED_TURNS) {
         Logger.warn("AI answers conversation reached its turn limit", {
           turns: position,
@@ -182,10 +189,8 @@ export async function appendConversationTurn(
         },
         { transaction }
       );
-      if (existing) {
-        existing.changed("updatedAt", true);
-        await existing.save({ transaction });
-      }
+      conversation.changed("updatedAt", true);
+      await conversation.save({ transaction });
       return conversation.id;
     });
   } catch {
@@ -328,9 +333,10 @@ export async function presentTurns(
               n: source.n,
               documentId: c.documentId,
               title: source.title,
-              url: c.heading
-                ? `${source.url}#${safeSlugify(c.heading)}`
-                : source.url,
+              url:
+                c.anchor && SAFE_ANCHOR.test(c.anchor)
+                  ? `${source.url}#${c.anchor}`
+                  : source.url,
               ...(c.quote ? { quote: c.quote } : {}),
             };
           }),
@@ -366,10 +372,12 @@ function toStoredBlocks(released: AcceptedBlock[]): {
     citations: r.citations.map((c): StoredCitation => {
       const quote = redactSecrets(c.quote).text;
       const heading = c.heading ? redactSecrets(c.heading).text : "";
+      const anchor = c.anchor && SAFE_ANCHOR.test(c.anchor) ? c.anchor : "";
       return {
         documentId: c.documentId,
         ...(quote ? { quote } : {}),
         ...(heading ? { heading } : {}),
+        ...(anchor ? { anchor } : {}),
       };
     }),
   }));

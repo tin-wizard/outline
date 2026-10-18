@@ -17,8 +17,10 @@ export interface StoredCitation {
   quote?: string;
   /** Index of the cited section within the document, when known. */
   sectionIndex?: number;
-  /** Heading of the cited section, used to build the url anchor. */
+  /** Heading of the cited section. */
   heading?: string;
+  /** The editor's heading id of the cited section, used as the url anchor. */
+  anchor?: string;
 }
 
 /** One verified block of a stored answer. */

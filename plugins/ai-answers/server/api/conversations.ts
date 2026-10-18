@@ -13,7 +13,7 @@ import { QueryHelper } from "@server/storage/QueryHelper";
 import { sequelize } from "@server/storage/database";
 import type { APIContext } from "@server/types";
 import { RateLimiterStrategy } from "@server/utils/RateLimiter";
-import { assertHistoryAllowed } from "../access";
+import { assertHistoryAllowed, assertHistoryDeletable } from "../access";
 import { deleteConversation } from "../conversation";
 import {
   conversationTitle,
@@ -153,7 +153,8 @@ router.post(
     const { user } = ctx.state.auth;
     const { id } = ctx.input.body;
 
-    assertHistoryAllowed(user);
+    // Not gated on the preferences: owners can always delete what was stored.
+    assertHistoryDeletable(user);
     const conversation = await loadOwn(user, id);
     authorize(user, "delete", conversation);
 

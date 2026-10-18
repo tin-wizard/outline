@@ -42,6 +42,7 @@ function released(text: string, documents: Document[]): AcceptedBlock {
       url: "/doc/ignored",
       quote: "supporting quote",
       heading: "Section One",
+      anchor: "h-section-one-1",
     })),
     modelCited: documents.length > 0,
   };
@@ -104,11 +105,49 @@ describe("aiConversations", () => {
       expect((await res.json()).message).toEqual(
         "AI conversation history is not enabled"
       );
-      for (const path of ["info", "update", "delete"]) {
+      for (const path of ["info", "update"]) {
         expect((await post(path, user, { id, pinned: true })).status).toEqual(
           403
         );
       }
+    });
+
+    it("lets the owner delete while history or AI answers are off", async () => {
+      const user = await enable(await buildUser());
+      const first = await store(user, "Kept?");
+      const second = await store(user, "Also kept?");
+      const key = `aiconv:${user.teamId}:${user.id}:${first}`;
+      await Redis.defaultClient.set(key, "{}", "EX", 60);
+      await enable(user, false);
+
+      expect((await post("delete", user, { id: first })).status).toEqual(200);
+      expect(await AIConversation.findByPk(first)).toBeNull();
+      expect(await Redis.defaultClient.exists(key)).toEqual(0);
+
+      const team = await Team.findByPk(user.teamId, { rejectOnEmpty: true });
+      team.setPreference(TeamPreference.AIAnswers, false);
+      await team.save();
+      expect((await post("delete", user, { id: second })).status).toEqual(200);
+      expect(await AIConversation.findByPk(second)).toBeNull();
+
+      const other = await buildUser({ teamId: user.teamId });
+      const foreign = await store(await enable(other), "Not yours");
+      await enable(user, false);
+      expect((await post("delete", user, { id: foreign })).status).toEqual(404);
+      expect((await post("delete", user, { id: randomUUID() })).status).toEqual(
+        404
+      );
+      expect(await AIConversation.findByPk(foreign)).not.toBeNull();
+    });
+
+    it.each([
+      ["guest", buildGuestUser],
+      ["viewer", buildViewer],
+    ])("denies delete to a %s", async (_role, build) => {
+      const user = await enable(await build());
+      expect((await post("delete", user, { id: randomUUID() })).status).toEqual(
+        403
+      );
     });
 
     it("returns 403 when AI answers are off", async () => {
@@ -228,7 +267,7 @@ describe("aiConversations", () => {
               n: 1,
               documentId: doc.id,
               title: "Renamed Guide",
-              url: `/doc/renamed-guide-${doc.urlId}#h-section-one`,
+              url: `/doc/renamed-guide-${doc.urlId}#h-section-one-1`,
               quote: "supporting quote",
             },
           ],
