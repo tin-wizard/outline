@@ -1,4 +1,4 @@
-import { sharedModelPath, desktopify } from "./routeHelpers";
+import { aiPath, sharedModelPath, desktopify } from "./routeHelpers";
 
 describe("#sharedDocumentPath", () => {
   it("should return share path for a document", () => {
@@ -23,6 +23,17 @@ describe("#desktopify", () => {
   it("should replace http protocol with outline://", () => {
     expect(desktopify("/doc/test-DjDlkBi77t", "http://localhost:3000")).toBe(
       "outline://localhost:3000/doc/test-DjDlkBi77t"
+    );
+  });
+});
+
+describe("#aiPath", () => {
+  it("links to a new chat, a prefilled one and a stored conversation", () => {
+    expect(aiPath()).toBe("/ai");
+    expect(aiPath({ query: "a b" })).toBe("/ai?q=a%20b");
+    expect(aiPath({ conversationId: "abc" })).toBe("/ai/abc");
+    expect(aiPath({ conversationId: "abc", collectionId: "c" })).toBe(
+      "/ai/abc?collectionId=c"
     );
   });
 });
