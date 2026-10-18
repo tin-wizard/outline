@@ -79,6 +79,16 @@ class AIAnswersPluginEnvironment extends Environment {
     ASK_DEFAULT_DEADLINE_MS;
 
   /**
+   * Days a stored AI conversation is kept after its last activity. A whole
+   * number clamped to 1-365 at use; unset, empty or invalid means 90. Not
+   * validated here, like the deadline above.
+   */
+  @IsOptional()
+  public AI_HISTORY_RETENTION_DAYS = this.toOptionalString(
+    environment.AI_HISTORY_RETENTION_DAYS
+  );
+
+  /**
    * How long in milliseconds a streamed answer may go without any event from
    * the model before it is aborted. Clamped to 1000-30000 at use; defaults to
    * 15000. Not validated, like the deadline above.

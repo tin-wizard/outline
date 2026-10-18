@@ -26,3 +26,49 @@ export const AIFeedbackSchema = BaseSchema.extend({
 });
 
 export type AIFeedbackReq = z.infer<typeof AIFeedbackSchema>;
+
+export const AIConversationsListSchema = BaseSchema.extend({
+  body: z.object({
+    /** Matches the title and the questions, case-insensitively. */
+    query: z.string().trim().max(100).optional(),
+    /** Only pinned (true) or only unpinned (false) conversations. */
+    pinned: z.boolean().optional(),
+  }),
+});
+
+export type AIConversationsListReq = z.infer<typeof AIConversationsListSchema>;
+
+export const AIConversationsInfoSchema = BaseSchema.extend({
+  body: z.object({
+    id: z.uuid(),
+  }),
+});
+
+export type AIConversationsInfoReq = z.infer<typeof AIConversationsInfoSchema>;
+
+export const AIConversationsUpdateSchema = BaseSchema.extend({
+  body: z
+    .object({
+      id: z.uuid(),
+      /** Redacted on write. */
+      title: z.string().trim().min(1).max(80).optional(),
+      pinned: z.boolean().optional(),
+    })
+    .refine((body) => body.title !== undefined || body.pinned !== undefined, {
+      message: "title or pinned is required",
+    }),
+});
+
+export type AIConversationsUpdateReq = z.infer<
+  typeof AIConversationsUpdateSchema
+>;
+
+export const AIConversationsDeleteSchema = BaseSchema.extend({
+  body: z.object({
+    id: z.uuid(),
+  }),
+});
+
+export type AIConversationsDeleteReq = z.infer<
+  typeof AIConversationsDeleteSchema
+>;

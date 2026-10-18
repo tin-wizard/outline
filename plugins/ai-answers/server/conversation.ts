@@ -254,10 +254,30 @@ export async function historyForModel(
 
 const REDIS_TIMEOUT_MS = 2000;
 const MAX_QUERY_TITLES = 3;
-const MAX_QUESTION_CHARS = 500;
-// Below the budget with a full question, so the newest answer always fits.
-const MAX_ANSWER_CHARS = 17_000;
-const MAX_CITED_DOCUMENTS = 20;
+/** Longest stored question, in characters. */
+export const MAX_QUESTION_CHARS = 500;
+/** Longest stored answer, in characters; below the budget with a full question. */
+export const MAX_ANSWER_CHARS = 17_000;
+/** Most documents a stored answer may cite and still be re-checked. */
+export const MAX_CITED_DOCUMENTS = 20;
+
+/**
+ * Joins answer blocks into one Markdown answer; table rows join their header
+ * with a single newline.
+ *
+ * @param blocks the blocks, in order.
+ * @returns the Markdown answer.
+ */
+export function joinBlockMarkdown(
+  blocks: { kind: string; markdown: string }[]
+): string {
+  return blocks
+    .map(
+      (b, i) =>
+        (i === 0 ? "" : b.kind === "tableRow" ? "\n" : "\n\n") + b.markdown
+    )
+    .join("");
+}
 
 /**
  * Builds the stored turn from verified blocks. An answer that is too long or
@@ -267,14 +287,12 @@ function toTurn(input: TurnInput): ConversationTurn {
   const question = [...redactSecrets(input.question).text]
     .slice(0, MAX_QUESTION_CHARS)
     .join("");
-  const answer = input.released
-    .map(
-      (r, i) =>
-        // Table rows join their header with a single newline.
-        (i === 0 ? "" : r.block.kind === "tableRow" ? "\n" : "\n\n") +
-        blockToMarkdown(r.block)
-    )
-    .join("");
+  const answer = joinBlockMarkdown(
+    input.released.map((r) => ({
+      kind: r.block.kind,
+      markdown: blockToMarkdown(r.block),
+    }))
+  );
   const citedDocumentIds = [
     ...new Set(
       input.released.flatMap((r) => r.citations.map((c) => c.documentId))
@@ -405,8 +423,12 @@ function trimToBudget(turns: ConversationTurn[]): ConversationTurn[] {
  * returns: not deleted, allowed by the document read policy, not a template,
  * published (or the user's own draft) and not in a collection excluded from AI.
  * Fails closed: any error means nothing is readable.
+ *
+ * @param user the user reading.
+ * @param ids the document ids to check; invalid ids are ignored.
+ * @returns the readable documents by id.
  */
-async function readableDocuments(
+export async function readableDocuments(
   user: User,
   ids: string[]
 ): Promise<Map<string, Document>> {
