@@ -13,6 +13,8 @@ interface Props {
   lines?: number;
   /** Whether long quotes can be expanded; previews stay clamped. */
   expandable?: boolean;
+  /** Marks the quote as the cited passage. */
+  highlight?: boolean;
 }
 
 /**
@@ -21,9 +23,15 @@ interface Props {
  * @param props.quote the passage text.
  * @param props.lines clamp height in lines.
  * @param props.expandable whether a show more toggle is offered.
+ * @param props.highlight whether the passage is marked.
  * @returns the excerpt.
  */
-export function CitationQuote({ quote, lines = 3, expandable }: Props) {
+export function CitationQuote({
+  quote,
+  lines = 3,
+  expandable,
+  highlight,
+}: Props) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = React.useState(false);
   const handleToggle = () => setExpanded((value) => !value);
@@ -31,7 +39,9 @@ export function CitationQuote({ quote, lines = 3, expandable }: Props) {
 
   return (
     <>
-      <Quote $lines={expanded ? 0 : lines}>{quote}</Quote>
+      <Quote $lines={expanded ? 0 : lines}>
+        {highlight ? <Mark>{quote}</Mark> : quote}
+      </Quote>
       {expandable && long && (
         <Toggle type="button" aria-expanded={expanded} onClick={handleToggle}>
           {expanded ? t("Show less") : t("Show more")}
@@ -58,6 +68,13 @@ const Quote = styled.blockquote<{ $lines: number }>`
   -webkit-line-clamp: ${props.$lines};
   overflow: hidden;`
       : ""}
+`;
+
+const Mark = styled.mark`
+  background: ${s("textHighlight")};
+  color: ${s("textHighlightForeground")};
+  border-radius: 2px;
+  padding: 0 1px;
 `;
 
 const Toggle = styled.button`

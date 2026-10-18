@@ -1,11 +1,10 @@
 import * as React from "react";
-import { useTranslation } from "react-i18next";
 import styled from "styled-components";
 import { s } from "@shared/styles";
 import type { BlockInput, Group, Inline, ParsedItem } from "./markdown";
 import { groupBlocks } from "./markdown";
+import { CitationMarker } from "./CitationMarker";
 import type { CitationPreviewData } from "./CitationPreview";
-import { CitationPreview } from "./CitationPreview";
 
 interface Props {
   /** The verified blocks received so far. */
@@ -160,95 +159,6 @@ function Markers({
     </>
   );
 }
-
-function CitationMarker({
-  n,
-  onClick,
-  preview,
-}: {
-  n: number;
-  onClick?: (n: number, marker?: HTMLElement) => void;
-  preview?: CitationPreviewData;
-}) {
-  const { t } = useTranslation();
-  const id = React.useId();
-  const [open, setOpen] = React.useState(false);
-  const handleClick = (event: React.MouseEvent<HTMLButtonElement>) =>
-    onClick?.(n, event.currentTarget);
-  const handleOpen = () => setOpen(true);
-  const handleClose = () => setOpen(false);
-  const handleKeyDown = (event: React.KeyboardEvent) => {
-    if (event.key === "Escape" && open) {
-      event.stopPropagation();
-      setOpen(false);
-    }
-  };
-  const showing = open && !!preview;
-
-  return (
-    <MarkerWrap
-      onMouseEnter={handleOpen}
-      onMouseLeave={handleClose}
-      onFocus={handleOpen}
-      onBlur={handleClose}
-      onKeyDown={handleKeyDown}
-    >
-      <Marker
-        type="button"
-        data-citation
-        aria-label={t("Source {{ number }}", { number: n })}
-        aria-describedby={showing ? id : undefined}
-        onClick={handleClick}
-      >
-        {n}
-      </Marker>
-      {showing && <CitationPreview id={id} preview={preview} />}
-    </MarkerWrap>
-  );
-}
-
-const MarkerWrap = styled.span`
-  position: relative;
-`;
-
-const Marker = styled.button`
-  display: inline-block;
-  min-width: 18px;
-  height: 18px;
-  margin: 0 0 0 3px;
-  padding: 0 4px;
-  border: 0;
-  border-radius: 9px;
-  background: ${s("backgroundSecondary")};
-  color: ${s("textSecondary")};
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 18px;
-  vertical-align: super;
-  cursor: var(--pointer);
-
-  /* Touch: at least a 24px target (WCAG 2.5.8). */
-  @media (pointer: coarse) {
-    min-width: 24px;
-    height: 24px;
-    border-radius: 12px;
-    line-height: 24px;
-  }
-
-  &:hover,
-  &:focus-visible {
-    background: ${s("accent")};
-    color: ${s("accentText")};
-  }
-
-  &::before {
-    content: "[";
-  }
-
-  &::after {
-    content: "]";
-  }
-`;
 
 const TableWrapper = styled.div`
   overflow-x: auto;
