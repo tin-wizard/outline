@@ -1,8 +1,13 @@
 import * as React from "react";
+import { breakpoints } from "@shared/styles";
 
 const STORAGE_KEY = "ai-search-sources-open";
 
 function readOpen(): boolean {
+  // Below tablet width the drawer is a modal sheet: never reopen it unasked.
+  if (window.matchMedia?.(`(max-width: ${breakpoints.tablet - 1}px)`).matches) {
+    return false;
+  }
   try {
     return window.sessionStorage.getItem(STORAGE_KEY) === "1";
   } catch {

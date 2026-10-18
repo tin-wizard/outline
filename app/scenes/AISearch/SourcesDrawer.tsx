@@ -3,9 +3,10 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 import styled, { css } from "styled-components";
 import { breakpoints, depths, s } from "@shared/styles";
+import useMobile from "~/hooks/useMobile";
 import { SourceEntry } from "./AnswerTurn";
 import type { Turn } from "./model";
-import { citedSources } from "./model";
+import { citedSources, isActive } from "./model";
 
 interface Props {
   /** The answer whose cited sources are listed. */
@@ -20,7 +21,8 @@ interface Props {
 /**
  * The Sources drawer: the sources cited by one answer with their excerpts and
  * section links. A right-hand pane on wide screens and a bottom sheet below
- * tablet width. Escape or the close button closes it.
+ * tablet width, where it is modal (backdrop, focus kept inside). Escape
+ * anywhere on the page, the close button or the backdrop closes it.
  *
  * @param props see Props.
  * @returns the drawer.
@@ -28,7 +30,29 @@ interface Props {
 export function SourcesDrawer({ turn, selected, autoFocus, onClose }: Props) {
   const { t } = useTranslation();
   const closeRef = React.useRef<HTMLButtonElement>(null);
+  const drawerRef = React.useRef<HTMLElement>(null);
+  const isMobile = useMobile();
   const cited = React.useMemo(() => citedSources(turn), [turn]);
+
+  // Escape closes the drawer wherever focus is, unless something else on top
+  // (a menu, dialog or popover) or the composer's Stop already handled it.
+  React.useEffect(() => {
+    const handleDocumentKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) {
+        return;
+      }
+      const target = event.target instanceof Element ? event.target : null;
+      if (
+        target?.closest('[role="dialog"], [role="menu"], [role="listbox"]') &&
+        !drawerRef.current?.contains(target)
+      ) {
+        return;
+      }
+      onClose();
+    };
+    document.addEventListener("keydown", handleDocumentKeyDown);
+    return () => document.removeEventListener("keydown", handleDocumentKeyDown);
+  }, [onClose]);
 
   React.useEffect(() => {
     const entry =
@@ -47,53 +71,77 @@ export function SourcesDrawer({ turn, selected, autoFocus, onClose }: Props) {
     if (event.key === "Escape") {
       event.stopPropagation();
       onClose();
+    } else if (event.key === "Tab" && isMobile && drawerRef.current) {
+      // The bottom sheet is modal: keep focus inside it.
+      const focusable = drawerRef.current.querySelectorAll<HTMLElement>(
+        "a[href], button:not([disabled]), [tabindex]:not([tabindex='-1'])"
+      );
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
     }
   };
 
   return (
-    <Drawer
-      aria-labelledby="ai-sources-title"
-      data-print-hidden
-      onKeyDown={handleKeyDown}
-    >
-      <Top>
-        <Title id="ai-sources-title">
-          {t("Sources ({{ count }})", { count: cited.length })}
-        </Title>
-        <CloseButton
-          ref={closeRef}
-          type="button"
-          aria-label={t("Close sources")}
-          onClick={onClose}
-        >
-          <CloseIcon />
-        </CloseButton>
-      </Top>
-      <Question>{turn.question}</Question>
-      {cited.length === 0 ? (
-        <Empty>{t("This answer doesn't cite any sources.")}</Empty>
-      ) : (
-        <List>
-          {cited.map((source) => (
-            <Item
-              key={source.n}
-              id={`drawer-source-${source.n}`}
-              tabIndex={-1}
-              data-selected={selected === source.n || undefined}
-            >
-              <SourceEntry {...source} />
-            </Item>
-          ))}
-        </List>
-      )}
-    </Drawer>
+    <>
+      {isMobile && <Backdrop aria-hidden onClick={onClose} data-print-hidden />}
+      <Drawer
+        ref={drawerRef}
+        role={isMobile ? "dialog" : undefined}
+        aria-modal={isMobile || undefined}
+        aria-labelledby="ai-sources-title"
+        data-print-hidden
+        onKeyDown={handleKeyDown}
+      >
+        <Top>
+          <Title id="ai-sources-title">
+            {t("Sources ({{ count }})", { count: cited.length })}
+          </Title>
+          <CloseButton
+            ref={closeRef}
+            type="button"
+            aria-label={t("Close sources")}
+            onClick={onClose}
+          >
+            <CloseIcon />
+          </CloseButton>
+        </Top>
+        <Question>{turn.question}</Question>
+        {cited.length === 0 ? (
+          <Empty>
+            {isActive(turn)
+              ? t("Sources appear here as the answer is written.")
+              : t("This answer doesn't cite any sources.")}
+          </Empty>
+        ) : (
+          <List>
+            {cited.map((source) => (
+              <Item
+                key={source.n}
+                id={`drawer-source-${source.n}`}
+                tabIndex={-1}
+                data-selected={selected === source.n || undefined}
+              >
+                <SourceEntry {...source} />
+              </Item>
+            ))}
+          </List>
+        )}
+      </Drawer>
+    </>
   );
 }
 
 const sheet = css`
   position: fixed;
   inset: auto 0 0 0;
-  z-index: ${depths.modal};
+  z-index: ${depths.modal + 1};
   max-height: 70vh;
   border-inline-start: 0;
   border-top: 1px solid ${s("divider")};
@@ -112,9 +160,17 @@ const sheet = css`
   }
 `;
 
+const Backdrop = styled.div`
+  position: fixed;
+  inset: 0;
+  z-index: ${depths.modal};
+  background: rgba(0, 0, 0, 0.35);
+`;
+
 const Drawer = styled.aside`
   flex: none;
-  width: 340px;
+  /* Leaves the answer column readable next to the drawer on small laptops. */
+  width: clamp(260px, 34%, 340px);
   align-self: flex-start;
   position: sticky;
   top: 72px;

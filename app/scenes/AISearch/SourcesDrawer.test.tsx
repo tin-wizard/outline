@@ -10,6 +10,9 @@ import type { Turn } from "./model";
 import { SourcesDrawer } from "./SourcesDrawer";
 import { useSourcesDrawer } from "./useSourcesDrawer";
 
+const viewport = vi.hoisted(() => ({ mobile: false }));
+vi.mock("~/hooks/useMobile", () => ({ default: () => viewport.mobile }));
+
 vi.mock("~/components/Button", () => ({
   default: ({
     children,
@@ -159,6 +162,68 @@ describe("SourcesDrawer", () => {
     expect(document.activeElement).toBe(document.body);
   });
 
+  it("closes with Escape pressed anywhere, unless already handled", () => {
+    act(() => root.render(<Harness />));
+    act(() => marker().click());
+    const handled = new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    handled.preventDefault();
+    act(() => {
+      document.body.dispatchEvent(handled);
+    });
+    expect(drawerEl()).not.toBeNull();
+    act(() => {
+      document.body.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+      );
+    });
+    expect(drawerEl()).toBeNull();
+  });
+
+  it("is a modal sheet with a backdrop on mobile", () => {
+    viewport.mobile = true;
+    try {
+      act(() => root.render(<Harness />));
+      act(() => marker().click());
+      const aside = drawerEl()!;
+      expect(aside.getAttribute("role")).toBe("dialog");
+      expect(aside.getAttribute("aria-modal")).toBe("true");
+
+      // Tab from the last focusable element wraps to the first.
+      const focusable = aside.querySelectorAll<HTMLElement>("a[href], button");
+      focusable[focusable.length - 1].focus();
+      act(() => {
+        document.activeElement?.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Tab", bubbles: true })
+        );
+      });
+      expect(document.activeElement).toBe(focusable[0]);
+
+      act(() => host.querySelector<HTMLElement>("div[aria-hidden]")!.click());
+      expect(drawerEl()).toBeNull();
+    } finally {
+      viewport.mobile = false;
+    }
+  });
+
+  it("does not reopen by itself on a phone", () => {
+    act(() => root.render(<Harness />));
+    act(() => marker().click());
+    act(() => root.unmount());
+    const original = window.matchMedia;
+    window.matchMedia = (() => ({ matches: true })) as never;
+    try {
+      root = createRoot(host);
+      act(() => root.render(<Harness />));
+      expect(drawerEl()).toBeNull();
+    } finally {
+      window.matchMedia = original;
+    }
+  });
+
   it("works when storage throws", () => {
     const spy = vi
       .spyOn(Storage.prototype, "setItem")
@@ -190,6 +255,17 @@ describe("answer presentation", () => {
   it("shows the verification line from held data", () => {
     expect(html(turn)).toContain(
       "Verified · Based on 2 documents · 2 sources cited"
+    );
+  });
+
+  it("uses singular wording for one document and one source", () => {
+    const one: Turn = {
+      ...turn,
+      sources: [turn.sources![0]],
+      blocks: [{ ...turn.blocks[0], citations: [turn.blocks[0].citations[0]] }],
+    };
+    expect(html(one)).toContain(
+      "Verified · Based on 1 document · 1 source cited"
     );
   });
 

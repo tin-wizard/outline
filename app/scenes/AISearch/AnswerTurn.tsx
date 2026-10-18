@@ -407,10 +407,17 @@ function verifiedText(
   t: (key: string, options?: Record<string, unknown>) => string
 ): string {
   const parts = [t("Verified")];
-  if (documents) {
+  // Explicit singulars: the locale files carry no plural forms for these.
+  if (documents === 1) {
+    parts.push(t("Based on 1 document"));
+  } else if (documents) {
     parts.push(t("Based on {{ count }} documents", { count: documents }));
   }
-  parts.push(t("{{ count }} sources cited", { count: cited }));
+  parts.push(
+    cited === 1
+      ? t("1 source cited")
+      : t("{{ count }} sources cited", { count: cited })
+  );
   return parts.join(" · ");
 }
 
