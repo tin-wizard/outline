@@ -7,6 +7,7 @@ import { Route, Router } from "react-router-dom";
 import { ThemeProvider } from "styled-components";
 import theme from "@shared/styles/theme";
 import useAIAnswersEnabled from "~/hooks/useAIAnswersEnabled";
+import useAICompareEnabled from "~/hooks/useAICompareEnabled";
 import useAIHistoryEnabled from "~/hooks/useAIHistoryEnabled";
 import type { StoredTurn } from "~/models/AIConversation";
 import { NotFoundError } from "~/utils/errors";
@@ -21,12 +22,20 @@ const {
   mockFetchConversation,
   mockFetchPage,
   mockGetConversation,
+  mockSave,
+  ENG,
+  HIDDEN_COLLECTION,
 } = vi.hoisted(() => ({
+  ENG: "3e1f2a4b-5c6d-4e7f-8a9b-0c1d2e3f4a5b",
+  HIDDEN_COLLECTION: "4f2a3b5c-6d7e-4f80-9bac-1d2e3f4a5b6c",
   mockFetchCollection: vi.fn(() => Promise.resolve()),
   mockFetchDocument: vi.fn(() => Promise.resolve()),
   mockFetchConversation: vi.fn(),
   mockFetchPage: vi.fn(),
   mockGetConversation: vi.fn(),
+  mockSave: vi.fn((_draft: { title: string; text: string }) =>
+    Promise.resolve()
+  ),
 }));
 
 vi.mock("~/utils/streamFetch", async (importOriginal) => ({
@@ -35,12 +44,28 @@ vi.mock("~/utils/streamFetch", async (importOriginal) => ({
 }));
 vi.mock("~/hooks/useAIAnswersEnabled", () => ({ default: vi.fn() }));
 vi.mock("~/hooks/useAIHistoryEnabled", () => ({ default: vi.fn() }));
+vi.mock("~/components/Icons/CollectionIcon", () => ({
+  default: () => <i data-icon />,
+}));
+vi.mock("~/hooks/useAICompareEnabled", () => ({ default: vi.fn() }));
+vi.mock("./useSaveAsDocument", () => ({
+  useSaveAsDocument: () => ({ canSave: true, save: mockSave }),
+}));
 vi.mock("~/hooks/useMobile", () => ({ default: () => false }));
 vi.mock("~/hooks/useMediaQuery", () => ({ default: () => false }));
 vi.mock("~/hooks/useStores", () => {
   // Stable, like the real hook: effects depend on the stores.
   const stores = {
-    collections: { get: () => undefined, fetch: mockFetchCollection },
+    collections: {
+      get: (id: string) =>
+        id === ENG ? { id, name: "Engineering" } : undefined,
+      fetch: mockFetchCollection,
+      orderedData: [
+        { id: ENG, name: "Engineering", isActive: true, aiExcluded: false },
+        { id: "x1", name: "Secret", isActive: true, aiExcluded: true },
+        { id: "x2", name: "Old", isActive: false, aiExcluded: false },
+      ],
+    },
     documents: { get: () => undefined, fetch: mockFetchDocument },
     aiConversations: {
       fetch: mockFetchConversation,
@@ -129,6 +154,7 @@ vi.mock("~/components/Button", () => ({
 const mocked = vi.mocked(streamFetch);
 const enabled = vi.mocked(useAIAnswersEnabled);
 const historyEnabled = vi.mocked(useAIHistoryEnabled);
+const compareEnabled = vi.mocked(useAICompareEnabled);
 
 const UUID = "0b8c7a4e-5b2f-4f5e-9d3a-1f2e3d4c5b6a";
 const UUID2 = "1c9d8b5f-6c3a-4a6f-8e4b-2a3f4e5d6c7b";
@@ -149,6 +175,8 @@ beforeEach(() => {
   window.sessionStorage.clear();
   enabled.mockReturnValue(true);
   historyEnabled.mockReturnValue(false);
+  compareEnabled.mockReturnValue(false);
+  mockSave.mockClear();
 });
 
 afterEach(() => {
@@ -190,9 +218,10 @@ describe("AISearch page", () => {
     expect(mocked).toHaveBeenCalledTimes(1);
     expect(mocked.mock.calls[0][1]).toMatchObject({
       query: "hello",
-      collectionId: UUID,
-      documentId: UUID2,
+      documentIds: [UUID2],
     });
+    // A document is narrower than its collection: the document wins.
+    expect(mocked.mock.calls[0][1]).not.toHaveProperty("collectionIds");
     // The simulated unmount must not abort the live request.
     expect(stream.signal?.aborted).toBe(false);
     const params = new URLSearchParams(history.location.search);
@@ -237,9 +266,13 @@ describe("AISearch page", () => {
 
   it("fetches valid scope ids", async () => {
     controlled();
-    mount(`/ai?q=hi&collectionId=${UUID}&documentId=${UUID2}`);
+    mount(`/ai?q=hi&collectionId=${UUID}`);
     await tick();
     expect(mockFetchCollection).toHaveBeenCalledWith(UUID);
+    expect(mocked.mock.calls[0][1]).toMatchObject({ collectionIds: [UUID] });
+    document.body.innerHTML = "";
+    mount(`/ai?q=hi&documentId=${UUID2}`);
+    await tick();
     expect(mockFetchDocument).toHaveBeenCalledWith(UUID2);
   });
 
@@ -702,5 +735,205 @@ describe("AISearch page, empty state", () => {
     await tick();
     expect(host.textContent).not.toContain("What do you want to know?");
     expect(host.querySelector("ul[aria-label='Example questions']")).toBeNull();
+  });
+});
+
+describe("AISearch page, scope", () => {
+  beforeAll(() => {
+    class ResizeObserverStub {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    globalThis.ResizeObserver ??= ResizeObserverStub;
+  });
+
+  const chip = (host: HTMLElement, label: string) =>
+    [...host.querySelectorAll<HTMLButtonElement>("[role=group] button")].find(
+      (b) => b.textContent?.includes(label)
+    );
+
+  async function send(host: HTMLElement, text: string) {
+    const textarea = host.querySelector("textarea");
+    if (!textarea) {
+      throw new Error("no textarea");
+    }
+    const setValue = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value"
+    )?.set;
+    await act(async () => {
+      setValue?.call(textarea, text);
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    act(() => {
+      textarea.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+    });
+    await tick();
+  }
+
+  it("prefills the chips from the URL", () => {
+    const { host } = mount(`/ai?collectionId=${ENG}`);
+    expect(chip(host, "Engineering")).toBeTruthy();
+    expect(chip(host, "All collections")).toBeUndefined();
+    expect(chip(host, "Specific documents")).toBeTruthy();
+    expect(chip(host, "Any time")).toBeTruthy();
+  });
+
+  it("hides Compare unless the workspace turned it on", () => {
+    expect(chip(mount("/ai").host, "Compare")).toBeUndefined();
+    document.body.innerHTML = "";
+    compareEnabled.mockReturnValue(true);
+    expect(chip(mount("/ai").host, "Compare")).toBeTruthy();
+  });
+
+  it("asks in compare mode once Compare is on, and keeps it for later questions", async () => {
+    compareEnabled.mockReturnValue(true);
+    const first = controlled();
+    const { host } = mount("/ai");
+    const compare = chip(host, "Compare");
+    act(() => compare?.click());
+    expect(compare?.getAttribute("aria-pressed")).toBe("true");
+    await send(host, "What changed?");
+    expect(mocked.mock.calls[0][1]).toMatchObject({
+      query: "What changed?",
+      mode: "compare",
+    });
+    await first.push(done("c1"));
+    await first.end();
+    controlled();
+    await send(host, "And now?");
+    expect(mocked.mock.calls[1][1]).toMatchObject({ mode: "compare" });
+  });
+
+  it("never sends a mode when Compare is off", async () => {
+    controlled();
+    const { host } = mount("/ai");
+    await send(host, "Hi?");
+    expect(mocked.mock.calls[0][1]).not.toHaveProperty("mode");
+  });
+
+  it("shows the scope under the question, with the compare label", async () => {
+    compareEnabled.mockReturnValue(true);
+    const stream = controlled();
+    const { host } = mount(`/ai?collectionId=${ENG}`);
+    await send(host, "Scoped?");
+    await stream.push({
+      event: "sources",
+      data: [{ n: 1, documentId: "d1", title: "Doc", url: "/doc/a-b" }],
+    });
+    expect(host.querySelector("article")?.textContent).toContain(
+      "Engineering · Any time"
+    );
+    await stream.push(done("c1"));
+    await stream.end();
+    act(() => chip(host, "Compare")?.click());
+    controlled();
+    await send(host, "Compare?");
+    const lines = [...host.querySelectorAll("article")].map(
+      (a) => a.textContent
+    );
+    expect(lines[1]).toContain("Comparing documents");
+  });
+
+  it("describes hidden stored scope entries without ids", async () => {
+    historyEnabled.mockReturnValue(true);
+    mockFetchConversation.mockResolvedValue({
+      turns: [
+        storedTurn({
+          scope: {
+            collections: [
+              { id: ENG, name: "Engineering" },
+              { id: HIDDEN_COLLECTION },
+            ],
+            documents: [],
+            dateFrom: "2026-09-01",
+          },
+        }),
+      ],
+    });
+    const { host } = mount(`/ai/${CONVERSATION}`);
+    await tick();
+    const text = host.querySelector("article")?.textContent ?? "";
+    expect(text).toContain(
+      "Engineering, a collection that is no longer available · Since Sep 1, 2026"
+    );
+    expect(text).not.toContain(HIDDEN_COLLECTION);
+    // The composer continues with what is still visible.
+    expect(chip(host, "Engineering")).toBeTruthy();
+  });
+
+  it("starts over with no scope on New chat", async () => {
+    const stream = controlled();
+    const { host } = mount(`/ai?collectionId=${ENG}`);
+    await send(host, "Q?");
+    await stream.push(done(null));
+    await stream.end();
+    const newChat = host.querySelector<HTMLButtonElement>(
+      "header [aria-label='New chat']"
+    );
+    await act(async () => newChat?.click());
+    expect(chip(host, "All collections")).toBeTruthy();
+    expect(chip(host, "Engineering")).toBeUndefined();
+  });
+
+  it("shows the compare_needs_two message calmly", async () => {
+    const stream = controlled();
+    const { host } = mount("/ai");
+    await send(host, "Compare?");
+    await stream.push({
+      event: "failed",
+      data: { reason: "compare_needs_two", partial: false },
+    });
+    await stream.end();
+    expect(host.textContent).toContain(
+      "Compare needs at least two documents in scope."
+    );
+  });
+
+  it("saves an answer as a draft from released blocks only", async () => {
+    const stream = controlled();
+    const { host } = mount("/ai");
+    await send(host, "How do we onboard?");
+    await stream.push(
+      {
+        event: "sources",
+        data: [{ n: 1, documentId: "d1", title: "Doc 1", url: "/doc/a-abc" }],
+      },
+      {
+        event: "block",
+        data: {
+          index: 0,
+          kind: "paragraph",
+          markdown: "Meet your buddy [1].",
+          citations: [
+            {
+              n: 1,
+              documentId: "d1",
+              title: "Doc 1",
+              url: "/doc/a-abc#h-day",
+              quote: "Buddy.",
+            },
+          ],
+        },
+      },
+      done("c1")
+    );
+    await stream.end();
+    const save = host.querySelector<HTMLButtonElement>(
+      "button[aria-label='Save as draft document']"
+    );
+    await act(async () => save?.click());
+    expect(mockSave).toHaveBeenCalledTimes(1);
+    const draft = mockSave.mock.calls[0][0];
+    expect(draft.title).toBe("How do we onboard?");
+    expect(draft.text).toContain("Meet your buddy [1].");
+    expect(draft.text).toContain("Sources");
   });
 });

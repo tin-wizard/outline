@@ -4,14 +4,15 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { Link, Redirect, useParams } from "react-router-dom";
 import { toast } from "sonner";
-import { isUUID } from "validator";
 import { transparentize } from "polished";
 import styled from "styled-components";
 import { breakpoints, s } from "@shared/styles";
 import Button from "~/components/Button";
+import CollectionIcon from "~/components/Icons/CollectionIcon";
 import Scene from "~/components/Scene";
 import PlaceholderText from "~/components/PlaceholderText";
 import useAIAnswersEnabled from "~/hooks/useAIAnswersEnabled";
+import useAICompareEnabled from "~/hooks/useAICompareEnabled";
 import useAIHistoryEnabled from "~/hooks/useAIHistoryEnabled";
 import useMobile from "~/hooks/useMobile";
 import useQuery from "~/hooks/useQuery";
@@ -28,10 +29,13 @@ import {
 import { ExportActions } from "./ExportActions";
 import { SourcesDrawer } from "./SourcesDrawer";
 import { Composer, MAX_QUERY_LENGTH } from "./Composer";
-import type { ScopeChip } from "./ScopeChips";
 import { ScopeChips } from "./ScopeChips";
-import type { Scope } from "./model";
+import type { PanelCollection } from "./ScopePanels";
+import type { Scope, ScopeDocument, Turn } from "./model";
 import { citedSources } from "./model";
+import { conversationDraft, turnDraft } from "./draft";
+import { describeScope, scopeFromParams, scopeFromStored } from "./scope";
+import { useSaveAsDocument } from "./useSaveAsDocument";
 import { useAISearch } from "./useAISearch";
 import { startedLabel } from "./startedLabel";
 import { useAutoSubmitQuery } from "./useAutoSubmitQuery";
@@ -74,11 +78,6 @@ function HistoryOff() {
   return <Redirect to={aiPath()} />;
 }
 
-/** Query-string ids are untrusted: only well-formed UUIDs are used as scope. */
-function validId(value: string | null): string | undefined {
-  return value && isUUID(value) ? value : undefined;
-}
-
 const Page = observer(function Page({
   conversationId,
   historyEnabled,
@@ -89,38 +88,68 @@ const Page = observer(function Page({
   const { t, i18n } = useTranslation();
   const isMobile = useMobile();
   const { collections, documents, aiConversations } = useStores();
+  const compareEnabled = useAICompareEnabled();
+  const { canSave, save } = useSaveAsDocument();
   const params = useQuery();
   const { state, streaming, ask, stop, reset, hydrate, rate, report } =
     useAISearch();
+  const [text, setText] = React.useState(params.get("q") ?? "");
+  // The scope lasts for the chat: later questions reuse it until it is
+  // changed, and a new chat starts over.
+  const [scope, setScope] = React.useState<Scope>(() =>
+    scopeFromParams(params.get("collectionId"), params.get("documentId"))
+  );
+  const resetChat = React.useCallback(() => {
+    reset();
+    setScope({});
+  }, [reset]);
   const route = useConversationRoute({
     routeId: conversationId,
     enabled: historyEnabled,
     state,
     hydrate,
-    reset,
+    reset: resetChat,
   });
-  const [text, setText] = React.useState(params.get("q") ?? "");
-  const [scope, setScope] = React.useState<Scope>(() => ({
-    collectionId: validId(params.get("collectionId")),
-    documentId: validId(params.get("documentId")),
-  }));
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
   const drawer = useSourcesDrawer();
 
-  const { collectionId, documentId } = scope;
+  // Continuing a stored chat starts from what its last question was limited to.
+  const lastStored = state.turns[state.turns.length - 1]?.storedScope;
+  const restoredFor = React.useRef<string | null>(null);
   React.useEffect(() => {
-    if (collectionId && !collections.get(collectionId)) {
-      void collections.fetch(collectionId).catch(() => undefined);
+    const id = state.conversationId;
+    if (!id || !lastStored || restoredFor.current === id) {
+      return;
     }
-    if (documentId && !documents.get(documentId)) {
-      void documents.fetch(documentId).catch(() => undefined);
+    restoredFor.current = id;
+    setScope(scopeFromStored(lastStored));
+  }, [state.conversationId, lastStored]);
+
+  // Ask AI buttons pass ids only: fetch what the chips need to show names.
+  React.useEffect(() => {
+    for (const id of scope.collectionIds ?? []) {
+      if (!collections.get(id)) {
+        void collections.fetch(id).catch(() => undefined);
+      }
     }
-  }, [collectionId, documentId, collections, documents]);
+    for (const doc of scope.documents ?? []) {
+      if (!doc.title && !documents.get(doc.id)) {
+        void documents.fetch(doc.id).catch(() => undefined);
+      }
+    }
+  }, [scope.collectionIds, scope.documents, collections, documents]);
 
   const collectionName = (id: string) =>
     collections.get(id)?.name ?? t("Collection");
-  const documentTitle = (id: string) =>
-    documents.get(id)?.titleWithDefault ?? t("Document");
+  const documentTitle = (doc: ScopeDocument) =>
+    doc.title || documents.get(doc.id)?.titleWithDefault || t("Document");
+  const pickable: PanelCollection[] = collections.orderedData
+    .filter((c) => c.isActive && !c.aiExcluded)
+    .map((c) => ({
+      id: c.id,
+      name: c.name,
+      icon: <CollectionIcon collection={c} size={18} />,
+    }));
 
   const submit = React.useCallback(
     (question: string, forScope: Scope = scope) => {
@@ -139,12 +168,6 @@ const Page = observer(function Page({
 
   const handleSubmit = () => submit(text);
 
-  const handleRemoveCollection = () =>
-    setScope((prev) => ({ ...prev, collectionId: undefined }));
-
-  const handleRemoveDocument = () =>
-    setScope((prev) => ({ ...prev, documentId: undefined }));
-
   // Suggestions only fill the composer: sending is always the user's action.
   const handleSuggestionClick = (
     event: React.MouseEvent<HTMLButtonElement>
@@ -161,38 +184,38 @@ const Page = observer(function Page({
 
   // The link to /ai starts a new chat; the stored one is kept, not deleted.
   const handleNewConversation = () => {
-    reset();
+    resetChat();
     setText("");
     textareaRef.current?.focus();
   };
 
   const scopeLabels = (forScope: Scope) => [
-    ...(forScope.collectionId ? [collectionName(forScope.collectionId)] : []),
-    ...(forScope.documentId ? [documentTitle(forScope.documentId)] : []),
+    ...(forScope.collectionIds ?? []).map(collectionName),
+    ...(forScope.documents ?? []).map(documentTitle),
   ];
 
-  const chips: ScopeChip[] = [
-    ...(collectionId
-      ? [
-          {
-            key: "collection",
-            kind: t("Collection"),
-            label: collectionName(collectionId),
-            onRemove: handleRemoveCollection,
-          },
-        ]
-      : []),
-    ...(documentId
-      ? [
-          {
-            key: "document",
-            kind: t("Document"),
-            label: documentTitle(documentId),
-            onRemove: handleRemoveDocument,
-          },
-        ]
-      : []),
-  ];
+  const scopeLine = (turn: Turn) =>
+    describeScope({
+      scope: {
+        ...turn.scope,
+        documents: turn.scope.documents?.map((d) => ({
+          ...d,
+          title: documentTitle(d),
+        })),
+      },
+      stored: turn.storedScope,
+      sourceCount: turn.sources?.length,
+      names: { collection: collectionName },
+      t,
+      language: i18n.language,
+    });
+
+  const handleSaveTurn = (turn: Turn) => {
+    const draft = turnDraft(turn);
+    if (draft) {
+      void save(draft);
+    }
+  };
 
   const suggestions = [
     t("How do we onboard a new team member?"),
@@ -202,6 +225,12 @@ const Page = observer(function Page({
   ];
 
   const { turns } = state;
+  const handleSaveChat = () => {
+    const draft = conversationDraft(turns, crumbTitle);
+    if (draft) {
+      void save(draft);
+    }
+  };
   const last = turns[turns.length - 1];
   const title =
     (conversationId && aiConversations.get(conversationId)?.title) ||
@@ -247,7 +276,12 @@ const Page = observer(function Page({
       actions={
         turns.length > 0 ? (
           <>
-            <ExportActions turns={turns} streaming={streaming} title={title} />
+            <ExportActions
+              turns={turns}
+              streaming={streaming}
+              title={title}
+              onSave={canSave ? handleSaveChat : undefined}
+            />
             <SourcesToggle open={drawer.open} onClick={handleToggleSources} />
             <NewChatIconLink onClick={handleNewConversation} />
           </>
@@ -257,9 +291,6 @@ const Page = observer(function Page({
       <Root data-ai-search>
         <Panes>
           <Chat>
-            <div data-print-hidden>
-              <ScopeChips chips={chips} disabled={streaming} />
-            </div>
             {route.status === "loading" ? (
               <Idle aria-busy="true">
                 <span role="status">{t("Loading conversation…")}</span>
@@ -301,6 +332,8 @@ const Page = observer(function Page({
                     turn={turn}
                     isLast={turn === last}
                     scopeLabels={scopeLabels(turn.scope)}
+                    scopeLine={scopeLine(turn)}
+                    onSave={canSave ? handleSaveTurn : undefined}
                     onStop={stop}
                     onRate={rate}
                     onReport={report}
@@ -310,8 +343,13 @@ const Page = observer(function Page({
                     onFollowUp={handleFollowUp}
                     onRetry={(failed) => submit(failed.question, failed.scope)}
                     onRetryUnscoped={(failed) => {
-                      setScope({});
-                      submit(failed.question, {});
+                      const bare: Scope = {
+                        ...failed.scope,
+                        collectionIds: undefined,
+                        documents: undefined,
+                      };
+                      setScope(bare);
+                      submit(failed.question, bare);
                     }}
                   />
                 ))}
@@ -329,6 +367,17 @@ const Page = observer(function Page({
                 onStop={stop}
                 busy={streaming}
                 textareaRef={textareaRef}
+                followUp={turns.length > 0}
+                chips={
+                  <ScopeChips
+                    scope={scope}
+                    onChange={setScope}
+                    collections={pickable}
+                    compareEnabled={compareEnabled}
+                    disabled={streaming}
+                    documentTitle={documentTitle}
+                  />
+                }
               />
               <Disclaimer>
                 {t(

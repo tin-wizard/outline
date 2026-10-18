@@ -13,6 +13,11 @@ interface Props {
   onCitationClick?: (n: number, marker?: HTMLElement) => void;
   /** Preview card data by source number, built from the stream's events. */
   previews?: ReadonlyMap<number, CitationPreviewData>;
+  /**
+   * The answer is a comparison: the header cells after the first are document
+   * titles, tagged A, B and C in column order.
+   */
+  compare?: boolean;
 }
 
 /**
@@ -24,9 +29,15 @@ interface Props {
  * @param props.blocks the blocks to render.
  * @param props.onCitationClick called with the source number of a marker.
  * @param props.previews hover and focus preview data by source number.
+ * @param props.compare tags the document columns of a comparison table.
  * @returns the rendered answer.
  */
-export function AnswerBody({ blocks, onCitationClick, previews }: Props) {
+export function AnswerBody({
+  blocks,
+  onCitationClick,
+  previews,
+  compare,
+}: Props) {
   const groups = React.useMemo(() => groupBlocks(blocks), [blocks]);
   const marks = (citations: number[]) => (
     <Markers
@@ -36,15 +47,23 @@ export function AnswerBody({ blocks, onCitationClick, previews }: Props) {
     />
   );
 
-  return <Body>{groups.map((group, i) => renderGroup(group, i, marks))}</Body>;
+  return (
+    <Body>
+      {groups.map((group, i) => renderGroup(group, i, marks, compare))}
+    </Body>
+  );
 }
+
+/** Comparisons have at most three documents: A, B and C. */
+const COLUMN_TAGS = 3;
 
 const HEADING_TAGS = ["h3", "h4", "h5", "h6", "h6", "h6"] as const;
 
 function renderGroup(
   group: Group,
   key: number,
-  marks: (citations: number[]) => React.ReactNode
+  marks: (citations: number[]) => React.ReactNode,
+  compare?: boolean
 ) {
   switch (group.type) {
     case "heading": {
@@ -78,6 +97,11 @@ function renderGroup(
               <tr>
                 {group.header.map((cell, j) => (
                   <th key={j} scope="col">
+                    {compare && j > 0 && j <= COLUMN_TAGS && (
+                      <ColumnTag $index={j - 1} aria-hidden>
+                        {String.fromCharCode(64 + j)}
+                      </ColumnTag>
+                    )}
                     {renderInline(cell.inline)}
                   </th>
                 ))}
@@ -159,6 +183,24 @@ function Markers({
     </>
   );
 }
+
+const ColumnTag = styled.span<{ $index: number }>`
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-right: 6px;
+  border-radius: 4px;
+  background: ${(props) =>
+    [props.theme.textTertiary, props.theme.accent, props.theme.warning][
+      props.$index
+    ]};
+  color: ${s("background")};
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  vertical-align: -3px;
+`;
 
 const TableWrapper = styled.div`
   overflow-x: auto;

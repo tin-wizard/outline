@@ -1,4 +1,11 @@
-import { ArrowIcon, CheckmarkIcon, SparklesIcon } from "outline-icons";
+import {
+  ArrowIcon,
+  CheckmarkIcon,
+  CollectionIcon,
+  DocumentIcon,
+  DuplicateIcon,
+  SparklesIcon,
+} from "outline-icons";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
@@ -25,6 +32,7 @@ import { GapNotice, NotCoveredNotice } from "./GapNotice";
 import type { CitedSection, Rating, ReportReason, Turn } from "./model";
 import { citedSources, isActive, sectionHeading } from "./model";
 import { ProblemNotice } from "./ProblemNotice";
+import type { ScopeLine } from "./scope";
 
 export { isDocPath } from "./docPath";
 
@@ -34,6 +42,10 @@ interface Props {
   isLast: boolean;
   /** Names of the collection and document the question was scoped to. */
   scopeLabels: string[];
+  /** What the question was limited to, shown under it; absent when unscoped. */
+  scopeLine?: ScopeLine;
+  /** Saves the answer as a draft document; absent when the user cannot. */
+  onSave?: (turn: Turn) => void;
   onStop: () => void;
   onRetry: (turn: Turn) => void;
   /** Asks again without the scope, after the server refused the scope. */
@@ -67,6 +79,8 @@ interface Props {
  * @param props.turn the turn to show.
  * @param props.isLast whether it is the newest turn.
  * @param props.scopeLabels names of the scope searched.
+ * @param props.scopeLine the scope line shown under the question.
+ * @param props.onSave saves the answer as a draft document.
  * @param props.onStop stops the running turn.
  * @param props.onRetry asks the question again.
  * @param props.onRetryUnscoped asks again without the scope.
@@ -82,6 +96,8 @@ export function AnswerTurn({
   turn,
   isLast,
   scopeLabels,
+  scopeLine,
+  onSave,
   onStop,
   onRetry,
   onRetryUnscoped,
@@ -180,7 +196,21 @@ export function AnswerTurn({
 
   return (
     <Section aria-label={turn.question}>
-      <Question>{turn.question}</Question>
+      <Asked>
+        <Question>{turn.question}</Question>
+        {scopeLine && (
+          <QuestionScope data-kind={scopeLine.kind}>
+            {scopeLine.kind === "documents" ? (
+              <DocumentIcon size={16} />
+            ) : scopeLine.kind === "compare" ? (
+              <DuplicateIcon size={16} />
+            ) : (
+              <CollectionIcon size={16} />
+            )}
+            <span>{scopeLine.text}</span>
+          </QuestionScope>
+        )}
+      </Asked>
       <Layout>
         <Avatar aria-hidden>
           <SparklesIcon size={18} />
@@ -281,6 +311,7 @@ export function AnswerTurn({
                     <AnswerBody
                       key={`blocks-${i}`}
                       blocks={part.blocks}
+                      compare={turn.scope.mode === "compare"}
                       previews={previews}
                       onCitationClick={handleCitationClick}
                     />
@@ -343,6 +374,7 @@ export function AnswerTurn({
                 includeQuestion: false,
                 includeSources: true,
               })}
+              onSave={onSave}
               onRate={onRate}
               onReport={onReport}
             />
@@ -472,8 +504,35 @@ const Section = styled.article`
   margin: 28px 0;
 `;
 
+const Asked = styled.div`
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  margin: 0 0 14px;
+`;
+
+const QuestionScope = styled.p`
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 85%;
+  margin: 0;
+  color: ${s("textTertiary")};
+  font-size: 12px;
+
+  svg {
+    flex: none;
+    fill: currentColor;
+  }
+
+  span {
+    overflow-wrap: anywhere;
+  }
+`;
+
 const Question = styled.p`
-  margin: 0 0 14px auto;
+  margin: 0;
   padding: 10px 16px;
   max-width: 85%;
   width: fit-content;

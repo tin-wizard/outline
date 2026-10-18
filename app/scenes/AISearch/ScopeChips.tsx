@@ -1,121 +1,198 @@
-import { CloseIcon } from "outline-icons";
+import {
+  CalendarIcon,
+  CollectionIcon,
+  DocumentIcon,
+  ExpandedIcon,
+} from "outline-icons";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import styled from "styled-components";
+import { transparentize } from "polished";
 import { s } from "@shared/styles";
-import useMobile from "~/hooks/useMobile";
-
-export interface ScopeChip {
-  key: string;
-  /** What the chip filters, such as "Collection". */
-  kind: string;
-  /** The collection or document name. */
-  label: string;
-  onRemove: () => void;
-}
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "~/components/primitives/Popover";
+import type { Scope, ScopeDocument } from "./model";
+import type { PanelCollection } from "./ScopePanels";
+import { CollectionsPanel, DatePanel, DocumentsPanel } from "./ScopePanels";
+import { dateText } from "./scope";
 
 interface Props {
-  chips: ScopeChip[];
+  scope: Scope;
+  onChange: (scope: Scope) => void;
+  /** Collections the user can pick: readable and not excluded from AI. */
+  collections: PanelCollection[];
+  /** The workspace has Compare turned on. */
+  compareEnabled: boolean;
   /** Chips cannot be changed while an answer is streaming. */
   disabled?: boolean;
+  /** Title to show for a picked document whose own title is not known yet. */
+  documentTitle?: (doc: ScopeDocument) => string;
 }
 
 /**
- * Removable chips for the collection and document the question is limited to.
- * On narrow screens they collapse into a single disclosure.
+ * The scope chips inside the composer bar: collections, specific documents,
+ * date window and (when the workspace allows it) Compare. They stay in a
+ * single row that scrolls sideways on narrow screens.
  *
- * @param props.chips the active scopes.
- * @param props.disabled locks removal.
- * @returns the chips, or null when unscoped.
+ * @param props see Props.
+ * @returns the chip row.
  */
-export function ScopeChips({ chips, disabled }: Props) {
-  const { t } = useTranslation();
-  const isMobile = useMobile();
-
-  if (!chips.length) {
-    return null;
-  }
-
-  const list = (
-    <List role="list" aria-label={t("Search scope")}>
-      {chips.map((chip) => (
-        <li key={chip.key}>
-          <Chip>
-            <span>
-              <Kind>{chip.kind}:</Kind> {chip.label}
-            </span>
-            <Remove
-              type="button"
-              disabled={disabled}
-              aria-label={t("Remove {{ name }} from the scope", {
-                name: chip.label,
-              })}
-              onClick={chip.onRemove}
-            >
-              <CloseIcon size={16} />
-            </Remove>
-          </Chip>
-        </li>
-      ))}
-    </List>
+export function ScopeChips({
+  scope,
+  onChange,
+  collections,
+  compareEnabled,
+  disabled,
+  documentTitle,
+}: Props) {
+  const { t, i18n } = useTranslation();
+  const [docsOpen, setDocsOpen] = React.useState(false);
+  const selectedCollections = scope.collectionIds ?? [];
+  const names = selectedCollections.map(
+    (id) => collections.find((c) => c.id === id)?.name
   );
+  const docs = scope.documents ?? [];
+  const docLabel = (doc: ScopeDocument) =>
+    (documentTitle ? documentTitle(doc) : doc.title) || t("Untitled");
+  const dated = !!(scope.datePreset || scope.dateFrom || scope.dateTo);
 
-  if (!isMobile) {
-    return list;
-  }
+  const collectionsLabel = !selectedCollections.length
+    ? t("All collections")
+    : selectedCollections.length <= 2 && names.every(Boolean)
+      ? names.join(", ")
+      : t("{{ count }} collections", { count: selectedCollections.length });
+  const documentsLabel = !docs.length
+    ? t("Specific documents")
+    : docs.length === 1
+      ? docLabel(docs[0])
+      : t("{{ count }} documents", { count: docs.length });
+
+  const handleCompare = () =>
+    onChange({
+      ...scope,
+      mode: scope.mode === "compare" ? undefined : "compare",
+    });
+
   return (
-    <Disclosure>
-      <summary>{t("Scope ({{ count }})", { count: chips.length })}</summary>
-      {list}
-    </Disclosure>
+    <Row role="group" aria-label={t("Search scope")}>
+      <Popover>
+        <PopoverTrigger>
+          <Chip
+            type="button"
+            $on={selectedCollections.length > 0}
+            disabled={disabled}
+          >
+            <CollectionIcon size={16} />
+            <Label>{collectionsLabel}</Label>
+            <ExpandedIcon size={16} />
+          </Chip>
+        </PopoverTrigger>
+        <PopoverContent side="top" align="start" width={300} shrink>
+          <CollectionsPanel
+            collections={collections}
+            scope={scope}
+            onChange={onChange}
+          />
+        </PopoverContent>
+      </Popover>
+      <Popover open={docsOpen} onOpenChange={setDocsOpen}>
+        <PopoverTrigger>
+          <Chip type="button" $on={docs.length > 0} disabled={disabled}>
+            <DocumentIcon size={16} />
+            <Label>{documentsLabel}</Label>
+          </Chip>
+        </PopoverTrigger>
+        <PopoverContent side="top" align="start" width={340} shrink>
+          <DocumentsPanel
+            scope={scope}
+            onChange={onChange}
+            open={docsOpen}
+            titleOf={documentTitle}
+          />
+        </PopoverContent>
+      </Popover>
+      <Popover>
+        <PopoverTrigger>
+          <Chip type="button" $on={dated} disabled={disabled}>
+            <CalendarIcon size={16} />
+            <Label>{dateText(scope, t, i18n.language)}</Label>
+            <ExpandedIcon size={16} />
+          </Chip>
+        </PopoverTrigger>
+        <PopoverContent side="top" align="start" width={280} shrink>
+          <DatePanel scope={scope} onChange={onChange} />
+        </PopoverContent>
+      </Popover>
+      {compareEnabled && (
+        <Chip
+          type="button"
+          $on={scope.mode === "compare"}
+          aria-pressed={scope.mode === "compare"}
+          disabled={disabled}
+          onClick={handleCompare}
+        >
+          <Label>{t("Compare")}</Label>
+        </Chip>
+      )}
+    </Row>
   );
 }
 
-const List = styled.ul`
+const Row = styled.div`
   display: flex;
-  flex-wrap: wrap;
+  flex: 1;
   gap: 6px;
-  margin: 8px 0;
-  padding: 0;
-  list-style: none;
-`;
+  min-width: 0;
+  /* Room for the focus ring, which overflow would clip. */
+  margin: -2px;
+  padding: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
 
-const Chip = styled.span`
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  max-width: 100%;
-  padding: 2px 4px 2px 10px;
-  border: 1px solid ${s("divider")};
-  border-radius: 14px;
-  background: ${s("backgroundSecondary")};
-  color: ${s("text")};
-  font-size: 13px;
-
-  > span {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  &::-webkit-scrollbar {
+    display: none;
   }
 `;
 
-const Kind = styled.span`
-  color: ${s("textSecondary")};
-`;
-
-const Remove = styled.button`
+const Chip = styled.button<{ $on: boolean }>`
   display: inline-flex;
-  padding: 2px;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  height: 28px;
+  padding: 0 10px;
   border: 0;
-  border-radius: 50%;
-  background: none;
-  color: ${s("textSecondary")};
+  border-radius: 14px;
+  box-shadow: inset 0 0 0 1px
+    ${(props) =>
+      props.$on
+        ? transparentize(0.65, props.theme.accent)
+        : props.theme.buttonNeutralBorder};
+  background: ${(props) =>
+    props.$on
+      ? transparentize(0.92, props.theme.accent)
+      : props.theme.buttonNeutralBackground};
+  color: ${(props) =>
+    props.$on ? props.theme.text : props.theme.textSecondary};
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
   cursor: var(--pointer);
 
+  svg {
+    flex: none;
+    fill: currentColor;
+  }
+
   &:hover:not(:disabled),
-  &:focus-visible {
+  &:focus-visible,
+  &[data-state="open"] {
+    background: ${s("buttonNeutralHoverBackground")};
     color: ${s("text")};
-    background: ${s("sidebarActiveBackground")};
   }
 
   &:disabled {
@@ -124,12 +201,7 @@ const Remove = styled.button`
   }
 `;
 
-const Disclosure = styled.details`
-  margin: 8px 0;
-  color: ${s("textSecondary")};
-  font-size: 14px;
-
-  summary {
-    cursor: var(--pointer);
-  }
+const Label = styled.span`
+  overflow: hidden;
+  text-overflow: ellipsis;
 `;

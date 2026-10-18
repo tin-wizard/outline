@@ -529,3 +529,47 @@ describe("AnswerTurn sources", () => {
     expect(host.textContent).not.toContain(code);
   });
 });
+
+describe("AnswerBody compare tables", () => {
+  const compareBlocks: BlockInput[] = [
+    {
+      kind: "tableHeader",
+      markdown: "| Aspect | Travel Policy v3 | <img src=x onerror=alert(1)> |",
+      citations: [],
+    },
+    {
+      kind: "tableRow",
+      markdown: "| Limit | 100 EUR | 120 EUR |",
+      citations: [cite(1), cite(2)],
+    },
+  ];
+  const render = (compare: boolean): HTMLElement => {
+    const host = document.createElement("div");
+    host.innerHTML = renderToStaticMarkup(
+      <ThemeProvider theme={theme}>
+        <AnswerBody blocks={compareBlocks} compare={compare} />
+      </ThemeProvider>
+    );
+    return host;
+  };
+
+  it("tags the document columns A and B in order, not the aspect column", () => {
+    const heads = [...render(true).querySelectorAll("th")];
+    expect(heads.map((th) => th.textContent)).toEqual([
+      "Aspect",
+      "ATravel Policy v3",
+      "B<img src=x onerror=alert(1)>",
+    ]);
+    // Titles stay text: no element was created from them.
+    expect(render(true).querySelector("img")).toBeNull();
+  });
+
+  it("adds no tags outside compare mode", () => {
+    const heads = [...render(false).querySelectorAll("th")];
+    expect(heads.map((th) => th.textContent)).toEqual([
+      "Aspect",
+      "Travel Policy v3",
+      "<img src=x onerror=alert(1)>",
+    ]);
+  });
+});
