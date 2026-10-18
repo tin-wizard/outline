@@ -447,6 +447,7 @@ describe("#ai.ask", () => {
           documentId: document.id,
           title: "Holidays",
           url: `/doc/holidays-${document.urlId}#h-leave`,
+          heading: "Leave",
           quote: FACT,
         },
       ]);
@@ -520,8 +521,15 @@ describe("#ai.ask", () => {
       expect(blocks[0].data.markdown).toEqual(FACT);
       expect(JSON.stringify(events)).not.toContain("Managers approve");
       expect(events.at(-1)?.event).toEqual("done");
+      expect(events.at(-1)?.data.dropped).toEqual(1);
       const rows = await rowsFor(user.teamId);
       expect(rows[0].droppedSegments).toEqual(1);
+      const [turn] = await turnsOf(events[0].data.id);
+      expect(turn.droppedSegments).toEqual(1);
+      const info = await server.post("/api/aiConversations.info", user, {
+        body: { id: events[0].data.id },
+      });
+      expect((await info.json()).data.turns[0].droppedSegments).toEqual(1);
     });
 
     it.each([
@@ -1206,6 +1214,7 @@ describe("#ai.ask", () => {
             {
               documentId: document.id,
               quote: FACT,
+              heading: "Leave",
               anchor: "h-leave",
             },
           ],
@@ -1222,6 +1231,10 @@ describe("#ai.ask", () => {
         block?.data.citations[0].url
       );
       expect(block?.data.citations[0].url).toContain("#h-leave");
+      expect(block?.data.citations[0].heading).toEqual("Leave");
+      expect(data.turns[0].blocks[0].citations[0].heading).toEqual("Leave");
+      expect(done?.data.dropped).toEqual(0);
+      expect(data.turns[0].droppedSegments).toEqual(0);
     });
 
     it("stores only the question when the answer fails, never partial blocks", async () => {
@@ -1288,6 +1301,74 @@ describe("#ai.ask", () => {
       expect(
         await AIConversation.count({ where: { userId: user.id } })
       ).toEqual(0);
+    });
+
+    it("stores a follow-up to a stopped first answer under the same id", async () => {
+      const { user } = await setup();
+      hangingUpstream(
+        anthropicEvents(
+          [{ text: `${FACT}\n\n`, citations: [{ quote: FACT }] }],
+          { final: false }
+        )
+      );
+      const controller = new AbortController();
+      const res = await ask(user, undefined, { signal: controller.signal });
+      let seen = "";
+      try {
+        for await (const chunk of res.body) {
+          seen += chunk.toString();
+          if (seen.includes("event: block")) {
+            controller.abort();
+          }
+        }
+      } catch {
+        // The aborted body rejects; that is the disconnect.
+      }
+      const id = parseSse(seen).events[0].data.id;
+      await rowsFor(user.teamId, true);
+      await expectSlotsFree(user.teamId);
+      expect(await AIConversation.findByPk(id)).toBeNull();
+
+      upstream(() => anthropicEvents([cited]));
+      const next = await askEvents(user, {
+        query: "How many holiday days do I get?",
+        conversationId: id,
+      });
+      expect(next[0]).toEqual({ event: "conversation", data: { id } });
+      expect(next.at(-1)?.data.conversationId).toEqual(id);
+      const info = await server.post("/api/aiConversations.info", user, {
+        body: { id },
+      });
+      expect(info.status).toEqual(200);
+      const { data } = await info.json();
+      expect(data.title).toEqual("How many holiday days do I get?");
+      expect(
+        data.turns.map((t: { position: number; question: string }) => [
+          t.position,
+          t.question,
+        ])
+      ).toEqual([[0, "How many holiday days do I get?"]]);
+    });
+
+    it("titles a conversation stored late from its first question in the hot cache", async () => {
+      const user = await historyOff((await setup()).user);
+      upstream(() => anthropicEvents([cited]));
+      const id = (await askEvents(user))[0].data.id;
+      await enable(user);
+      const team = await Team.findByPk(user.teamId, { rejectOnEmpty: true });
+      team.setPreference(TeamPreference.AIConversationHistory, true);
+      await team.save();
+
+      const next = await askEvents(user, {
+        query: "Does that include weekends?",
+        conversationId: id,
+      });
+      expect(next.at(-1)?.data.conversationId).toEqual(id);
+      const conversation = await AIConversation.findByPk(id, {
+        rejectOnEmpty: true,
+      });
+      expect(conversation.title).toEqual("How many days of holiday?");
+      expect((await turnsOf(id)).map((t) => t.position)).toEqual([0]);
     });
 
     it("never recreates a conversation deleted while a turn was streaming", async () => {

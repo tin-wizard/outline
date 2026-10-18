@@ -151,6 +151,45 @@ describe("appendConversationTurn", () => {
     expect(
       await appendConversationTurn(user, { ...turn, create: true })
     ).toEqual(conversationId);
+    // Allowed to create, but it exists: the turn is appended.
+    expect(
+      await appendConversationTurn(user, {
+        ...turn,
+        create: true,
+        title: "Ignored for an existing conversation",
+        droppedSegments: 2,
+      })
+    ).toEqual(conversationId);
+    const turns = await AIConversationTurn.findAll({
+      where: { conversationId },
+      order: [["position", "ASC"]],
+    });
+    expect(turns.map((t) => [t.position, t.droppedSegments])).toEqual([
+      [0, 0],
+      [1, 2],
+    ]);
+    const conversation = await AIConversation.findByPk(conversationId, {
+      rejectOnEmpty: true,
+    });
+    expect(conversation.title).toEqual("Hello?");
+  });
+
+  it("titles a new conversation from the given first question, redacted", async () => {
+    const user = await enable(await buildUser());
+    const id = await appendConversationTurn(user, {
+      conversationId: randomUUID(),
+      create: true,
+      title: `First question ${secret}`,
+      question: "Second question",
+      released: [],
+      outcome: "no_answer",
+      usageId: null,
+    });
+    const conversation = await AIConversation.findByPk(id!, {
+      rejectOnEmpty: true,
+    });
+    expect(conversation.title.startsWith("First question")).toBe(true);
+    expect(conversation.title).not.toContain(secret);
   });
 
   it("never resurrects a deleted conversation", async () => {
@@ -274,8 +313,9 @@ describe("appendConversationTurn", () => {
         {
           ...block,
           citations: [
-            { ...citation, heading: "Intro", anchor: "h-intro-2" },
+            { ...citation, headingText: "Intro", anchor: "h-intro-2" },
             { ...citation, anchor: 'h-x"><script>' },
+            { ...citation, anchor: "h-cafe-🎉-uberblick-1" },
           ],
         },
       ],
@@ -289,9 +329,15 @@ describe("appendConversationTurn", () => {
       {
         documentId: citation.documentId,
         quote: "a supporting quote",
+        heading: "Intro",
         anchor: "h-intro-2",
       },
       { documentId: citation.documentId, quote: "a supporting quote" },
+      {
+        documentId: citation.documentId,
+        quote: "a supporting quote",
+        anchor: "h-cafe-🎉-uberblick-1",
+      },
     ]);
   });
 

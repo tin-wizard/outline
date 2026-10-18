@@ -83,6 +83,8 @@ export interface AskCitation {
   title: string;
   /** The document url, with the cited section's heading anchor when known. */
   url: string;
+  /** Plain visible text of the cited section's heading, when known. */
+  heading?: string;
   quote?: string;
 }
 
@@ -110,6 +112,8 @@ export interface AskEvents {
     usageId: string | null;
     usage: Usage;
     timings: { retrievalMs: number; firstBlockMs?: number; totalMs: number };
+    /** Blocks the verifier dropped from this answer; 0 when all were kept. */
+    dropped: number;
   };
   failed: { reason: AskFailure; partial: boolean };
 }
@@ -267,6 +271,7 @@ function citationsOf(
         documentId: source.documentId,
         title: source.title,
         url: c.anchor ? `${source.url}#${c.anchor}` : source.url,
+        ...(c.headingText ? { heading: c.headingText } : {}),
         ...(quote ? { quote } : {}),
       },
     ];
@@ -339,9 +344,10 @@ router.post(
       }
       // With Redis down, stored history still keeps the turn under a new id.
       const id = conversation?.id ?? (historyOn ? randomUUID() : null);
-      // Only an id minted in this request may create the stored conversation;
-      // a loaded or resumed one that was deleted meanwhile stays deleted.
+      // An id minted in this request may create the stored conversation.
       const minted = id !== conversationId;
+      // Blocks the verifier dropped (counted while streaming).
+      let dropped = 0;
       if (id) {
         stream.send("conversation", { id });
       }
@@ -373,23 +379,38 @@ router.post(
         released: AcceptedBlock[],
         end:
           | { failed: AskFailure }
-          | { done: Omit<AskEvents["done"], "conversationId" | "usageId"> }
+          | {
+              done: Omit<
+                AskEvents["done"],
+                "conversationId" | "usageId" | "dropped"
+              >;
+            }
       ) => {
         let stored = false;
         if (id && !clientGone.signal.aborted) {
-          const [cached, persisted] = await Promise.all([
-            appendTurn(user, id, { question: query, released }),
-            historyOn
-              ? appendConversationTurn(user, {
-                  conversationId: id,
-                  create: minted,
-                  question: query,
-                  released,
-                  outcome: "failed" in end ? end.failed : "answered",
-                  usageId,
-                })
-              : null,
-          ]);
+          // SET XX: true only while the user's own hot cache key is live, so
+          // the id is theirs and not deleted (delete removes the key).
+          const cached = await appendTurn(user, id, {
+            question: query,
+            released,
+          });
+          // A live key may create a missing row (e.g. the first answer was
+          // stopped before anything was stored); otherwise only an existing
+          // row is continued, so a deleted conversation stays deleted.
+          // shortcut: a delete landing between the SET XX and this insert can
+          // still be undone by it; a tombstone would close that window.
+          const persisted = historyOn
+            ? await appendConversationTurn(user, {
+                conversationId: id,
+                create: minted || cached,
+                title: conversation?.turns[0]?.question,
+                question: query,
+                released,
+                outcome: "failed" in end ? end.failed : "answered",
+                usageId,
+                droppedSegments: dropped,
+              })
+            : null;
           stored = cached || persisted === id;
         }
         if ("failed" in end) {
@@ -400,6 +421,7 @@ router.post(
             ...end.done,
             conversationId: stored ? id : null,
             usageId,
+            dropped,
           });
         }
       };
@@ -519,7 +541,6 @@ router.post(
       let finishReason: FinishReason = "other";
       let refused = false;
       let usage: Usage | null = null;
-      let dropped = 0;
       let firstBlockMs: number | undefined;
       let sent = false;
       let recorded = false;

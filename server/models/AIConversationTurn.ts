@@ -17,6 +17,8 @@ export interface StoredCitation {
   quote?: string;
   /** Index of the cited section within the document, when known. */
   sectionIndex?: number;
+  /** Plain visible text of the cited section's heading. */
+  heading?: string;
   /** The editor's heading id of the cited section, used as the url anchor. */
   anchor?: string;
 }
@@ -82,6 +84,11 @@ class AIConversationTurn extends Model<
   /** The metered usage row of the answer, for `ai.feedback`. */
   @Column(DataType.UUID)
   usageId: string | null;
+
+  /** Blocks the verifier dropped from this answer. */
+  @Default(0)
+  @Column(DataType.SMALLINT)
+  droppedSegments: number;
 }
 
 export default AIConversationTurn;

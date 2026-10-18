@@ -83,6 +83,11 @@ module.exports = {
           },
           outcome: { type: Sequelize.TEXT, allowNull: false },
           usageId: { type: Sequelize.UUID, allowNull: true },
+          droppedSegments: {
+            type: Sequelize.SMALLINT,
+            allowNull: false,
+            defaultValue: 0,
+          },
           createdAt: { type: Sequelize.DATE, allowNull: false },
         },
         { transaction }

@@ -32,19 +32,33 @@ export const MAX_STORED_TURNS = 100;
 /** Longest conversation title, in characters. */
 export const MAX_TITLE_CHARS = 80;
 
-/** An editor heading id (`safeSlugify` output plus an occurrence suffix). */
-const SAFE_ANCHOR = /^h-[A-Za-z0-9%-]{0,200}$/;
+/**
+ * An editor heading id (`h-` slug plus an occurrence suffix; letters may be
+ * any script or emoji): nothing that could leave a URL fragment.
+ */
+const SAFE_ANCHOR = /^h-[^\s"'<>`#\\]{0,200}$/u;
+
+/** Largest dropped-block count stored (smallint column). */
+const MAX_DROPPED = 32_767;
+
+/** Longest stored heading text of a citation, in characters. */
+const MAX_HEADING_CHARS = 120;
 
 /** What `ai.ask` hands over to store a turn: never free-form model text. */
 export interface StoreTurnInput {
   /** The conversation to continue; a new one is created when omitted. */
   conversationId?: string | null;
   /**
-   * True when `ai.ask` minted `conversationId` in this request, so the row is
-   * created with it. Otherwise only an existing row is continued: a deleted
-   * conversation is never recreated by a late turn.
+   * True when `ai.ask` may create the row with `conversationId` if it is
+   * missing: it minted the id in this request, or the user's own hot cache
+   * key for it is live. Otherwise only an existing row is continued, so a
+   * deleted conversation is never recreated by a late turn.
    */
   create?: boolean;
+  /** Text to title a new conversation with (redacted here); defaults to the question. */
+  title?: string;
+  /** Blocks the verifier dropped from this answer. */
+  droppedSegments?: number;
   /** The user's original question; redacted and truncated before storing. */
   question: string;
   /** The verifier's released blocks (`AnswerVerifier.released`); [] when failed. */
@@ -75,6 +89,8 @@ export interface PresentedTurn {
   question: string;
   outcome: string;
   usageId: string | null;
+  /** Blocks the verifier dropped from this answer; 0 when all were kept. */
+  droppedSegments: number;
   createdAt: Date;
   /** Readable cited documents, numbered as the block citations reference them. */
   sources: AskSource[];
@@ -144,10 +160,18 @@ export async function appendConversationTurn(
       const values = {
         teamId: user.teamId,
         userId: user.id,
-        title: conversationTitle(input.question),
+        title: conversationTitle(input.title || input.question),
       };
       let conversation: AIConversation | null;
-      if (requestedId && !input.create) {
+      if (requestedId) {
+        if (input.create) {
+          // ON CONFLICT DO NOTHING: an existing row (anyone's) is left alone
+          // and a concurrent insert is waited for instead of failing.
+          await AIConversation.bulkCreate([{ ...values, id: requestedId }], {
+            ignoreDuplicates: true,
+            transaction,
+          });
+        }
         // The row lock serialises turns, so positions stay consecutive. A
         // foreign, unknown or deleted id is not found and stores nothing.
         conversation = await AIConversation.findOne({
@@ -156,11 +180,7 @@ export async function appendConversationTurn(
           transaction,
         });
       } else {
-        // An id taken by anyone fails on the primary key and stores nothing.
-        conversation = await AIConversation.create(
-          requestedId ? { ...values, id: requestedId } : values,
-          { transaction }
-        );
+        conversation = await AIConversation.create(values, { transaction });
       }
       if (!conversation) {
         return null;
@@ -190,6 +210,10 @@ export async function appendConversationTurn(
           citedDocumentIds,
           outcome: input.outcome,
           usageId: input.usageId,
+          droppedSegments: Math.min(
+            Math.max(Math.trunc(input.droppedSegments ?? 0), 0),
+            MAX_DROPPED
+          ),
         },
         { transaction }
       );
@@ -349,6 +373,7 @@ export async function presentTurns(
                 c.anchor && SAFE_ANCHOR.test(c.anchor)
                   ? `${source.url}#${c.anchor}`
                   : source.url,
+              ...(c.heading ? { heading: c.heading } : {}),
               ...(c.quote ? { quote: c.quote } : {}),
             };
           }),
@@ -361,6 +386,7 @@ export async function presentTurns(
       question: turn.question,
       outcome: turn.outcome,
       usageId: turn.usageId,
+      droppedSegments: turn.droppedSegments,
       createdAt: turn.createdAt,
       sources,
       blocks,
@@ -384,9 +410,17 @@ function toStoredBlocks(released: AcceptedBlock[]): {
     citations: r.citations.map((c): StoredCitation => {
       const quote = redactSecrets(c.quote).text;
       const anchor = c.anchor && SAFE_ANCHOR.test(c.anchor) ? c.anchor : "";
+      // Already plain text from the editor and checked for secrets; redact
+      // again as stored text must be.
+      const heading = c.headingText
+        ? [...redactSecrets(c.headingText).text]
+            .slice(0, MAX_HEADING_CHARS)
+            .join("")
+        : "";
       return {
         documentId: c.documentId,
         ...(quote ? { quote } : {}),
+        ...(heading ? { heading } : {}),
         ...(anchor ? { anchor } : {}),
       };
     }),
