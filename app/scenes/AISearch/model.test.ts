@@ -86,6 +86,33 @@ describe("chatReducer", () => {
     expect(state.conversationId).toBeNull();
   });
 
+  it("rolls back an unconfirmed conversation id when the turn is cut short", () => {
+    // A stopped first turn is never stored, so its id must not be reused.
+    const stopped = chatReducer(
+      run([{ event: "conversation", data: { id: "c1" } }, block(0)]),
+      { type: "stopped" }
+    );
+    expect(stopped.conversationId).toBeNull();
+
+    // A follow-up in a stored conversation keeps that conversation's id.
+    const stored = run([
+      { event: "conversation", data: { id: "c1" } },
+      done("c1"),
+    ]);
+    const followUp = chatReducer(
+      run([{ event: "conversation", data: { id: "c1" } }], stored),
+      { type: "ended" }
+    );
+    expect(followUp.conversationId).toBe("c1");
+
+    // A server-side failure was stored: the id stays.
+    const failed = run([
+      { event: "conversation", data: { id: "c2" } },
+      { event: "failed", data: { reason: "no_answer", partial: false } },
+    ]);
+    expect(failed.conversationId).toBe("c2");
+  });
+
   it("ignores a replayed block index", () => {
     expect(run([block(0), block(0)]).turns[0].blocks).toHaveLength(1);
   });

@@ -65,6 +65,12 @@ export interface Turn {
   feedback?: Feedback;
   /** Seconds the server asked us to wait after a 429. */
   retryAfter?: number;
+  /**
+   * The conversation id before this turn's `conversation` event. An id is
+   * only kept once `done` or `failed` confirms the turn was stored; a turn cut
+   * short (stopped, dropped) stores nothing, so the id is rolled back.
+   */
+  conversationIdBefore?: string | null;
 }
 
 export interface ChatState {
@@ -280,6 +286,11 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   if (!turn || !isActive(turn)) {
     return state;
   }
+  // A turn that ends without done/failed was not stored under a new id.
+  const unconfirmedId =
+    turn.conversationIdBefore === undefined
+      ? state.conversationId
+      : turn.conversationIdBefore;
   const update = (
     patch: Partial<Turn>,
     conversationId = state.conversationId
@@ -290,16 +301,19 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
   switch (action.type) {
     case "requestFailed":
-      return update({
-        status: "failed",
-        problem: action.problem,
-        retryAfter: action.retryAfter,
-      });
+      return update(
+        {
+          status: "failed",
+          problem: action.problem,
+          retryAfter: action.retryAfter,
+        },
+        unconfirmedId
+      );
     case "stopped":
-      return update({ status: "stopped" });
+      return update({ status: "stopped" }, unconfirmedId);
     case "ended":
       // The stream closed without done or failed.
-      return update({ status: "failed", problem: "error" });
+      return update({ status: "failed", problem: "error" }, unconfirmedId);
     case "event": {
       const { event } = action;
       // The payload is trusted JSON from the network; ignore anything off-shape.
@@ -309,7 +323,12 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       switch (event.event) {
         case "conversation":
           return typeof event.data.id === "string"
-            ? update({}, event.data.id)
+            ? update(
+                event.data.id === state.conversationId
+                  ? {}
+                  : { conversationIdBefore: state.conversationId },
+                event.data.id
+              )
             : state;
         case "status": {
           const { phase, notice } = event.data;
