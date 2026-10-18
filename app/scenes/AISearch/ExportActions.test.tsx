@@ -55,7 +55,12 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-function mount(turns: Turn[], streaming = false, title?: string) {
+function mount(
+  turns: Turn[],
+  streaming = false,
+  title?: string,
+  onSave?: () => void
+) {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
@@ -70,6 +75,7 @@ function mount(turns: Turn[], streaming = false, title?: string) {
                 turns={turns}
                 streaming={streaming}
                 title={title}
+                onSave={onSave}
               />
             </ActionContextProvider>
           </Router>
@@ -158,6 +164,16 @@ describe("ExportActions", () => {
     expect(revoke).not.toHaveBeenCalled();
     vi.advanceTimersByTime(250);
     expect(revoke).toHaveBeenCalledWith("blob:x");
+  });
+
+  it("offers Save as draft document only when saving is allowed", async () => {
+    const onSave = vi.fn();
+    await choose("Save as draft document", [turn], false, undefined, onSave);
+    expect(onSave).toHaveBeenCalledTimes(1);
+    document.body.innerHTML = "";
+    const { trigger } = mount([turn]);
+    await open(trigger);
+    expect(item("Save as draft document")).toBeUndefined();
   });
 
   it("prints", async () => {

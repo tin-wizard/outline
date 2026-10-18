@@ -1,4 +1,9 @@
-import { CopyIcon, ThumbsDownIcon, ThumbsUpIcon } from "outline-icons";
+import {
+  CopyIcon,
+  NewDocumentIcon,
+  ThumbsDownIcon,
+  ThumbsUpIcon,
+} from "outline-icons";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -12,6 +17,8 @@ import { canRate } from "./model";
 
 interface Props {
   turn: Turn;
+  /** Saves the answer as a draft document; omitted when the user cannot create documents. */
+  onSave?: (turn: Turn) => void;
   /** Markdown of the answer for the copy button. */
   markdown: string;
   onRate?: (turnId: number, rating: Rating) => void;
@@ -24,20 +31,28 @@ interface Props {
 }
 
 /**
- * The icon row under a finished answer: copy, helpful, not helpful and report,
+ * The icon row under a finished answer: copy, save as draft, helpful, not
+ * helpful and report,
  * with how long the answer took when the server said. Only actions that work
  * for this turn are shown.
  *
  * @param props see Props.
  * @returns the row.
  */
-export function AnswerActions({ turn, markdown, onRate, onReport }: Props) {
+export function AnswerActions({
+  turn,
+  markdown,
+  onSave,
+  onRate,
+  onReport,
+}: Props) {
   const { t, i18n } = useTranslation();
   const [reporting, setReporting] = React.useState(false);
   const feedback = turn.feedback;
   const rateable = !!onRate && canRate(turn);
   const pending = !!feedback?.pending;
   const handleCopied = () => toast.success(t("Copied"));
+  const handleSave = () => onSave?.(turn);
   const handleHelpful = () => onRate?.(turn.id, "up");
   const handleNotHelpful = () => onRate?.(turn.id, "down");
   const handleOpenReport = () => setReporting(true);
@@ -74,6 +89,17 @@ export function AnswerActions({ turn, markdown, onRate, onReport }: Props) {
           <CopyIcon size={20} />
         </IconButton>
       </CopyToClipboard>
+      {onSave && (
+        <Tooltip content={t("Save as draft document")}>
+          <IconButton
+            type="button"
+            aria-label={t("Save as draft document")}
+            onClick={handleSave}
+          >
+            <NewDocumentIcon size={20} />
+          </IconButton>
+        </Tooltip>
+      )}
       {rateable && (
         <>
           <Separator aria-hidden />

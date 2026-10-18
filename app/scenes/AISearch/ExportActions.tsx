@@ -1,4 +1,9 @@
-import { CopyIcon, DownloadIcon, PrintIcon } from "outline-icons";
+import {
+  CopyIcon,
+  DownloadIcon,
+  NewDocumentIcon,
+  PrintIcon,
+} from "outline-icons";
 import copy from "copy-to-clipboard";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
@@ -19,6 +24,8 @@ interface Props {
   streaming: boolean;
   /** Heading of the exported Markdown, e.g. the chat title. */
   title?: string;
+  /** Saves the whole chat as a draft document; omitted when not allowed. */
+  onSave?: () => void;
 }
 
 const section = ({ t }: { t: (key: string) => string }) =>
@@ -32,9 +39,10 @@ const section = ({ t }: { t: (key: string) => string }) =>
  * @param props.turns the conversation turns.
  * @param props.streaming whether an answer is being written.
  * @param props.title heading of the exported Markdown; "AI Search" by default.
+ * @param props.onSave saves the chat as a draft document.
  * @returns the menu button.
  */
-export function ExportActions({ turns, streaming, title }: Props) {
+export function ExportActions({ turns, streaming, title, onSave }: Props) {
   const { t } = useTranslation();
   const disabled = streaming || !turns.some((turn) => turn.blocks.length > 0);
 
@@ -81,8 +89,19 @@ export function ExportActions({ turns, streaming, title }: Props) {
         icon: <PrintIcon />,
         perform: handlePrint,
       }),
+      ...(onSave
+        ? [
+            createAction({
+              name: t("Save as draft document"),
+              analyticsName: "Save AI conversation as document",
+              section,
+              icon: <NewDocumentIcon />,
+              perform: onSave,
+            }),
+          ]
+        : []),
     ],
-    [t, handleCopy, handleDownload, handlePrint]
+    [t, handleCopy, handleDownload, handlePrint, onSave]
   );
   const rootAction = useMenuAction(actions);
 
