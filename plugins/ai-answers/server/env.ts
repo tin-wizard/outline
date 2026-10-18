@@ -2,11 +2,7 @@ import { IsBoolean, IsOptional, IsString } from "class-validator";
 import { Environment } from "@server/env";
 import { Public } from "@server/utils/decorators/Public";
 import environment from "@server/utils/environment";
-import {
-  ASK_DEFAULT_DEADLINE_MS,
-  ASK_DEFAULT_IDLE_MS,
-  DEFAULT_DEADLINE_MS,
-} from "./contract";
+import { ASK_DEFAULT_DEADLINE_MS, ASK_DEFAULT_IDLE_MS } from "./contract";
 
 class AIAnswersPluginEnvironment extends Environment {
   /**
@@ -44,27 +40,37 @@ class AIAnswersPluginEnvironment extends Environment {
     this.toOptionalString(environment.AI_ANSWERS_MONTHLY_BUDGET_USD) ?? "25";
 
   /**
-   * Hard deadline in milliseconds for the model call of an answer: when it
-   * passes, the call is aborted and the retrieved documents are returned
-   * without an answer. Redis and database work around the call is not bounded
-   * by it. Clamped to 1000-30000 (the client timeout) at use; defaults to
-   * 15000. Deliberately not validated here: a failing validator exits the
-   * process, and a typo must not take the site down.
+   * Daily spend cap per user in USD (calendar day, UTC), checked before each
+   * model call. Defaults to 2. Unset, empty or invalid (not a plain
+   * non-negative number, or above 100000) means the default; an explicit 0
+   * blocks AI answers for every user. Not validated here: a failing validator
+   * exits the process, and a typo must not take the site down.
    */
   @IsOptional()
-  public AI_ANSWERS_DEADLINE_MS =
-    this.toOptionalNumber(environment.AI_ANSWERS_DEADLINE_MS) ??
-    DEFAULT_DEADLINE_MS;
+  public AI_ANSWERS_USER_DAILY_BUDGET_USD = this.toOptionalString(
+    environment.AI_ANSWERS_USER_DAILY_BUDGET_USD
+  );
 
   /**
    * Total cap in milliseconds of one streamed AI Search answer (`ai.ask`).
    * Clamped to 10000-50000 at use, so it stays below the 60 s concurrency
-   * slot lifetime; defaults to 45000. Not validated, like the deadline above.
+   * slot lifetime; defaults to 45000. Deliberately not validated: a failing
+   * validator exits the process, and a typo must not take the site down.
    */
   @IsOptional()
   public AI_ASK_DEADLINE_MS =
     this.toOptionalNumber(environment.AI_ASK_DEADLINE_MS) ??
     ASK_DEFAULT_DEADLINE_MS;
+
+  /**
+   * Days a stored AI conversation is kept after its last activity. A whole
+   * number clamped to 1-365 at use; unset, empty or invalid means 90. Not
+   * validated here, like the deadline above.
+   */
+  @IsOptional()
+  public AI_HISTORY_RETENTION_DAYS = this.toOptionalString(
+    environment.AI_HISTORY_RETENTION_DAYS
+  );
 
   /**
    * How long in milliseconds a streamed answer may go without any event from

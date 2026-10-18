@@ -6,6 +6,7 @@ import {
   OfflineError,
   RateLimitExceededError,
 } from "~/utils/errors";
+import type { StoredTurn } from "~/models/AIConversation";
 import { client } from "~/utils/ApiClient";
 import { StreamRequestError, streamFetch } from "~/utils/streamFetch";
 import type { ChatState, Rating, Scope, TurnProblem } from "./model";
@@ -57,6 +58,8 @@ export function useAISearch(): {
   ask: (question: string, scope: Scope) => void;
   stop: () => void;
   reset: () => void;
+  /** Replaces the page with a stored conversation, so follow-ups continue it. */
+  hydrate: (conversationId: string, turns: StoredTurn[]) => void;
   /** Sets, switches or (when repeating the current rating) clears feedback. */
   rate: (turnId: number, rating: Rating) => void;
 } {
@@ -122,7 +125,7 @@ export function useAISearch(): {
     const next = turn.feedback?.rating === rating ? null : rating;
     dispatch({ type: "feedbackStart", turnId, rating: next });
     void client
-      .post("ai.feedback", { usageId: turn.usageId, rating: next ?? "clear" })
+      .post("/ai.feedback", { usageId: turn.usageId, rating: next ?? "clear" })
       .then(() => dispatch({ type: "feedbackDone", turnId }))
       .catch((err) =>
         dispatch({
@@ -137,6 +140,16 @@ export function useAISearch(): {
         })
       );
   }, []);
+
+  const hydrate = React.useCallback(
+    (conversationId: string, turns: StoredTurn[]) => {
+      const controller = controllerRef.current;
+      controllerRef.current = null;
+      controller?.abort();
+      dispatch({ type: "hydrate", conversationId, turns });
+    },
+    []
+  );
 
   const stop = React.useCallback(() => controllerRef.current?.abort(), []);
 
@@ -161,5 +174,5 @@ export function useAISearch(): {
     };
   }, []);
 
-  return { state, streaming, ask, stop, reset, rate };
+  return { state, streaming, ask, stop, reset, hydrate, rate };
 }

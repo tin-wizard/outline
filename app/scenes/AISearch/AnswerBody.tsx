@@ -4,12 +4,16 @@ import styled from "styled-components";
 import { s } from "@shared/styles";
 import type { BlockInput, Group, Inline, ParsedItem } from "./markdown";
 import { groupBlocks } from "./markdown";
+import type { CitationPreviewData } from "./CitationPreview";
+import { CitationPreview } from "./CitationPreview";
 
 interface Props {
   /** The verified blocks received so far. */
   blocks: BlockInput[];
   /** Called when a citation marker is activated. */
-  onCitationClick?: (n: number) => void;
+  onCitationClick?: (n: number, marker?: HTMLElement) => void;
+  /** Preview card data by source number, built from the stream's events. */
+  previews?: ReadonlyMap<number, CitationPreviewData>;
 }
 
 /**
@@ -20,12 +24,17 @@ interface Props {
  *
  * @param props.blocks the blocks to render.
  * @param props.onCitationClick called with the source number of a marker.
+ * @param props.previews hover and focus preview data by source number.
  * @returns the rendered answer.
  */
-export function AnswerBody({ blocks, onCitationClick }: Props) {
+export function AnswerBody({ blocks, onCitationClick, previews }: Props) {
   const groups = React.useMemo(() => groupBlocks(blocks), [blocks]);
   const marks = (citations: number[]) => (
-    <Markers citations={citations} onClick={onCitationClick} />
+    <Markers
+      citations={citations}
+      onClick={onCitationClick}
+      previews={previews}
+    />
   );
 
   return <Body>{groups.map((group, i) => renderGroup(group, i, marks))}</Body>;
@@ -132,29 +141,75 @@ function renderInline(nodes: Inline[]): React.ReactNode {
 function Markers({
   citations,
   onClick,
+  previews,
 }: {
   citations: number[];
-  onClick?: (n: number) => void;
+  onClick?: (n: number, marker?: HTMLElement) => void;
+  previews?: ReadonlyMap<number, CitationPreviewData>;
 }) {
-  const { t } = useTranslation();
-  const handleClick = (event: React.MouseEvent<HTMLButtonElement>) =>
-    onClick?.(Number(event.currentTarget.value));
   return (
     <>
       {citations.map((n) => (
-        <Marker
+        <CitationMarker
           key={n}
-          type="button"
-          aria-label={t("Source {{ number }}", { number: n })}
-          value={n}
-          onClick={handleClick}
-        >
-          {n}
-        </Marker>
+          n={n}
+          onClick={onClick}
+          preview={previews?.get(n)}
+        />
       ))}
     </>
   );
 }
+
+function CitationMarker({
+  n,
+  onClick,
+  preview,
+}: {
+  n: number;
+  onClick?: (n: number, marker?: HTMLElement) => void;
+  preview?: CitationPreviewData;
+}) {
+  const { t } = useTranslation();
+  const id = React.useId();
+  const [open, setOpen] = React.useState(false);
+  const handleClick = (event: React.MouseEvent<HTMLButtonElement>) =>
+    onClick?.(n, event.currentTarget);
+  const handleOpen = () => setOpen(true);
+  const handleClose = () => setOpen(false);
+  const handleKeyDown = (event: React.KeyboardEvent) => {
+    if (event.key === "Escape" && open) {
+      event.stopPropagation();
+      setOpen(false);
+    }
+  };
+  const showing = open && !!preview;
+
+  return (
+    <MarkerWrap
+      onMouseEnter={handleOpen}
+      onMouseLeave={handleClose}
+      onFocus={handleOpen}
+      onBlur={handleClose}
+      onKeyDown={handleKeyDown}
+    >
+      <Marker
+        type="button"
+        data-citation
+        aria-label={t("Source {{ number }}", { number: n })}
+        aria-describedby={showing ? id : undefined}
+        onClick={handleClick}
+      >
+        {n}
+      </Marker>
+      {showing && <CitationPreview id={id} preview={preview} />}
+    </MarkerWrap>
+  );
+}
+
+const MarkerWrap = styled.span`
+  position: relative;
+`;
 
 const Marker = styled.button`
   display: inline-block;
@@ -171,6 +226,14 @@ const Marker = styled.button`
   line-height: 18px;
   vertical-align: super;
   cursor: var(--pointer);
+
+  /* Touch: at least a 24px target (WCAG 2.5.8). */
+  @media (pointer: coarse) {
+    min-width: 24px;
+    height: 24px;
+    border-radius: 12px;
+    line-height: 24px;
+  }
 
   &:hover,
   &:focus-visible {

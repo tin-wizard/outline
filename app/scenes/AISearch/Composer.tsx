@@ -38,6 +38,8 @@ export function Composer({
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Escape" && busy) {
+      // Handled: Escape here stops the answer and nothing else.
+      event.preventDefault();
       onStop();
     } else if (
       event.key === "Enter" &&

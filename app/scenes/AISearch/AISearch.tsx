@@ -2,53 +2,98 @@ import { observer } from "mobx-react";
 import { SparklesIcon } from "outline-icons";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { Redirect } from "react-router-dom";
+import { Link, Redirect, useParams } from "react-router-dom";
+import { toast } from "sonner";
 import { isUUID } from "validator";
 import styled from "styled-components";
-import { s } from "@shared/styles";
+import { breakpoints, s } from "@shared/styles";
 import Button from "~/components/Button";
 import Scene from "~/components/Scene";
+import PlaceholderText from "~/components/PlaceholderText";
 import useAIAnswersEnabled from "~/hooks/useAIAnswersEnabled";
+import useAIHistoryEnabled from "~/hooks/useAIHistoryEnabled";
 import useQuery from "~/hooks/useQuery";
 import useStores from "~/hooks/useStores";
-import { homePath } from "~/utils/routeHelpers";
+import { aiPath, homePath } from "~/utils/routeHelpers";
 import { AnswerTurn } from "./AnswerTurn";
+import { ExportActions } from "./ExportActions";
+import { SourcesDrawer } from "./SourcesDrawer";
 import { Composer, MAX_QUERY_LENGTH } from "./Composer";
 import type { ScopeChip } from "./ScopeChips";
 import { ScopeChips } from "./ScopeChips";
 import type { Scope } from "./model";
+import { citedSources } from "./model";
 import { useAISearch } from "./useAISearch";
 import { useAutoSubmitQuery } from "./useAutoSubmitQuery";
+import { useConversationRoute } from "./useConversationRoute";
+import { useSourcesDrawer } from "./useSourcesDrawer";
 
 /**
  * The AI Search page (`/ai`): a conversation with streamed, cited answers
  * built only from documents the user can read. `q`, `collectionId` and
  * `documentId` query parameters prefill the question and scope; a `q` is
- * submitted once on load.
+ * submitted once on load. `/ai/:conversationId` resumes a stored conversation
+ * when workspace history is on, and otherwise returns to `/ai`.
  *
- * @returns the page, or a redirect to home when AI answers are unavailable.
+ * @returns the page, or a redirect when AI answers are unavailable.
  */
 export const AISearch = observer(function AISearch() {
   const enabled = useAIAnswersEnabled();
-  return enabled ? <Page /> : <Redirect to={homePath()} />;
+  const historyEnabled = useAIHistoryEnabled();
+  const { conversationId } = useParams<{ conversationId?: string }>();
+  if (!enabled) {
+    return <Redirect to={homePath()} />;
+  }
+  if (conversationId && !historyEnabled) {
+    return <HistoryOff />;
+  }
+  return (
+    <Page conversationId={conversationId} historyEnabled={historyEnabled} />
+  );
 });
+
+/** Explains why a stored conversation cannot be opened, then shows a new chat. */
+function HistoryOff() {
+  const { t } = useTranslation();
+  React.useEffect(() => {
+    // A fixed id shows the notice once even when the effect runs twice.
+    toast.info(t("Chat history is turned off for this workspace."), {
+      id: "ai-history-off",
+    });
+  }, [t]);
+  return <Redirect to={aiPath()} />;
+}
 
 /** Query-string ids are untrusted: only well-formed UUIDs are used as scope. */
 function validId(value: string | null): string | undefined {
   return value && isUUID(value) ? value : undefined;
 }
 
-const Page = observer(function Page() {
+const Page = observer(function Page({
+  conversationId,
+  historyEnabled,
+}: {
+  conversationId?: string;
+  historyEnabled: boolean;
+}) {
   const { t } = useTranslation();
-  const { collections, documents } = useStores();
+  const { collections, documents, aiConversations } = useStores();
   const params = useQuery();
-  const { state, streaming, ask, stop, reset, rate } = useAISearch();
+  const { state, streaming, ask, stop, reset, hydrate, rate } = useAISearch();
+  const route = useConversationRoute({
+    routeId: conversationId,
+    enabled: historyEnabled,
+    state,
+    hydrate,
+    reset,
+  });
   const [text, setText] = React.useState(params.get("q") ?? "");
   const [scope, setScope] = React.useState<Scope>(() => ({
     collectionId: validId(params.get("collectionId")),
     documentId: validId(params.get("documentId")),
   }));
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+  const drawer = useSourcesDrawer();
 
   const { collectionId, documentId } = scope;
   React.useEffect(() => {
@@ -78,7 +123,7 @@ const Page = observer(function Page() {
     [ask, scope, streaming]
   );
 
-  useAutoSubmitQuery(submit);
+  useAutoSubmitQuery(submit, !conversationId);
 
   const handleSubmit = () => submit(text);
 
@@ -96,6 +141,13 @@ const Page = observer(function Page() {
     textareaRef.current?.focus();
   };
 
+  // Chips fill the composer like the idle suggestions: sending stays explicit.
+  const handleFollowUp = (question: string) => {
+    setText(question.slice(0, MAX_QUERY_LENGTH));
+    textareaRef.current?.focus();
+  };
+
+  // The link to /ai starts a new chat; the stored one is kept, not deleted.
   const handleNewConversation = () => {
     reset();
     setText("");
@@ -138,66 +190,217 @@ const Page = observer(function Page() {
 
   const { turns } = state;
   const last = turns[turns.length - 1];
+  const title =
+    (conversationId && aiConversations.get(conversationId)?.title) ||
+    t("AI Search");
+  // The drawer shows the selected answer, else the newest one with sources.
+  const drawerTurn =
+    turns.find((turn) => turn.id === drawer.turnId) ??
+    [...turns].reverse().find((turn) => citedSources(turn).length > 0) ??
+    last;
 
   return (
     <Scene
-      title={t("AI Search")}
+      title={title}
       icon={<SparklesIcon />}
-      textTitle={t("AI Search")}
+      textTitle={title}
+      centered={false}
       actions={
         turns.length > 0 ? (
-          <Button type="button" neutral onClick={handleNewConversation}>
-            {t("New conversation")}
-          </Button>
+          <>
+            <ExportActions turns={turns} streaming={streaming} title={title} />
+            <Button
+              as={Link}
+              to={aiPath()}
+              neutral
+              onClick={handleNewConversation}
+            >
+              {t("New chat")}
+            </Button>
+          </>
         ) : undefined
       }
     >
-      <ScopeChips chips={chips} disabled={streaming} />
-      {turns.length === 0 ? (
-        <Idle>
-          <p>
-            {t(
-              "Ask a question and get an answer built from your documents, with sources."
+      <Root data-ai-search>
+        <Panes>
+          <Chat>
+            <div data-print-hidden>
+              <ScopeChips chips={chips} disabled={streaming} />
+            </div>
+            {route.status === "loading" ? (
+              <Idle aria-busy="true">
+                <span role="status">{t("Loading conversation…")}</span>
+                <PlaceholderText />
+                <PlaceholderText delay={0.2} />
+              </Idle>
+            ) : route.status === "notFound" ? (
+              <Idle role="alert">
+                <strong>{t("Conversation not found")}</strong>
+                <p>
+                  <Link to={aiPath()}>{t("New chat")}</Link>
+                </p>
+              </Idle>
+            ) : route.status === "error" ? (
+              <Idle role="alert">
+                <p>{t("Could not load this conversation.")}</p>
+                <Button type="button" neutral onClick={route.retry}>
+                  {t("Try again")}
+                </Button>
+              </Idle>
+            ) : turns.length === 0 ? (
+              <Welcome>
+                <SparklesIcon size={32} />
+                <WelcomeTitle>{t("Ask your documents")}</WelcomeTitle>
+                <p>
+                  {t(
+                    "Ask a question and get an answer built from your documents, with sources."
+                  )}
+                </p>
+                <Suggestions aria-label={t("Example questions")}>
+                  {suggestions.map((suggestion) => (
+                    <li key={suggestion}>
+                      <Suggestion
+                        type="button"
+                        value={suggestion}
+                        onClick={handleSuggestionClick}
+                      >
+                        {suggestion}
+                      </Suggestion>
+                    </li>
+                  ))}
+                </Suggestions>
+              </Welcome>
+            ) : (
+              turns.map((turn) => (
+                <AnswerTurn
+                  key={turn.id}
+                  turn={turn}
+                  isLast={turn === last}
+                  scopeLabels={scopeLabels(turn.scope)}
+                  onStop={stop}
+                  onRate={rate}
+                  onOpenSources={drawer.show}
+                  onFollowUp={handleFollowUp}
+                  onRetry={(failed) => submit(failed.question, failed.scope)}
+                />
+              ))
             )}
-          </p>
-          <Suggestions aria-label={t("Example questions")}>
-            {suggestions.map((suggestion) => (
-              <li key={suggestion}>
-                <Suggestion
-                  type="button"
-                  value={suggestion}
-                  onClick={handleSuggestionClick}
-                >
-                  {suggestion}
-                </Suggestion>
-              </li>
-            ))}
-          </Suggestions>
-        </Idle>
-      ) : (
-        turns.map((turn) => (
-          <AnswerTurn
-            key={turn.id}
-            turn={turn}
-            isLast={turn === last}
-            scopeLabels={scopeLabels(turn.scope)}
-            onStop={stop}
-            onRate={rate}
-            onRetry={(failed) => submit(failed.question, failed.scope)}
-          />
-        ))
-      )}
-      <Composer
-        value={text}
-        onChange={setText}
-        onSubmit={handleSubmit}
-        onStop={stop}
-        busy={streaming}
-        textareaRef={textareaRef}
-      />
+            <ComposerDock data-print-hidden hidden={route.status !== "idle"}>
+              <Composer
+                value={text}
+                onChange={setText}
+                onSubmit={handleSubmit}
+                onStop={stop}
+                busy={streaming}
+                textareaRef={textareaRef}
+              />
+            </ComposerDock>
+          </Chat>
+          {drawer.open && drawerTurn && (
+            <SourcesDrawer
+              turn={drawerTurn}
+              selected={drawer.selected}
+              autoFocus={drawer.focusIn}
+              onClose={drawer.close}
+            />
+          )}
+        </Panes>
+      </Root>
     </Scene>
   );
 });
+
+const Root = styled.div`
+  width: 100%;
+  padding: 4px 16px 0;
+
+  @media (min-width: ${breakpoints.tablet}px) {
+    padding: 4px 44px 0;
+  }
+
+  [data-print-only] {
+    display: none;
+  }
+
+  @media print {
+    color: #000;
+    background: #fff;
+
+    [data-print-hidden],
+    button:not([data-citation]) {
+      display: none !important;
+    }
+
+    * {
+      color: #000 !important;
+      background: transparent !important;
+      box-shadow: none !important;
+    }
+
+    a {
+      text-decoration: underline;
+    }
+
+    a[href^="/doc/"]::after {
+      content: " (" attr(href) ")";
+      font-size: 0.85em;
+    }
+
+    [data-print-only] {
+      display: block !important;
+    }
+
+    article {
+      break-inside: avoid-page;
+    }
+  }
+`;
+
+const Panes = styled.div`
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 24px;
+`;
+
+const Chat = styled.div`
+  flex: 1;
+  min-width: 0;
+  max-width: 46em;
+`;
+
+/** Keeps the composer in reach at the bottom while a long chat scrolls. */
+const ComposerDock = styled.div`
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  padding: 8px 0 max(12px, env(safe-area-inset-bottom));
+  background: ${s("background")};
+`;
+
+const Welcome = styled.div`
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: 48px 0 32px;
+  color: ${s("textSecondary")};
+  text-align: center;
+
+  svg {
+    fill: ${s("accent")};
+  }
+
+  ul {
+    width: 100%;
+    text-align: start;
+  }
+`;
+
+const WelcomeTitle = styled.h2`
+  margin: 8px 0 0;
+  color: ${s("text")};
+  font-size: 20px;
+`;
 
 const Idle = styled.div`
   margin: 32px 0;

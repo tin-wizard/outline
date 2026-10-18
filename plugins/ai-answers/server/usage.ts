@@ -7,7 +7,6 @@ import Redis from "@server/storage/redis";
 import {
   MAX_OUTPUT_TOKENS,
   STRUCTURED_SYSTEM_PROMPT,
-  SYSTEM_PROMPT,
   type Usage,
 } from "./contract";
 import env from "./env";
@@ -27,12 +26,22 @@ const DEFAULT_BUDGET_USD = 25;
 const MAX_BUDGET_USD = 100_000;
 let warnedInvalidBudget = false;
 
+const DEFAULT_USER_DAILY_BUDGET_USD = 2;
+let warnedInvalidUserBudget = false;
+
+/** Shares of the monthly budget (percent) that log a warning once a month. */
+export const BUDGET_ALERT_THRESHOLDS = [80, 100] as const;
+
+/** Alert flags outlive the month they belong to, then expire. */
+const ALERT_TTL_SECONDS = 35 * 24 * 3600;
+
 /** How long a workspace stays blocked after a usage row could not be saved. */
 const UNMETERED_TTL_SECONDS = 3600;
 
 /** Why a model call was not made. */
 export type BlockReason =
   | "budget"
+  | "quota"
   | "concurrency"
   | "unavailable"
   | "unmetered";
@@ -76,6 +85,30 @@ export function monthlyBudgetMicroUsd(): number {
 }
 
 /**
+ * The daily cap per user in micro-USD (calendar day, UTC).
+ *
+ * @returns the cap; the $2 default when the setting is unset or invalid, and 0
+ * (AI answers blocked for every user) when it is explicitly 0.
+ */
+export function userDailyBudgetMicroUsd(): number {
+  const raw = (env.AI_ANSWERS_USER_DAILY_BUDGET_USD ?? "").trim();
+  if (raw === "") {
+    return DEFAULT_USER_DAILY_BUDGET_USD * 1_000_000;
+  }
+  const usd = Number(raw);
+  if (!/^\d+(\.\d+)?$/.test(raw) || usd > MAX_BUDGET_USD) {
+    if (!warnedInvalidUserBudget) {
+      warnedInvalidUserBudget = true;
+      Logger.warn(
+        "AI_ANSWERS_USER_DAILY_BUDGET_USD is invalid; using the default"
+      );
+    }
+    return DEFAULT_USER_DAILY_BUDGET_USD * 1_000_000;
+  }
+  return Math.round(usd * 1_000_000);
+}
+
+/**
  * Records one request. Cost is derived from the model and token counts.
  *
  * @param entry what to record; never includes content.
@@ -108,7 +141,12 @@ export async function recordUsage(
  */
 export async function record(entry: UsageEntry): Promise<string | null> {
   try {
-    return (await recordUsage(entry)).id;
+    const { cost, id } = await recordUsage(entry);
+    if (cost > 0) {
+      // Fire and forget: the alert must never delay or fail the answer.
+      void checkBudgetAlerts(entry.teamId);
+    }
+    return id;
   } catch {
     Logger.warn("AI answers usage could not be recorded", {
       outcome: entry.outcome,
@@ -146,6 +184,102 @@ export async function getMonthlySpendMicroUsd(
     throw new Error("Unreadable AI answers spend");
   }
   return total;
+}
+
+/**
+ * Total spend of one user in a workspace on the current calendar day (UTC).
+ *
+ * @param teamId the workspace.
+ * @param userId the user.
+ * @param now the reference time, for tests.
+ * @returns micro-USD spent.
+ * @throws if the sum cannot be read; callers must fail closed.
+ */
+export async function getUserDailySpendMicroUsd(
+  teamId: string,
+  userId: string,
+  now: Date = new Date()
+): Promise<number> {
+  const start = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+  );
+  const end = new Date(start.getTime() + 24 * 3600 * 1000);
+  // Served by the (teamId, createdAt) index; userId filters one day's rows.
+  const total = Number(
+    (await AIAnswerUsage.sum("costMicroUsd", {
+      where: { teamId, userId, createdAt: { [Op.gte]: start, [Op.lt]: end } },
+    })) ?? 0
+  );
+  if (!Number.isFinite(total)) {
+    throw new Error("Unreadable AI answers spend");
+  }
+  return total;
+}
+
+/**
+ * Whether a user has used up their daily allowance.
+ *
+ * @param teamId the workspace.
+ * @param userId the user.
+ * @param now the reference time, for tests.
+ * @returns true at or above the cap, and always when the cap is 0.
+ */
+export async function isOverUserQuota(
+  teamId: string,
+  userId: string,
+  now: Date = new Date()
+): Promise<boolean> {
+  const budget = userDailyBudgetMicroUsd();
+  if (budget <= 0) {
+    return true;
+  }
+  return (await getUserDailySpendMicroUsd(teamId, userId, now)) >= budget;
+}
+
+/**
+ * Logs a warning the first time in a UTC month that a workspace's spend
+ * reaches each alert threshold of its monthly budget. A Redis flag per
+ * workspace, month and threshold keeps it to one warning. Never throws.
+ *
+ * @param teamId the workspace.
+ * @param now the reference time, for tests.
+ */
+export async function checkBudgetAlerts(
+  teamId: string,
+  now: Date = new Date()
+): Promise<void> {
+  try {
+    const budget = monthlyBudgetMicroUsd();
+    if (budget <= 0) {
+      return;
+    }
+    const spend = await getMonthlySpendMicroUsd(teamId, now);
+    const month = now.toISOString().slice(0, 7);
+    for (const threshold of BUDGET_ALERT_THRESHOLDS) {
+      if (spend * 100 < budget * threshold) {
+        continue;
+      }
+      const first = await withTimeout(
+        Redis.defaultClient.set(
+          `ai-answers:alert:${teamId}:${month}:${threshold}`,
+          "1",
+          "EX",
+          ALERT_TTL_SECONDS,
+          "NX"
+        )
+      );
+      if (first === "OK") {
+        Logger.warn("AI answers workspace budget threshold reached", {
+          teamId,
+          threshold,
+          spendUsd: spend / 1_000_000,
+          budgetUsd: budget / 1_000_000,
+        });
+      }
+    }
+  } catch {
+    Logger.warn("AI answers budget alert check failed", { teamId });
+  }
 }
 
 /**
@@ -229,9 +363,13 @@ export async function markUnmetered(teamId: string): Promise<void> {
  * Any failure to find out (database or Redis) refuses the call.
  *
  * @param teamId the workspace.
+ * @param userId the asking user, held to their daily allowance.
  * @returns a release function when allowed, otherwise the reason it is not.
  */
-export async function reserveModelCall(teamId: string): Promise<Reservation> {
+export async function reserveModelCall(
+  teamId: string,
+  userId: string
+): Promise<Reservation> {
   // Budget and slot are not taken atomically; any overshoot is bounded by the
   // concurrency cap (3 calls in flight).
   try {
@@ -244,6 +382,13 @@ export async function reserveModelCall(teamId: string): Promise<Reservation> {
     if (await isOverBudget(teamId)) {
       Logger.warn("AI answers refused: monthly budget reached", { teamId });
       return { ok: false, reason: "budget" };
+    }
+    if (await isOverUserQuota(teamId, userId)) {
+      Logger.warn("AI answers refused: user daily limit reached", {
+        teamId,
+        userId,
+      });
+      return { ok: false, reason: "quota" };
     }
     const token = await acquireSlot(teamId);
     if (!token) {
@@ -280,8 +425,7 @@ export function estimateUsage(
   sources: AnswerSource[]
 ): Usage {
   const chars =
-    // The longer prompt, so the estimate stays high for either endpoint.
-    Math.max(SYSTEM_PROMPT.length, STRUCTURED_SYSTEM_PROMPT.length) +
+    STRUCTURED_SYSTEM_PROMPT.length +
     question.length +
     sources.reduce(
       (sum, s) =>

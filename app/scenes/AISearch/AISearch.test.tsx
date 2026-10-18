@@ -7,23 +7,47 @@ import { Route, Router } from "react-router-dom";
 import { ThemeProvider } from "styled-components";
 import theme from "@shared/styles/theme";
 import useAIAnswersEnabled from "~/hooks/useAIAnswersEnabled";
+import useAIHistoryEnabled from "~/hooks/useAIHistoryEnabled";
+import type { StoredTurn } from "~/models/AIConversation";
+import { NotFoundError } from "~/utils/errors";
 import type * as StreamModule from "~/utils/streamFetch";
 import { streamFetch } from "~/utils/streamFetch";
 import { AISearch } from "./AISearch";
 import { block, controlled, done } from "~/test/askStream";
+
+const {
+  mockFetchCollection,
+  mockFetchDocument,
+  mockFetchConversation,
+  mockFetchPage,
+} = vi.hoisted(() => ({
+  mockFetchCollection: vi.fn(() => Promise.resolve()),
+  mockFetchDocument: vi.fn(() => Promise.resolve()),
+  mockFetchConversation: vi.fn(),
+  mockFetchPage: vi.fn(),
+}));
 
 vi.mock("~/utils/streamFetch", async (importOriginal) => ({
   ...(await importOriginal<typeof StreamModule>()),
   streamFetch: vi.fn(),
 }));
 vi.mock("~/hooks/useAIAnswersEnabled", () => ({ default: vi.fn() }));
+vi.mock("~/hooks/useAIHistoryEnabled", () => ({ default: vi.fn() }));
 vi.mock("~/hooks/useMobile", () => ({ default: () => false }));
-vi.mock("~/hooks/useStores", () => ({
-  default: () => ({
+vi.mock("~/hooks/useMediaQuery", () => ({ default: () => false }));
+vi.mock("~/hooks/useStores", () => {
+  // Stable, like the real hook: effects depend on the stores.
+  const stores = {
     collections: { get: () => undefined, fetch: mockFetchCollection },
     documents: { get: () => undefined, fetch: mockFetchDocument },
-  }),
-}));
+    aiConversations: {
+      fetch: mockFetchConversation,
+      fetchPage: mockFetchPage,
+      get: () => undefined,
+    },
+  };
+  return { default: () => stores };
+});
 vi.mock("~/components/Scene", () => ({
   default: ({
     children,
@@ -44,7 +68,11 @@ vi.mock("~/components/Button", () => ({
     onClick,
     disabled,
     type,
+    to: _to,
+    as: _as,
   }: {
+    to?: unknown;
+    as?: unknown;
     children?: React.ReactNode;
     onClick?: () => void;
     disabled?: boolean;
@@ -56,10 +84,9 @@ vi.mock("~/components/Button", () => ({
   ),
 }));
 
-const mockFetchCollection = vi.fn(() => Promise.resolve());
-const mockFetchDocument = vi.fn(() => Promise.resolve());
 const mocked = vi.mocked(streamFetch);
 const enabled = vi.mocked(useAIAnswersEnabled);
+const historyEnabled = vi.mocked(useAIHistoryEnabled);
 
 const UUID = "0b8c7a4e-5b2f-4f5e-9d3a-1f2e3d4c5b6a";
 const UUID2 = "1c9d8b5f-6c3a-4a6f-8e4b-2a3f4e5d6c7b";
@@ -74,7 +101,10 @@ beforeEach(() => {
   mocked.mockReset();
   mockFetchCollection.mockClear();
   mockFetchDocument.mockClear();
+  mockFetchConversation.mockReset();
+  mockFetchPage.mockReset().mockResolvedValue([]);
   enabled.mockReturnValue(true);
+  historyEnabled.mockReturnValue(false);
 });
 
 afterEach(() => {
@@ -89,7 +119,7 @@ function mount(url: string, { strict = false } = {}) {
   const tree = (
     <ThemeProvider theme={theme}>
       <Router history={history}>
-        <Route path="/ai" component={AISearch} />
+        <Route path="/ai/:conversationId?" component={AISearch} />
         <Route exact path="/home" render={() => <p>home</p>} />
       </Router>
     </ThemeProvider>
@@ -214,6 +244,60 @@ describe("AISearch page", () => {
     expect(document.activeElement?.textContent).toBe("Answer");
   });
 
+  it("opens the Sources drawer from a marker and fills the composer from a chip without sending", async () => {
+    window.sessionStorage.clear();
+    const stream = controlled();
+    const { host } = mount("/ai?q=hello");
+    await tick();
+    const citation = {
+      n: 1,
+      documentId: "d1",
+      title: "Doc 1",
+      url: "/doc/a-abc#h-leave-policy",
+      quote: "Requests go to managers.",
+    };
+    await stream.push(
+      {
+        event: "sources",
+        data: [{ n: 1, documentId: "d1", title: "Doc 1", url: "/doc/a-abc" }],
+      },
+      {
+        event: "block",
+        data: {
+          index: 0,
+          kind: "paragraph",
+          markdown: "Claim [1].",
+          citations: [citation],
+        },
+      },
+      done("c1")
+    );
+    await stream.end();
+    expect(host.querySelector("aside")).toBeNull();
+    const marker = host.querySelector<HTMLButtonElement>("[data-citation]");
+    act(() => marker?.click());
+    expect(host.querySelector("aside")?.textContent).toContain(
+      "Requests go to managers."
+    );
+    const chip = [...host.querySelectorAll("button")].find((b) =>
+      b.textContent?.startsWith("Tell me more about")
+    );
+    act(() => chip?.click());
+    expect(host.querySelector("textarea")?.value).toBe(
+      "Tell me more about leave policy"
+    );
+    expect(mocked).toHaveBeenCalledTimes(1);
+    act(() => {
+      host
+        .querySelector("aside")
+        ?.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+        );
+    });
+    expect(host.querySelector("aside")).toBeNull();
+    expect(document.activeElement).toBe(marker);
+  });
+
   it("aborts the request when the page unmounts", async () => {
     const stream = controlled();
     const { root } = mount("/ai?q=hello");
@@ -255,5 +339,174 @@ describe("AISearch page", () => {
     const textarea = host.querySelector("textarea");
     expect(textarea?.value).toBe(chip.value);
     expect(document.activeElement).toBe(textarea);
+  });
+});
+
+const CONVERSATION = "2d0e9c6a-7a4b-4c1d-9b8e-3f4a5b6c7d8e";
+
+const storedTurn = (patch: Partial<StoredTurn> = {}): StoredTurn => ({
+  id: "t1",
+  position: 0,
+  question: "How do we onboard?",
+  outcome: "answered",
+  usageId: null,
+  createdAt: "2026-10-18T10:00:00.000Z",
+  sources: [
+    { n: 1, documentId: UUID, title: "Onboarding", url: "/doc/onb-abc" },
+  ],
+  blocks: [
+    {
+      kind: "paragraph",
+      markdown: "Meet your buddy [1].",
+      citations: [
+        {
+          n: 1,
+          documentId: UUID,
+          title: "Old title",
+          url: "/doc/onb-abc#h-day-one",
+        },
+      ],
+    },
+    { kind: "paragraph", hidden: true },
+  ],
+  hasHiddenBlocks: true,
+  ...patch,
+});
+
+describe("AISearch page, stored conversations", () => {
+  beforeEach(() => {
+    historyEnabled.mockReturnValue(true);
+  });
+
+  async function type(host: HTMLElement, text: string) {
+    const textarea = host.querySelector("textarea");
+    if (!textarea) {
+      throw new Error("no textarea");
+    }
+    const setValue = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value"
+    )?.set;
+    await act(async () => {
+      setValue?.call(textarea, text);
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    act(() => {
+      textarea.focus();
+      textarea.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+    });
+    await tick();
+  }
+
+  it("loads /ai/:id, shows the stored turns and a notice for hidden blocks", async () => {
+    mockFetchConversation.mockResolvedValue({ turns: [storedTurn()] });
+    const { host } = mount(`/ai/${CONVERSATION}`);
+    await tick();
+    expect(mockFetchConversation).toHaveBeenCalledWith(CONVERSATION, {
+      force: true,
+    });
+    expect(host.textContent).toContain("How do we onboard?");
+    expect(host.textContent).toContain("Meet your buddy");
+    expect(host.textContent).toContain(
+      "This part is no longer available because a source changed or you no longer have access."
+    );
+    // Fresh titles from the sources replace the stored ones.
+    expect(host.textContent).toContain("Onboarding");
+    expect(host.textContent).not.toContain("Old title");
+    expect(mocked).not.toHaveBeenCalled();
+  });
+
+  it("ignores q on a stored conversation", async () => {
+    mockFetchConversation.mockResolvedValue({ turns: [storedTurn()] });
+    mount(`/ai/${CONVERSATION}?q=hello`);
+    await tick();
+    expect(mocked).not.toHaveBeenCalled();
+  });
+
+  it("sends the conversation id with a follow-up", async () => {
+    mockFetchConversation.mockResolvedValue({ turns: [storedTurn()] });
+    const stream = controlled();
+    const { host } = mount(`/ai/${CONVERSATION}`);
+    await tick();
+    await type(host, "And then?");
+    expect(mocked).toHaveBeenCalledTimes(1);
+    expect(mocked.mock.calls[0][1]).toMatchObject({
+      query: "And then?",
+      conversationId: CONVERSATION,
+    });
+    await stream.end();
+  });
+
+  it("shows Conversation not found with a New chat link on 404", async () => {
+    mockFetchConversation.mockRejectedValue(new NotFoundError());
+    const { host } = mount(`/ai/${CONVERSATION}`);
+    await tick();
+    expect(host.textContent).toContain("Conversation not found");
+    const link = host.querySelector("a");
+    expect(link?.getAttribute("href")).toBe("/ai");
+    expect(host.querySelector("textarea")?.closest("[hidden]")).toBeTruthy();
+  });
+
+  it("treats a malformed id as not found without a request", async () => {
+    const { host } = mount("/ai/not-a-uuid");
+    await tick();
+    expect(mockFetchConversation).not.toHaveBeenCalled();
+    expect(host.textContent).toContain("Conversation not found");
+  });
+
+  it("offers a retry when loading fails for another reason", async () => {
+    mockFetchConversation.mockRejectedValueOnce(new Error("boom"));
+    mockFetchConversation.mockResolvedValueOnce({ turns: [storedTurn()] });
+    const { host } = mount(`/ai/${CONVERSATION}`);
+    await tick();
+    const retry = [...host.querySelectorAll("button")].find(
+      (b) => b.textContent === "Try again"
+    );
+    await act(async () => retry?.click());
+    await tick();
+    expect(host.textContent).toContain("Meet your buddy");
+  });
+
+  it("returns to /ai with history off", async () => {
+    historyEnabled.mockReturnValue(false);
+    const { history } = mount(`/ai/${CONVERSATION}`);
+    await tick();
+    expect(history.location.pathname).toBe("/ai");
+    expect(mockFetchConversation).not.toHaveBeenCalled();
+  });
+
+  it("moves a new chat to /ai/:id after its first answer without re-submitting", async () => {
+    mockFetchConversation.mockResolvedValue({ turns: [] });
+    const stream = controlled();
+    const { history } = mount("/ai?q=hello&collectionId=" + UUID);
+    await tick();
+    await stream.push(block(0), done(CONVERSATION));
+    await stream.end();
+    expect(history.location.pathname).toBe(`/ai/${CONVERSATION}`);
+    expect(history.location.search).toBe(`?collectionId=${UUID}`);
+    expect(history.action).toBe("REPLACE");
+    // The sidebar list is refreshed, and the stored chat is not loaded again.
+    expect(mockFetchPage).toHaveBeenCalledWith({ limit: 25 });
+    expect(mockFetchConversation).not.toHaveBeenCalledWith(CONVERSATION, {
+      force: true,
+    });
+    expect(mocked).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts a new chat when navigating from /ai/:id to /ai", async () => {
+    mockFetchConversation.mockResolvedValue({ turns: [storedTurn()] });
+    const { history, host } = mount(`/ai/${CONVERSATION}`);
+    await tick();
+    expect(host.textContent).toContain("Meet your buddy");
+    await act(async () => history.push("/ai"));
+    await tick();
+    expect(host.textContent).not.toContain("Meet your buddy");
+    expect(mocked).not.toHaveBeenCalled();
   });
 });

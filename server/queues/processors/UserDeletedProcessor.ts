@@ -1,4 +1,5 @@
 import {
+  AIConversation,
   ApiKey,
   GroupUser,
   OAuthAuthentication,
@@ -57,6 +58,14 @@ export default class UserDeletedProcessor extends BaseProcessor {
       await Star.destroy({
         where: {
           userId: event.userId,
+        },
+        transaction,
+      });
+      // Hard delete; turns go with it (foreign key cascade).
+      await AIConversation.destroy({
+        where: {
+          userId: event.userId,
+          teamId: event.teamId,
         },
         transaction,
       });

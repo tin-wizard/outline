@@ -264,17 +264,20 @@ export function newSiblingDocumentPath(params: {
 }
 
 /**
- * Returns the path to the AI Search screen, optionally prefilled with a
- * question and scope.
+ * Returns the path to the AI Search screen: a new chat, optionally prefilled
+ * with a question and scope, or a stored conversation when `conversationId`
+ * is given.
  *
- * @param params the question and optional collection or document scope.
+ * @param params the conversation, or the question and optional collection or document scope.
  * @returns the path to the AI Search screen.
  */
 export function aiPath({
+  conversationId,
   query,
   collectionId,
   documentId,
 }: {
+  conversationId?: string;
   query?: string;
   collectionId?: string;
   documentId?: string;
@@ -285,7 +288,9 @@ export function aiPath({
     documentId,
   });
 
-  return `/ai${search ? `?${search}` : ""}`;
+  return `/ai${conversationId ? `/${conversationId}` : ""}${
+    search ? `?${search}` : ""
+  }`;
 }
 
 /**

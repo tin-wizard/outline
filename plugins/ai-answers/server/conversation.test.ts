@@ -24,6 +24,7 @@ import {
   deleteConversation,
   historyForModel,
   loadConversation,
+  seedConversation,
   type TurnInput,
 } from "./conversation";
 import { retrieveSources } from "./retrieve";
@@ -220,6 +221,50 @@ describe("conversation store", () => {
     expect(turns.length).toBeLessThan(8);
     expect(turns.at(-1)?.question).toEqual("Last");
     expect(turns.at(-1)?.answer).toEqual(big);
+  });
+
+  it("seeds a conversation under a given id with the same caps, budget and TTL", async () => {
+    const { user } = await setupUser();
+    const id = randomUUID();
+    const big = "a".repeat(7500);
+    const turns = Array.from({ length: MAX_TURNS + 1 }, (_, i) => ({
+      question: `Q${i + 1}`,
+      answer: big,
+      citedDocumentIds: [randomUUID()],
+      at: i,
+    }));
+
+    const seeded = await seedConversation(user, id, turns);
+    expect(seeded.id).toEqual(id);
+    expect(seeded.turns.map((t) => t.question)).toEqual(
+      turns.slice(1).map((t) => t.question)
+    );
+    // Same rule as appendTurn: the oldest answers are cleared first.
+    expect(seeded.turns.at(-1)?.answer).toEqual(big);
+    expect(seeded.turns[0].answer).toBeNull();
+    expect(
+      await Redis.defaultClient.ttl(key(user.teamId, user.id, id))
+    ).toBeGreaterThan(3590);
+    expect((await loadConversation(user, id)).conversation).toEqual(seeded);
+    expect(await appendTurn(user, id, turn({ question: "Next" }))).toEqual(
+      true
+    );
+
+    const other = await buildUser({ teamId: user.teamId });
+    expect((await loadConversation(other, id)).conversation).toBeNull();
+  });
+
+  it("returns the seeded conversation even when Redis fails", async () => {
+    const { user } = await setupUser();
+    vi.spyOn(Redis.defaultClient, "set").mockRejectedValueOnce(
+      new Error("redis down")
+    );
+    const id = randomUUID();
+    const seeded = await seedConversation(user, id, [
+      { question: "Q", answer: "A", citedDocumentIds: [], at: 1 },
+    ]);
+    expect(seeded.turns.map((t) => t.question)).toEqual(["Q"]);
+    expect((await loadConversation(user, id)).conversation).toBeNull();
   });
 
   it("stores the derived answer and deduplicated cited document ids", async () => {
@@ -491,7 +536,7 @@ describe("buildStandaloneQuery and historyForModel", () => {
     ]);
   });
 
-  it("drops the title and prior answer after access is revoked", async () => {
+  it("drops the whole prior turn, question included, after access is revoked", async () => {
     const { reader, collection, conversation } = await setupScripted();
     await collection.update({ permission: null });
 
@@ -500,10 +545,22 @@ describe("buildStandaloneQuery and historyForModel", () => {
       conversation,
       "How does that relate to sync?"
     );
-    expect(titleMentions(query)).toEqual(0);
-    expect(await historyForModel(reader, conversation)).toEqual([
+    expect(query).toEqual("How does that relate to sync?");
+    expect(await historyForModel(reader, conversation)).toEqual([]);
+  });
+
+  it("keeps the question of a turn that cited nothing", async () => {
+    const { reader, conversation } = await setupScripted();
+    const uncited = {
+      ...conversation,
+      turns: [{ ...conversation.turns[0], answer: null, citedDocumentIds: [] }],
+    };
+    expect(await historyForModel(reader, uncited)).toEqual([
       { question: "What is BOSS API?", answer: null },
     ]);
+    expect(await buildStandaloneQuery(reader, uncited, "Why?")).toEqual(
+      "Why? What is BOSS API?"
+    );
   });
 
   it("drops the title and prior answer after the document is deleted", async () => {
@@ -511,8 +568,8 @@ describe("buildStandaloneQuery and historyForModel", () => {
     await boss.destroy();
 
     const query = await buildStandaloneQuery(reader, conversation, "Why?");
-    expect(titleMentions(query)).toEqual(0);
-    expect((await historyForModel(reader, conversation))[0].answer).toBeNull();
+    expect(query).toEqual("Why?");
+    expect(await historyForModel(reader, conversation)).toEqual([]);
   });
 
   it("drops the title and prior answer once the collection is excluded from AI", async () => {
@@ -524,11 +581,11 @@ describe("buildStandaloneQuery and historyForModel", () => {
       conversation,
       "How does that relate to sync?"
     );
-    expect(titleMentions(query)).toEqual(0);
-    expect((await historyForModel(reader, conversation))[0].answer).toBeNull();
+    expect(query).toEqual("How does that relate to sync?");
+    expect(await historyForModel(reader, conversation)).toEqual([]);
   });
 
-  it("omits the answer when only some of its cited documents remain readable", async () => {
+  it("omits the turn when only some of its cited documents remain readable", async () => {
     const { team, owner, reader, boss, conversation } = await setupScripted();
     const hidden = await buildCollection({
       teamId: team.id,
@@ -549,9 +606,8 @@ describe("buildStandaloneQuery and historyForModel", () => {
     };
 
     const query = await buildStandaloneQuery(reader, mixed, FOLLOW_UP);
-    expect(titleMentions(query)).toEqual(1);
-    expect(query).not.toContain("Secret plan");
-    expect((await historyForModel(reader, mixed))[0].answer).toBeNull();
+    expect(query).toEqual(FOLLOW_UP);
+    expect(await historyForModel(reader, mixed)).toEqual([]);
   });
 
   it("returns nothing for a conversation owned by someone else", async () => {

@@ -5,6 +5,7 @@ import type {
   AskFailure,
   AskSource,
 } from "~/utils/streamFetch";
+import type { StoredTurn } from "~/models/AIConversation";
 import type { BlockInput } from "./markdown";
 
 /** Why a turn did not produce a complete answer. */
@@ -55,6 +56,10 @@ export interface Turn {
   /** Retrieved sources; null until the `sources` event. */
   sources: AskSource[] | null;
   blocks: (BlockInput & { index: number })[];
+  /** Indexes of stored blocks withheld because a cited source changed or is no longer readable. */
+  hiddenBlocks?: number[];
+  /** Blocks the verifier left out of the answer; absent means 0. */
+  droppedSegments?: number;
   problem?: TurnProblem;
   /** Id of the metered usage row, needed to send feedback; null if not recorded. */
   usageId?: string | null;
@@ -62,6 +67,12 @@ export interface Turn {
   feedback?: Feedback;
   /** Seconds the server asked us to wait after a 429. */
   retryAfter?: number;
+  /**
+   * The conversation id before this turn's `conversation` event. An id is
+   * only kept once `done` or `failed` confirms the turn was stored; a turn cut
+   * short (stopped, dropped) stores nothing, so the id is rolled back.
+   */
+  conversationIdBefore?: string | null;
 }
 
 export interface ChatState {
@@ -83,6 +94,7 @@ export type ChatAction =
     }
   | { type: "stopped" }
   | { type: "ended" }
+  | { type: "hydrate"; conversationId: string; turns: StoredTurn[] }
   | { type: "reset" };
 
 export const initialChatState: ChatState = { conversationId: null, turns: [] };
@@ -97,6 +109,24 @@ export function isActive(turn: Turn | undefined): boolean {
   return turn?.status === "searching" || turn?.status === "generating";
 }
 
+/** One cited passage location within a source. */
+export interface CitedSection {
+  /** Section link, with the heading anchor. */
+  url: string;
+  /** The cited passage, untrusted text. */
+  quote?: string;
+  /** The section's heading text from the server, untrusted plain text. */
+  heading?: string;
+}
+
+export interface CitedSource {
+  n: number;
+  title: string;
+  /** Distinct sections of this source, in citation order. */
+  sections: CitedSection[];
+  collectionName?: string;
+}
+
 /**
  * Collects the sources cited by an answer, in citation order, preferring the
  * retrieved source's collection name and the first citation's section link.
@@ -104,34 +134,80 @@ export function isActive(turn: Turn | undefined): boolean {
  * @param turn the turn.
  * @returns one entry per cited source number.
  */
-export function citedSources(turn: Turn): {
-  n: number;
-  title: string;
-  /** Distinct section links for this source, in citation order. */
-  urls: string[];
-  collectionName?: string;
-}[] {
-  const byNumber = new Map<number, { first: AskCitation; urls: string[] }>();
+export function citedSources(turn: Turn): CitedSource[] {
+  const byNumber = new Map<
+    number,
+    { first: AskCitation; sections: CitedSection[] }
+  >();
   for (const block of turn.blocks) {
     for (const citation of block.citations) {
       const entry = byNumber.get(citation.n);
+      const quote = citation.quote?.trim() || undefined;
+      const { heading } = citation;
       if (!entry) {
-        byNumber.set(citation.n, { first: citation, urls: [citation.url] });
-      } else if (!entry.urls.includes(citation.url)) {
-        entry.urls.push(citation.url);
+        byNumber.set(citation.n, {
+          first: citation,
+          sections: [{ url: citation.url, quote, heading }],
+        });
+        continue;
+      }
+      const section = entry.sections.find((x) => x.url === citation.url);
+      if (!section) {
+        entry.sections.push({ url: citation.url, quote, heading });
+      } else {
+        section.quote ||= quote;
+        section.heading ||= heading;
       }
     }
   }
   return [...byNumber.values()]
     .sort((a, b) => a.first.n - b.first.n)
-    .map(({ first, urls }) => ({
+    .map(({ first, sections }) => ({
       n: first.n,
       title: first.title,
-      urls,
+      sections,
       collectionName: turn.sources?.find((s) => s.n === first.n)
         ?.collectionName,
     }));
 }
+
+/**
+ * A readable label for a section link, derived from its `#h-some-heading`
+ * anchor. Text only; returns undefined when there is no usable heading.
+ *
+ * @param url a source or citation path.
+ * @returns the heading text, or undefined.
+ */
+export function sectionLabel(url: string): string | undefined {
+  const hash = url.split("#")[1];
+  if (!hash?.startsWith("h-")) {
+    return undefined;
+  }
+  let raw = hash.slice(2);
+  try {
+    raw = decodeURIComponent(raw);
+  } catch {
+    // keep the undecoded fragment
+  }
+  const label = raw
+    .replace(/[-_+]+/g, " ")
+    .trim()
+    .slice(0, 80);
+  return label || undefined;
+}
+
+/**
+ * The label of a cited section: the server's heading text, or, when it sent
+ * none, one derived from the link's anchor.
+ *
+ * @param section the cited section.
+ * @returns the label, or undefined when there is no usable heading.
+ */
+export function sectionHeading(section: CitedSection): string | undefined {
+  return section.heading ?? sectionLabel(section.url);
+}
+
+const MAX_HEADING_LENGTH = 120;
 
 const BLOCK_KINDS = [
   "paragraph",
@@ -145,11 +221,20 @@ const FAILURES = [
   "no_answer",
   "unverified",
   "budget",
+  "quota",
   "unavailable",
   "timeout",
   "cancelled",
   "error",
 ];
+function isBlockKind(kind: string): kind is BlockInput["kind"] {
+  return BLOCK_KINDS.includes(kind);
+}
+
+function isFailure(reason: string): reason is AskFailure {
+  return FAILURES.includes(reason);
+}
+
 const PHASE_ORDER = ["searching", "generating"];
 
 function validCitation(c: AskCitation): boolean {
@@ -159,6 +244,23 @@ function validCitation(c: AskCitation): boolean {
     typeof c.title === "string" &&
     typeof c.url === "string"
   );
+}
+
+/** Keeps the heading only if it is non-empty plain text of sane length. */
+function cleanCitation(c: AskCitation): AskCitation {
+  const { heading, ...rest } = c;
+  const text = typeof heading === "string" ? heading.trim() : "";
+  // \p{C} covers control characters, including line breaks.
+  return text && text.length <= MAX_HEADING_LENGTH && !/\p{C}/u.test(text)
+    ? { ...rest, heading: text }
+    : rest;
+}
+
+/** A non-negative integer count, otherwise 0. */
+function cleanCount(value: unknown): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? value
+    : 0;
 }
 
 function validSource(source: AskSource): boolean {
@@ -181,6 +283,14 @@ function validSource(source: AskSource): boolean {
 export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   if (action.type === "reset") {
     return initialChatState;
+  }
+  if (action.type === "hydrate") {
+    return {
+      conversationId: action.conversationId,
+      turns: Array.isArray(action.turns)
+        ? action.turns.map(hydrateTurn).filter((t) => !!t)
+        : [],
+    };
   }
   if (action.type === "submit") {
     const id = (state.turns[state.turns.length - 1]?.id ?? 0) + 1;
@@ -212,6 +322,11 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   if (!turn || !isActive(turn)) {
     return state;
   }
+  // A turn that ends without done/failed was not stored under a new id.
+  const unconfirmedId =
+    turn.conversationIdBefore === undefined
+      ? state.conversationId
+      : turn.conversationIdBefore;
   const update = (
     patch: Partial<Turn>,
     conversationId = state.conversationId
@@ -222,16 +337,19 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
   switch (action.type) {
     case "requestFailed":
-      return update({
-        status: "failed",
-        problem: action.problem,
-        retryAfter: action.retryAfter,
-      });
+      return update(
+        {
+          status: "failed",
+          problem: action.problem,
+          retryAfter: action.retryAfter,
+        },
+        unconfirmedId
+      );
     case "stopped":
-      return update({ status: "stopped" });
+      return update({ status: "stopped" }, unconfirmedId);
     case "ended":
       // The stream closed without done or failed.
-      return update({ status: "failed", problem: "error" });
+      return update({ status: "failed", problem: "error" }, unconfirmedId);
     case "event": {
       const { event } = action;
       // The payload is trusted JSON from the network; ignore anything off-shape.
@@ -241,7 +359,12 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       switch (event.event) {
         case "conversation":
           return typeof event.data.id === "string"
-            ? update({}, event.data.id)
+            ? update(
+                event.data.id === state.conversationId
+                  ? {}
+                  : { conversationIdBefore: state.conversationId },
+                event.data.id
+              )
             : state;
         case "status": {
           const { phase, notice } = event.data;
@@ -284,7 +407,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
                 index,
                 kind,
                 markdown,
-                citations: citations.filter(validCitation),
+                citations: citations.filter(validCitation).map(cleanCitation),
               },
             ],
           });
@@ -293,6 +416,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           return update(
             {
               status: "done",
+              droppedSegments: cleanCount(event.data.dropped),
               usageId:
                 typeof event.data.usageId === "string" &&
                 isUUID(event.data.usageId)
@@ -317,6 +441,99 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     default:
       return state;
   }
+}
+
+/** A run of visible blocks, or a withheld part of a stored answer. */
+export type AnswerSegment =
+  | { type: "blocks"; blocks: Turn["blocks"] }
+  | { type: "hidden" };
+
+/**
+ * Splits an answer into runs of visible blocks with one `hidden` segment
+ * wherever stored blocks were withheld, keeping their original positions.
+ *
+ * @param turn the turn.
+ * @returns the segments in reading order.
+ */
+export function answerSegments(turn: Turn): AnswerSegment[] {
+  if (!turn.hiddenBlocks?.length) {
+    return turn.blocks.length ? [{ type: "blocks", blocks: turn.blocks }] : [];
+  }
+  const entries = [
+    ...turn.blocks.map((block) => ({ index: block.index, block })),
+    ...turn.hiddenBlocks.map((index) => ({ index, block: undefined })),
+  ].sort((a, b) => a.index - b.index);
+  const segments: AnswerSegment[] = [];
+  for (const { block } of entries) {
+    const last = segments[segments.length - 1];
+    if (!block) {
+      if (last?.type !== "hidden") {
+        segments.push({ type: "hidden" });
+      }
+    } else if (last?.type === "blocks") {
+      last.blocks.push(block);
+    } else {
+      segments.push({ type: "blocks", blocks: [block] });
+    }
+  }
+  return segments;
+}
+
+/**
+ * Maps one stored turn from `aiConversations.info` to the view model. The
+ * payload is server JSON: anything off-shape is dropped, hidden blocks keep
+ * only their position, and citation titles come from the fresh sources.
+ */
+function hydrateTurn(stored: StoredTurn, i: number): Turn | undefined {
+  if (!stored || typeof stored.question !== "string") {
+    return undefined;
+  }
+  const sources = (Array.isArray(stored.sources) ? stored.sources : []).filter(
+    validSource
+  );
+  const blocks: Turn["blocks"] = [];
+  const hiddenBlocks: number[] = [];
+  (Array.isArray(stored.blocks) ? stored.blocks : []).forEach((b, index) => {
+    if (!b || !isBlockKind(b.kind)) {
+      return;
+    }
+    if (b.hidden === true) {
+      hiddenBlocks.push(index);
+      return;
+    }
+    if (typeof b.markdown !== "string" || !Array.isArray(b.citations)) {
+      return;
+    }
+    blocks.push({
+      index,
+      kind: b.kind,
+      markdown: b.markdown,
+      citations: b.citations.filter(validCitation).map((c) => ({
+        ...cleanCitation(c),
+        title: sources.find((s) => s.n === c.n)?.title ?? c.title,
+      })),
+    });
+  });
+  const answered = stored.outcome === "answered";
+  return {
+    id: i + 1,
+    question: stored.question,
+    scope: {},
+    status: answered ? "done" : "failed",
+    sources,
+    blocks,
+    ...(hiddenBlocks.length ? { hiddenBlocks } : {}),
+    droppedSegments: cleanCount(stored.droppedSegments),
+    ...(answered
+      ? {}
+      : {
+          problem: isFailure(stored.outcome) ? stored.outcome : "error",
+        }),
+    usageId:
+      typeof stored.usageId === "string" && isUUID(stored.usageId)
+        ? stored.usageId
+        : null,
+  };
 }
 
 /**

@@ -1,6 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { QueryTypes, Sequelize } from "sequelize";
 import type { Transaction } from "sequelize";
-import { vi } from "vitest";
+import { vi, type MockInstance } from "vitest";
+import Logger from "@server/logging/Logger";
 import { AIAnswerUsage } from "@server/models";
 import env from "@server/env";
 import { sequelize } from "@server/storage/database";
@@ -14,13 +16,17 @@ import {
   SLOT_TTL_MS,
   markUnmetered,
   acquireSlot,
+  checkBudgetAlerts,
   estimateUsage,
+  getUserDailySpendMicroUsd,
   getMonthlySpendMicroUsd,
   isOverBudget,
   monthlyBudgetMicroUsd,
+  record,
   recordUsage,
   releaseSlot,
   reserveModelCall,
+  userDailyBudgetMicroUsd,
 } from "./usage";
 
 const usage = { inputTokens: 1000, outputTokens: 100 };
@@ -28,11 +34,12 @@ const usage = { inputTokens: 1000, outputTokens: 100 };
 async function addRow(
   teamId: string,
   costMicroUsd: number,
-  createdAt = new Date()
+  createdAt = new Date(),
+  userId: string | null = null
 ) {
   await AIAnswerUsage.create({
     teamId,
-    userId: null,
+    userId,
     model: "claude-sonnet-5-5",
     inputTokens: 0,
     outputTokens: 0,
@@ -287,7 +294,7 @@ describe("concurrency slots", () => {
 describe("reserveModelCall", () => {
   it("allows a call under budget and releases its slot", async () => {
     const team = await buildTeam();
-    const reservation = await reserveModelCall(team.id);
+    const reservation = await reserveModelCall(team.id, randomUUID());
     expect(reservation.ok).toEqual(true);
     if (reservation.ok) {
       await reservation.release();
@@ -297,7 +304,7 @@ describe("reserveModelCall", () => {
   it("blocks over budget", async () => {
     const team = await buildTeam();
     await addRow(team.id, 25_000_000);
-    expect(await reserveModelCall(team.id)).toEqual({
+    expect(await reserveModelCall(team.id, randomUUID())).toEqual({
       ok: false,
       reason: "budget",
     });
@@ -309,7 +316,7 @@ describe("reserveModelCall", () => {
       .spyOn(AIAnswerUsage, "sum")
       .mockRejectedValue(new Error("db down"));
     try {
-      expect(await reserveModelCall(team.id)).toEqual({
+      expect(await reserveModelCall(team.id, randomUUID())).toEqual({
         ok: false,
         reason: "unavailable",
       });
@@ -322,7 +329,7 @@ describe("reserveModelCall", () => {
     const team = await buildTeam();
     await markUnmetered(team.id);
     try {
-      expect(await reserveModelCall(team.id)).toEqual({
+      expect(await reserveModelCall(team.id, randomUUID())).toEqual({
         ok: false,
         reason: "unmetered",
       });
@@ -337,12 +344,270 @@ describe("reserveModelCall", () => {
       .spyOn(Redis.defaultClient, "eval")
       .mockRejectedValue(new Error("redis down"));
     try {
-      expect(await reserveModelCall(team.id)).toEqual({
+      expect(await reserveModelCall(team.id, randomUUID())).toEqual({
         ok: false,
         reason: "unavailable",
       });
     } finally {
       spy.mockRestore();
+    }
+  });
+});
+
+describe("userDailyBudgetMicroUsd", () => {
+  const original = pluginEnv.AI_ANSWERS_USER_DAILY_BUDGET_USD;
+  afterEach(() => {
+    pluginEnv.AI_ANSWERS_USER_DAILY_BUDGET_USD = original;
+  });
+
+  it("defaults to $2 when unset or blank", () => {
+    pluginEnv.AI_ANSWERS_USER_DAILY_BUDGET_USD = undefined;
+    expect(userDailyBudgetMicroUsd()).toEqual(2_000_000);
+    pluginEnv.AI_ANSWERS_USER_DAILY_BUDGET_USD = "  ";
+    expect(userDailyBudgetMicroUsd()).toEqual(2_000_000);
+  });
+
+  it("accepts decimals and surrounding whitespace", () => {
+    pluginEnv.AI_ANSWERS_USER_DAILY_BUDGET_USD = " 0.5 ";
+    expect(userDailyBudgetMicroUsd()).toEqual(500_000);
+  });
+
+  it("treats an explicit 0 as no AI for users", () => {
+    pluginEnv.AI_ANSWERS_USER_DAILY_BUDGET_USD = "0";
+    expect(userDailyBudgetMicroUsd()).toEqual(0);
+  });
+
+  it.each(["-5", "abc", "NaN", "1e3", "Infinity", "0x10", "100001", "5."])(
+    "uses the default for invalid %p",
+    (value) => {
+      pluginEnv.AI_ANSWERS_USER_DAILY_BUDGET_USD = value;
+      expect(userDailyBudgetMicroUsd()).toEqual(2_000_000);
+    }
+  );
+});
+
+describe("per-user daily quota", () => {
+  const original = pluginEnv.AI_ANSWERS_USER_DAILY_BUDGET_USD;
+  afterEach(() => {
+    pluginEnv.AI_ANSWERS_USER_DAILY_BUDGET_USD = original;
+  });
+
+  it("sums only this user, this team and this UTC day", async () => {
+    const team = await buildTeam();
+    const other = await buildTeam();
+    const user = await buildUser({ teamId: team.id });
+    const peer = await buildUser({ teamId: team.id });
+    const now = new Date(Date.UTC(2026, 9, 16, 12));
+    await addRow(team.id, 100, new Date(Date.UTC(2026, 9, 16, 0)), user.id);
+    await addRow(
+      team.id,
+      200,
+      new Date(Date.UTC(2026, 9, 16, 23, 59)),
+      user.id
+    );
+    await addRow(
+      team.id,
+      400,
+      new Date(Date.UTC(2026, 9, 15, 23, 59)),
+      user.id
+    );
+    await addRow(team.id, 800, new Date(Date.UTC(2026, 9, 17, 0)), user.id);
+    await addRow(team.id, 1600, now, peer.id);
+    await addRow(other.id, 3200, now, user.id);
+    expect(await getUserDailySpendMicroUsd(team.id, user.id, now)).toEqual(300);
+  });
+
+  it("blocks a user at their daily cap but not their teammates", async () => {
+    const team = await buildTeam();
+    const user = await buildUser({ teamId: team.id });
+    const peer = await buildUser({ teamId: team.id });
+    await addRow(team.id, 2_000_000, new Date(), user.id);
+    expect(await reserveModelCall(team.id, user.id)).toEqual({
+      ok: false,
+      reason: "quota",
+    });
+    const allowed = await reserveModelCall(team.id, peer.id);
+    expect(allowed.ok).toEqual(true);
+    if (allowed.ok) {
+      await allowed.release();
+    }
+  });
+
+  it("allows a user just under the cap", async () => {
+    const team = await buildTeam();
+    const user = await buildUser({ teamId: team.id });
+    await addRow(team.id, 1_999_999, new Date(), user.id);
+    const reservation = await reserveModelCall(team.id, user.id);
+    expect(reservation.ok).toEqual(true);
+    if (reservation.ok) {
+      await reservation.release();
+    }
+  });
+
+  it("blocks every user when the cap is 0", async () => {
+    pluginEnv.AI_ANSWERS_USER_DAILY_BUDGET_USD = "0";
+    const team = await buildTeam();
+    expect(await reserveModelCall(team.id, randomUUID())).toEqual({
+      ok: false,
+      reason: "quota",
+    });
+  });
+
+  it("checks the workspace budget before the user quota", async () => {
+    const team = await buildTeam();
+    const user = await buildUser({ teamId: team.id });
+    await addRow(team.id, 25_000_000, new Date(), user.id);
+    expect(await reserveModelCall(team.id, user.id)).toEqual({
+      ok: false,
+      reason: "budget",
+    });
+  });
+
+  it("fails closed when the user spend query throws", async () => {
+    const team = await buildTeam();
+    const spy = vi
+      .spyOn(AIAnswerUsage, "sum")
+      .mockResolvedValueOnce(0)
+      .mockRejectedValueOnce(new Error("db down"));
+    try {
+      expect(await reserveModelCall(team.id, randomUUID())).toEqual({
+        ok: false,
+        reason: "unavailable",
+      });
+      expect(spy).toHaveBeenCalledTimes(2);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe("checkBudgetAlerts", () => {
+  const now = new Date(Date.UTC(2026, 9, 16, 12));
+  const alerts = (spy: MockInstance<typeof Logger.warn>) =>
+    spy.mock.calls.filter(
+      ([message]) => message === "AI answers workspace budget threshold reached"
+    );
+
+  it("warns once per threshold per month, with numbers only", async () => {
+    const team = await buildTeam();
+    const warn = vi.spyOn(Logger, "warn");
+    try {
+      await addRow(team.id, 19_000_000, now);
+      await checkBudgetAlerts(team.id, now);
+      expect(alerts(warn)).toHaveLength(0);
+
+      await addRow(team.id, 1_000_000, now);
+      await checkBudgetAlerts(team.id, now);
+      await checkBudgetAlerts(team.id, now);
+      expect(alerts(warn)).toEqual([
+        [
+          "AI answers workspace budget threshold reached",
+          { teamId: team.id, threshold: 80, spendUsd: 20, budgetUsd: 25 },
+        ],
+      ]);
+
+      await addRow(team.id, 5_000_000, now);
+      await checkBudgetAlerts(team.id, now);
+      await checkBudgetAlerts(team.id, now);
+      expect(alerts(warn)).toHaveLength(2);
+      expect(alerts(warn)[1][1]).toEqual({
+        teamId: team.id,
+        threshold: 100,
+        spendUsd: 25,
+        budgetUsd: 25,
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("warns for both thresholds when one jump crosses both", async () => {
+    const team = await buildTeam();
+    const warn = vi.spyOn(Logger, "warn");
+    try {
+      await addRow(team.id, 30_000_000, now);
+      await checkBudgetAlerts(team.id, now);
+      expect(alerts(warn).map(([, extra]) => extra?.threshold)).toEqual([
+        80, 100,
+      ]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("warns again in a new month", async () => {
+    const team = await buildTeam();
+    const next = new Date(Date.UTC(2026, 10, 2, 12));
+    const warn = vi.spyOn(Logger, "warn");
+    try {
+      await addRow(team.id, 21_000_000, now);
+      await checkBudgetAlerts(team.id, now);
+      await checkBudgetAlerts(team.id, next);
+      expect(alerts(warn)).toHaveLength(1);
+      await addRow(team.id, 21_000_000, next);
+      await checkBudgetAlerts(team.id, next);
+      expect(alerts(warn)).toHaveLength(2);
+      expect(
+        await Redis.defaultClient.exists(
+          `ai-answers:alert:${team.id}:2026-11:80`
+        )
+      ).toEqual(1);
+      expect(
+        await Redis.defaultClient.ttl(`ai-answers:alert:${team.id}:2026-11:80`)
+      ).toBeGreaterThan(34 * 24 * 3600);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("never throws and logs once when Redis fails", async () => {
+    const team = await buildTeam();
+    await addRow(team.id, 30_000_000, now);
+    const warn = vi.spyOn(Logger, "warn");
+    const set = vi
+      .spyOn(Redis.defaultClient, "set")
+      .mockRejectedValue(new Error("redis down"));
+    try {
+      await expect(checkBudgetAlerts(team.id, now)).resolves.toBeUndefined();
+      expect(alerts(warn)).toHaveLength(0);
+      expect(
+        warn.mock.calls.filter(
+          ([message]) => message === "AI answers budget alert check failed"
+        )
+      ).toHaveLength(1);
+    } finally {
+      set.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it("never throws when the spend query fails", async () => {
+    const team = await buildTeam();
+    const sum = vi
+      .spyOn(AIAnswerUsage, "sum")
+      .mockRejectedValue(new Error("db down"));
+    try {
+      await expect(checkBudgetAlerts(team.id, now)).resolves.toBeUndefined();
+    } finally {
+      sum.mockRestore();
+    }
+  });
+
+  it("runs after a billed request is recorded", async () => {
+    const team = await buildTeam();
+    await addRow(team.id, 19_999_000);
+    const warn = vi.spyOn(Logger, "warn");
+    try {
+      await record({
+        teamId: team.id,
+        userId: null,
+        model: "claude-sonnet-5-5",
+        usage,
+        outcome: "answered",
+      });
+      await vi.waitFor(() => expect(alerts(warn)).toHaveLength(1));
+    } finally {
+      warn.mockRestore();
     }
   });
 });

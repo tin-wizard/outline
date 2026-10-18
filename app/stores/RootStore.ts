@@ -25,6 +25,7 @@ import PinsStore from "./PinsStore";
 import PoliciesStore from "./PoliciesStore";
 import RevisionsStore from "./RevisionsStore";
 import SearchesStore from "./SearchesStore";
+import AIConversationsStore from "./AIConversationsStore";
 import SharesStore from "./SharesStore";
 import StarsStore from "./StarsStore";
 import SubscriptionsStore from "./SubscriptionsStore";
@@ -61,6 +62,7 @@ export default class RootStore {
   policies: PoliciesStore;
   revisions: RevisionsStore;
   searches: SearchesStore;
+  aiConversations: AIConversationsStore;
   shares: SharesStore;
   ui: UiStore;
   unfurls: UnfurlsStore;
@@ -95,6 +97,7 @@ export default class RootStore {
     this.registerStore(PoliciesStore);
     this.registerStore(RevisionsStore);
     this.registerStore(SearchesStore);
+    this.registerStore(AIConversationsStore, "aiConversations");
     this.registerStore(SharesStore);
     this.registerStore(StarsStore);
     this.registerStore(SubscriptionsStore);

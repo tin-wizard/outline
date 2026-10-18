@@ -6,7 +6,7 @@ import {
   SidebarScrollProvider,
 } from "./components/DragActiveContext";
 import { useTranslation } from "react-i18next";
-import { useHistory } from "react-router-dom";
+import { useHistory, useRouteMatch } from "react-router-dom";
 import styled from "styled-components";
 import { SidebarSection, UserPreference } from "@shared/types";
 import { metaDisplay } from "@shared/utils/keyboard";
@@ -14,6 +14,7 @@ import Scrollable from "~/components/Scrollable";
 import { navigateToImport } from "~/actions/definitions/navigation";
 import { inviteUser } from "~/actions/definitions/users";
 import useAIAnswersEnabled from "~/hooks/useAIAnswersEnabled";
+import useAIHistoryEnabled from "~/hooks/useAIHistoryEnabled";
 import useCurrentTeam from "~/hooks/useCurrentTeam";
 import useCurrentUser from "~/hooks/useCurrentUser";
 import usePolicy from "~/hooks/usePolicy";
@@ -33,6 +34,7 @@ import { DraftsLink } from "./components/DraftsLink";
 import DragPlaceholder from "./components/DragPlaceholder";
 import { DismissableSidebarAction } from "./components/DismissableSidebarAction";
 import HistoryNavigation from "./components/HistoryNavigation";
+import { AIChats } from "./components/AIChats/AIChats";
 import Section from "./components/Section";
 import SharedWithMe from "./components/SharedWithMe";
 import SidebarButton from "./components/SidebarButton";
@@ -49,6 +51,11 @@ function AppSidebar() {
   const user = useCurrentUser();
   const can = usePolicy(team);
   const aiEnabled = useAIAnswersEnabled();
+  // Chats are listed while using AI Search; the rest of the sidebar is unchanged.
+  const onAIRoute = !!useRouteMatch(aiPath());
+  const historyEnabled = useAIHistoryEnabled();
+  // With history off, saved chats stay listed (delete only) until removed.
+  const showAIChats = aiEnabled && onAIRoute;
   const history = useHistory();
   const isMobile = useMobile();
 
@@ -152,6 +159,11 @@ function AppSidebar() {
         </Overflow>
         <Scrollable flex shadow ref={scrollRef}>
           <SidebarScrollProvider value={scrollArea}>
+            {showAIChats && (
+              <Section>
+                <AIChats deleteOnly={!historyEnabled} />
+              </Section>
+            )}
             {sectionOrder.map((section) => (
               <DraggableSection key={section} section={section}>
                 {sectionContent[section]}

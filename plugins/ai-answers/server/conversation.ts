@@ -7,7 +7,7 @@ import { can } from "@server/policies";
 import Redis from "@server/storage/redis";
 import { blockToMarkdown } from "./blocks";
 import { redactSecrets } from "./redact";
-import { dropAIExcluded } from "./retrieve";
+import { dropAIExcluded } from "@server/utils/aiExclusion";
 import type { AcceptedBlock } from "./verify";
 
 /** One question and its verified answer, written by the server only. */
@@ -91,6 +91,43 @@ export async function createConversation(
     Logger.warn("AI answers could not create a conversation");
     return null;
   }
+}
+
+/**
+ * Rebuilds the hot cache of a stored conversation under its own id, with the
+ * same turn cap, history budget and expiry as `appendTurn`. The caller passes
+ * turns it has already re-authorised for the user.
+ *
+ * @param user the owner.
+ * @param id the conversation id.
+ * @param turns the stored turns, oldest first.
+ * @returns the trimmed conversation; returned even when Redis failed, so the
+ * turn can still use it as context.
+ */
+export async function seedConversation(
+  user: User,
+  id: string,
+  turns: ConversationTurn[]
+): Promise<Conversation> {
+  const conversation: Conversation = {
+    id,
+    teamId: user.teamId,
+    userId: user.id,
+    turns: trimToBudget(turns),
+  };
+  try {
+    await withTimeout(
+      Redis.defaultClient.set(
+        conversationKey(user, id),
+        JSON.stringify(conversation),
+        "EX",
+        CONVERSATION_TTL_SECONDS
+      )
+    );
+  } catch {
+    Logger.warn("AI answers could not seed a conversation");
+  }
+  return conversation;
 }
 
 /**
@@ -212,6 +249,11 @@ export async function buildStandaloneQuery(
     return redactSecrets(question).text;
   }
   const readable = await readableDocuments(user, previous.citedDocumentIds);
+  // A turn citing a source the user can no longer read adds nothing, not
+  // even its question (it may have been a cited heading).
+  if (!previous.citedDocumentIds.every((id) => readable.has(id))) {
+    return redactSecrets(question).text;
+  }
   const titles = [
     ...new Set(
       previous.citedDocumentIds
@@ -223,9 +265,10 @@ export async function buildStandaloneQuery(
 }
 
 /**
- * The prior turns of a conversation for the model's context. An answer is kept
+ * The prior turns of a conversation for the model's context. A turn is kept
  * only when every document it cited is still readable by the user now and not
- * excluded from AI answers; otherwise only its question is kept.
+ * excluded from AI answers; otherwise it is left out entirely, question
+ * included, since a question can repeat words of its sources (a cited heading).
  *
  * @param user the user asking.
  * @param conversation the user's conversation, as loaded from the store.
@@ -240,24 +283,42 @@ export async function historyForModel(
     user,
     turns.flatMap((t) => t.citedDocumentIds)
   );
-  return turns.map((t) => ({
-    question: redactSecrets(t.question).text,
-    // An answer without citations has no verified claims to carry forward.
-    answer:
-      t.answer !== null &&
-      t.citedDocumentIds.length > 0 &&
-      t.citedDocumentIds.every((id) => readable.has(id))
-        ? t.answer
-        : null,
-  }));
+  return turns
+    .filter((t) => t.citedDocumentIds.every((id) => readable.has(id)))
+    .map((t) => ({
+      question: redactSecrets(t.question).text,
+      // An answer without citations has no verified claims to carry forward.
+      answer:
+        t.answer !== null && t.citedDocumentIds.length > 0 ? t.answer : null,
+    }));
 }
 
 const REDIS_TIMEOUT_MS = 2000;
 const MAX_QUERY_TITLES = 3;
-const MAX_QUESTION_CHARS = 500;
-// Below the budget with a full question, so the newest answer always fits.
-const MAX_ANSWER_CHARS = 17_000;
-const MAX_CITED_DOCUMENTS = 20;
+/** Longest stored question, in characters. */
+export const MAX_QUESTION_CHARS = 500;
+/** Longest stored answer, in characters; below the budget with a full question. */
+export const MAX_ANSWER_CHARS = 17_000;
+/** Most documents a stored answer may cite and still be re-checked. */
+export const MAX_CITED_DOCUMENTS = 20;
+
+/**
+ * Joins answer blocks into one Markdown answer; table rows join their header
+ * with a single newline.
+ *
+ * @param blocks the blocks, in order.
+ * @returns the Markdown answer.
+ */
+export function joinBlockMarkdown(
+  blocks: { kind: string; markdown: string }[]
+): string {
+  return blocks
+    .map(
+      (b, i) =>
+        (i === 0 ? "" : b.kind === "tableRow" ? "\n" : "\n\n") + b.markdown
+    )
+    .join("");
+}
 
 /**
  * Builds the stored turn from verified blocks. An answer that is too long or
@@ -267,14 +328,12 @@ function toTurn(input: TurnInput): ConversationTurn {
   const question = [...redactSecrets(input.question).text]
     .slice(0, MAX_QUESTION_CHARS)
     .join("");
-  const answer = input.released
-    .map(
-      (r, i) =>
-        // Table rows join their header with a single newline.
-        (i === 0 ? "" : r.block.kind === "tableRow" ? "\n" : "\n\n") +
-        blockToMarkdown(r.block)
-    )
-    .join("");
+  const answer = joinBlockMarkdown(
+    input.released.map((r) => ({
+      kind: r.block.kind,
+      markdown: blockToMarkdown(r.block),
+    }))
+  );
   const citedDocumentIds = [
     ...new Set(
       input.released.flatMap((r) => r.citations.map((c) => c.documentId))
@@ -405,8 +464,12 @@ function trimToBudget(turns: ConversationTurn[]): ConversationTurn[] {
  * returns: not deleted, allowed by the document read policy, not a template,
  * published (or the user's own draft) and not in a collection excluded from AI.
  * Fails closed: any error means nothing is readable.
+ *
+ * @param user the user reading.
+ * @param ids the document ids to check; invalid ids are ignored.
+ * @returns the readable documents by id.
  */
-async function readableDocuments(
+export async function readableDocuments(
   user: User,
   ids: string[]
 ): Promise<Map<string, Document>> {

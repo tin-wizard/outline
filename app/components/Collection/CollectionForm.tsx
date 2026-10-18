@@ -6,7 +6,7 @@ import { Trans, useTranslation } from "react-i18next";
 import styled from "styled-components";
 import Icon from "@shared/components/Icon";
 import { randomElement } from "@shared/random";
-import { CollectionPermission, TeamPreference } from "@shared/types";
+import { CollectionPermission } from "@shared/types";
 import type { Option } from "~/components/InputSelect";
 import { IconLibrary } from "@shared/utils/IconLibrary";
 import { colorPalette } from "@shared/constants";
@@ -228,7 +228,7 @@ export const CollectionForm = observer(function CollectionForm_({
         />
       )}
 
-      {user.isAdmin && team.getPreference(TeamPreference.AIAnswers) && (
+      {user.isAdmin && (
         <Controller
           control={control}
           name="aiExcluded"
@@ -237,7 +237,7 @@ export const CollectionForm = observer(function CollectionForm_({
               id="aiExcluded"
               label={t("Exclude from AI answers")}
               note={t(
-                "Documents within this collection are never used by AI answers in search."
+                "Documents within this collection are never used by AI answers or exposed to AI clients such as MCP. Normal search is unaffected."
               )}
               checked={!!field.value}
               onChange={field.onChange}

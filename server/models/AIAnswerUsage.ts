@@ -16,7 +16,8 @@ export type AIAnswerOutcome =
   | "no_answer"
   | "dropped"
   | "error"
-  | "budget_blocked";
+  | "budget_blocked"
+  | "quota_blocked";
 
 /**
  * One metered AI answer request: token counts and cost, never content.

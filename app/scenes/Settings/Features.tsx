@@ -41,6 +41,15 @@ function Features() {
     [team, t]
   );
 
+  const handleAIConversationHistoryChange = React.useCallback(
+    async (checked: boolean) => {
+      team.setPreference(TeamPreference.AIConversationHistory, checked);
+      await team.save();
+      toast.success(t("Settings saved"));
+    },
+    [team, t]
+  );
+
   const handleGuidanceMCPChange = React.useCallback(
     async (ev: React.ChangeEvent<HTMLTextAreaElement>) => {
       team.guidanceMCP = ev.target.value || null;
@@ -172,6 +181,24 @@ function Features() {
           onChange={handleAIAnswersChange}
         />
       </SettingRow>
+
+      {aiAnswersAvailable && team.getPreference(TeamPreference.AIAnswers) && (
+        <SettingRow
+          name={TeamPreference.AIConversationHistory}
+          label={t("AI conversation history")}
+          description={t(
+            "Off by default. Once an admin turns this on, each member's AI conversations are stored so they can return to them for a limited time (90 days by default) after their last activity. A conversation is private to the member who asked, and nothing is stored while this is off."
+          )}
+          border={false}
+        >
+          <Switch
+            id={TeamPreference.AIConversationHistory}
+            name={TeamPreference.AIConversationHistory}
+            checked={team.getPreference(TeamPreference.AIConversationHistory)}
+            onChange={handleAIConversationHistoryChange}
+          />
+        </SettingRow>
+      )}
     </Scene>
   );
 }

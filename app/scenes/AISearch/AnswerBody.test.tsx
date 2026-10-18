@@ -298,7 +298,7 @@ describe("AnswerTurn sources", () => {
 
   it("labels partial answers and shows the reason", () => {
     const host = render(turn({ status: "failed", problem: "unverified" }));
-    expect(host.textContent).toContain("Partial answer, not fully verified");
+    expect(host.textContent).toContain("Not fully verified");
     expect(host.textContent).toContain("Couldn't fully verify this answer");
     expect(host.textContent).toContain("Claim.");
   });
@@ -322,7 +322,7 @@ describe("AnswerTurn sources", () => {
         </MemoryRouter>
       </ThemeProvider>
     );
-    expect(host).toContain("No relevant documents found");
+    expect(host).toContain("Not covered by your documents");
     expect(host).toContain("Searched in: Eng.");
   });
 
@@ -341,6 +341,14 @@ describe("AnswerTurn sources", () => {
     expect(status?.textContent).toBe("Searching your documents…");
     expect(status?.closest("[aria-live]")).toBeNull();
     expect(host.querySelector("[aria-live] [role=status]")).toBeNull();
+  });
+
+  it("explains the daily limit without offering a retry", () => {
+    const host = render(turn({ status: "failed", problem: "quota" }));
+    expect(host.textContent).toContain(
+      "You've reached your daily AI limit. It resets at midnight UTC."
+    );
+    expect(host.textContent).not.toContain("Try again");
   });
 
   it("shows the Retry-After wait and a retry button for rate limiting", () => {

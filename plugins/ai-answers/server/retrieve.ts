@@ -1,5 +1,4 @@
 import type { Filter } from "@shared/helpers/FilterHelper";
-import { Collection } from "@server/models";
 import type { Document, User } from "@server/models";
 import { DocumentHelper } from "@server/models/helpers/DocumentHelper";
 import {
@@ -8,10 +7,12 @@ import {
 } from "@server/models/helpers/Filters";
 import { expandDocumentIdLeaves } from "@server/routes/api/documents/documents";
 import SearchProviderManager from "@server/utils/SearchProviderManager";
+import { dropAIExcluded } from "@server/utils/aiExclusion";
 import type * as T from "./api/schema";
 import { redactSecrets } from "./redact";
+import { sectionTargets } from "./anchors";
 import {
-  selectSections,
+  selectSectionIndices,
   splitIntoSections,
   toKeywordAndQuery,
   toKeywordQuery,
@@ -22,6 +23,13 @@ import {
 export interface AnswerSource {
   document: Document;
   sections: string[];
+  /**
+   * The editor's heading id for each section (see `sectionAnchors`), aligned
+   * with `sections`; undefined entries have no safe anchor.
+   */
+  anchors?: (string | undefined)[];
+  /** The plain heading text for each section (see `sectionTargets`), aligned with `sections`. */
+  headings?: (string | undefined)[];
 }
 
 const MAX_DOCUMENTS = 5;
@@ -47,7 +55,7 @@ const MAX_TITLE_TERMS = 4;
  */
 export async function retrieveSources(
   user: User,
-  body: T.DocumentsAnswerQuestionReq["body"],
+  body: Pick<T.AIAskReq["body"], "query" | "collectionId" | "documentId">,
   signal?: AbortSignal
 ): Promise<AnswerSource[]> {
   // The raw query never reaches the search provider; markers are not keywords.
@@ -59,11 +67,8 @@ export async function retrieveSources(
   }
 
   const filter = legacyParamsToFilter({
-    userId: body.userId,
     collectionId: body.collectionId,
     documentId: body.documentId,
-    statusFilter: body.statusFilter,
-    dateFilter: body.dateFilter,
   });
   if (filter) {
     await authorizeFilterFields(user, filter);
@@ -117,13 +122,16 @@ export async function retrieveSources(
     const { text: markdown } = redactSecrets(
       await DocumentHelper.toMarkdown(document, { includeTitle: false })
     );
-    const sections = selectSections(
-      splitIntoSections(markdown),
-      keywords,
-      MAX_CHARS_PER_DOCUMENT
-    );
-    if (sections.length > 0) {
-      sources.push({ document, sections });
+    const all = splitIntoSections(markdown);
+    const targets = sectionTargets(document, all);
+    const chosen = selectSectionIndices(all, keywords, MAX_CHARS_PER_DOCUMENT);
+    if (chosen.length > 0) {
+      sources.push({
+        document,
+        sections: chosen.map((i) => all[i]),
+        anchors: chosen.map((i) => targets[i]?.id),
+        headings: chosen.map((i) => targets[i]?.heading),
+      });
     }
   }
   return sources;
@@ -170,36 +178,4 @@ async function searchTitles(
     .filter((item) => item.hits >= required)
     .sort((a, b) => b.hits - a.hits)
     .map((item) => item.document);
-}
-
-/**
- * Drops documents in collections excluded from AI answers.
- *
- * @param user the user asking; limits the lookup to their workspace.
- * @param documents the documents to filter.
- * @returns the documents that are not in an excluded collection.
- */
-export async function dropAIExcluded(
-  user: User,
-  documents: Document[]
-): Promise<Document[]> {
-  const collectionIds = [
-    ...new Set(documents.map((d) => d.collectionId)),
-  ].filter((id): id is string => !!id);
-  if (collectionIds.length === 0) {
-    return documents;
-  }
-  const excluded = new Set(
-    (
-      await Collection.findAll({
-        where: { id: collectionIds, teamId: user.teamId, aiExcluded: true },
-        attributes: ["id"],
-        // A trashed collection's documents can still be searched.
-        paranoid: false,
-      })
-    ).map((c) => c.id)
-  );
-  return documents.filter(
-    (d) => !d.collectionId || !excluded.has(d.collectionId)
-  );
 }

@@ -1,6 +1,14 @@
+import type { StoredTurn } from "~/models/AIConversation";
 import type { AskEvent } from "~/utils/streamFetch";
+import { isDocPath } from "./AnswerTurn";
 import type { ChatState } from "./model";
-import { canRate, chatReducer, citedSources, initialChatState } from "./model";
+import {
+  answerSegments,
+  canRate,
+  chatReducer,
+  citedSources,
+  initialChatState,
+} from "./model";
 
 const run = (events: AskEvent[], from: ChatState = initialChatState) =>
   events.reduce<ChatState>(
@@ -58,7 +66,12 @@ describe("chatReducer", () => {
     expect(turn.blocks.map((b) => b.index)).toEqual([0, 1]);
     expect(state.conversationId).toBe("c1");
     expect(citedSources(turn)).toEqual([
-      { n: 1, title: "A", urls: ["/doc/a#h-x"], collectionName: "Eng" },
+      {
+        n: 1,
+        title: "A",
+        sections: [{ url: "/doc/a#h-x" }],
+        collectionName: "Eng",
+      },
     ]);
   });
 
@@ -71,6 +84,33 @@ describe("chatReducer", () => {
     expect(state.turns[0].status).toBe("done");
     expect(state.turns[0].blocks).toHaveLength(1);
     expect(state.conversationId).toBeNull();
+  });
+
+  it("rolls back an unconfirmed conversation id when the turn is cut short", () => {
+    // A stopped first turn is never stored, so its id must not be reused.
+    const stopped = chatReducer(
+      run([{ event: "conversation", data: { id: "c1" } }, block(0)]),
+      { type: "stopped" }
+    );
+    expect(stopped.conversationId).toBeNull();
+
+    // A follow-up in a stored conversation keeps that conversation's id.
+    const stored = run([
+      { event: "conversation", data: { id: "c1" } },
+      done("c1"),
+    ]);
+    const followUp = chatReducer(
+      run([{ event: "conversation", data: { id: "c1" } }], stored),
+      { type: "ended" }
+    );
+    expect(followUp.conversationId).toBe("c1");
+
+    // A server-side failure was stored: the id stays.
+    const failed = run([
+      { event: "conversation", data: { id: "c2" } },
+      { event: "failed", data: { reason: "no_answer", partial: false } },
+    ]);
+    expect(failed.conversationId).toBe("c2");
   });
 
   it("ignores a replayed block index", () => {
@@ -230,6 +270,14 @@ describe("chatReducer with malformed events", () => {
     expect(late.turns[0].status).toBe("generating");
   });
 
+  it("keeps the quota failure reason", () => {
+    const state = run([wire("failed", { reason: "quota", partial: false })]);
+    expect(state.turns[0]).toMatchObject({
+      status: "failed",
+      problem: "quota",
+    });
+  });
+
   it("treats an unknown failure reason as an error and a non-string conversation id as none", () => {
     const state = run([wire("failed", { reason: "weird", partial: false })]);
     expect(state.turns[0].problem).toBe("error");
@@ -253,7 +301,7 @@ describe("chatReducer with malformed events", () => {
         citations: [cite("/doc/a#h-y"), cite("/doc/a#h-x")],
       }),
     ]);
-    expect(citedSources(state.turns[0])[0].urls).toEqual([
+    expect(citedSources(state.turns[0])[0].sections.map((x) => x.url)).toEqual([
       "/doc/a#h-x",
       "/doc/a#h-y",
     ]);
@@ -338,5 +386,237 @@ describe("usageId and feedback", () => {
       rating: "up",
     });
     expect(state.turns[0].feedback).toBeUndefined();
+  });
+});
+
+describe("heading and dropped count", () => {
+  const withHeading = (heading: unknown): AskEvent => ({
+    event: "block",
+    data: {
+      index: 0,
+      kind: "paragraph",
+      markdown: "x",
+      citations: [
+        {
+          n: 1,
+          documentId: "d",
+          title: "A",
+          url: "/doc/a#h-x",
+          heading: heading as string,
+        },
+      ],
+    },
+  });
+  const headingOf = (heading: unknown) =>
+    run([withHeading(heading)]).turns[0].blocks[0].citations[0].heading;
+
+  it("keeps a plain heading and drops invalid ones", () => {
+    expect(headingOf("  Annual leave ")).toBe("Annual leave");
+    expect(headingOf("a".repeat(120))).toBe("a".repeat(120));
+    expect(headingOf("a".repeat(121))).toBeUndefined();
+    expect(headingOf("two\nlines")).toBeUndefined();
+    expect(headingOf("   ")).toBeUndefined();
+    expect(headingOf(42)).toBeUndefined();
+    expect(headingOf(undefined)).toBeUndefined();
+  });
+
+  it("carries the heading into cited sections", () => {
+    const [source] = citedSources(run([withHeading("Annual leave")]).turns[0]);
+    expect(source.sections[0].heading).toBe("Annual leave");
+  });
+
+  it("stores the dropped count from done, defaulting to 0", () => {
+    const withDropped = (dropped: unknown): AskEvent => {
+      const e = done("c1");
+      if (e.event === "done") {
+        e.data.dropped = dropped as number;
+      }
+      return e;
+    };
+    expect(run([block(0), withDropped(3)]).turns[0].droppedSegments).toBe(3);
+    expect(run([block(0), withDropped(0)]).turns[0].droppedSegments).toBe(0);
+    for (const bad of [-1, 1.5, "2", null, undefined]) {
+      expect(run([block(0), withDropped(bad)]).turns[0].droppedSegments).toBe(
+        0
+      );
+    }
+  });
+
+  it("hydrates headings and droppedSegments", () => {
+    const [turn] = chatReducer(initialChatState, {
+      type: "hydrate",
+      conversationId: "c1",
+      turns: [
+        {
+          id: "t",
+          position: 0,
+          question: "Q?",
+          outcome: "answered",
+          usageId: null,
+          createdAt: "2026-10-18T10:00:00.000Z",
+          sources: [],
+          blocks: [
+            {
+              kind: "paragraph",
+              markdown: "x",
+              citations: [
+                {
+                  n: 1,
+                  documentId: "d",
+                  title: "A",
+                  url: "/doc/a#h-x",
+                  heading: "Step 2",
+                },
+              ],
+            },
+          ],
+          hasHiddenBlocks: false,
+          droppedSegments: 2,
+        },
+      ],
+    }).turns;
+    expect(turn.blocks[0].citations[0].heading).toBe("Step 2");
+    expect(turn.droppedSegments).toBe(2);
+  });
+});
+
+describe("hydrate", () => {
+  const UUID = "0b8c7a4e-5b2f-4f5e-9d3a-1f2e3d4c5b6a";
+  const stored = (patch: Partial<StoredTurn> = {}): StoredTurn => ({
+    id: "t",
+    position: 0,
+    question: "Q?",
+    outcome: "answered",
+    usageId: UUID,
+    createdAt: "2026-10-18T10:00:00.000Z",
+    sources: [{ n: 1, documentId: "d", title: "Fresh", url: "/doc/a-abc" }],
+    blocks: [
+      {
+        kind: "paragraph",
+        markdown: "One [1].",
+        citations: [
+          { n: 1, documentId: "d", title: "Stale", url: "/doc/a-abc#h-x" },
+        ],
+      },
+      { kind: "paragraph", hidden: true },
+      { kind: "paragraph", hidden: true },
+      { kind: "paragraph", markdown: "Two.", citations: [] },
+    ],
+    hasHiddenBlocks: true,
+    ...patch,
+  });
+
+  it("maps stored turns, keeps the conversation id and uses fresh titles", () => {
+    const state = chatReducer(initialChatState, {
+      type: "hydrate",
+      conversationId: "c1",
+      turns: [stored(), stored({ id: "u", question: "Q2?" })],
+    });
+    expect(state.conversationId).toBe("c1");
+    expect(state.turns.map((t) => [t.id, t.question, t.status])).toEqual([
+      [1, "Q?", "done"],
+      [2, "Q2?", "done"],
+    ]);
+    const first = state.turns[0];
+    expect(first.blocks.map((b) => b.index)).toEqual([0, 3]);
+    expect(first.blocks[0].citations[0].title).toBe("Fresh");
+    expect(first.hiddenBlocks).toEqual([1, 2]);
+    expect(first.usageId).toBe(UUID);
+    expect(canRate(first)).toBe(true);
+  });
+
+  it("never carries text of hidden blocks and splits segments in order", () => {
+    const [turn] = chatReducer(initialChatState, {
+      type: "hydrate",
+      conversationId: "c1",
+      turns: [stored()],
+    }).turns;
+    expect(JSON.stringify(turn)).not.toContain('hidden":true');
+    expect(
+      answerSegments(turn).map((s) =>
+        s.type === "hidden" ? "hidden" : s.blocks.map((b) => b.index)
+      )
+    ).toEqual([[0], "hidden", [3]]);
+  });
+
+  it("keeps unsafe urls verbatim for the renderer's isDocPath check", () => {
+    const [turn] = chatReducer(initialChatState, {
+      type: "hydrate",
+      conversationId: "c1",
+      turns: [
+        stored({
+          sources: [
+            { n: 1, documentId: "d", title: "T", url: "javascript:alert(1)" },
+          ],
+          blocks: [
+            {
+              kind: "paragraph",
+              markdown: "x [1]",
+              citations: [
+                { n: 1, documentId: "d", title: "T", url: "//evil.test/x" },
+              ],
+            },
+          ],
+        }),
+      ],
+    }).turns;
+    expect(isDocPath(turn.blocks[0].citations[0].url)).toBe(false);
+    expect(isDocPath(turn.sources?.[0].url ?? "")).toBe(false);
+  });
+
+  it("maps failed outcomes to a problem, unknown ones to error", () => {
+    const { turns } = chatReducer(initialChatState, {
+      type: "hydrate",
+      conversationId: "c1",
+      turns: [
+        stored({ outcome: "no_answer", blocks: [], usageId: null }),
+        stored({ outcome: "something_new", blocks: [] }),
+      ],
+    });
+    expect(turns.map((t) => [t.status, t.problem])).toEqual([
+      ["failed", "no_answer"],
+      ["failed", "error"],
+    ]);
+    expect(canRate(turns[0])).toBe(false);
+  });
+
+  it("drops malformed turns, blocks and usage ids instead of throwing", () => {
+    // Server JSON is untrusted, so parse it the way the client receives it.
+    const turns: StoredTurn[] = JSON.parse(
+      JSON.stringify([
+        null,
+        {
+          ...stored(),
+          usageId: "nope",
+          blocks: [
+            null,
+            { kind: "evil", markdown: "x", citations: [] },
+            { kind: "paragraph", markdown: 5 },
+          ],
+        },
+      ])
+    );
+    const state = chatReducer(initialChatState, {
+      type: "hydrate",
+      conversationId: "c1",
+      turns,
+    });
+    expect(state.turns).toHaveLength(1);
+    expect(state.turns[0].blocks).toEqual([]);
+    expect(state.turns[0].usageId).toBeNull();
+  });
+
+  it("replaces whatever was on the page", () => {
+    const before = chatReducer(initialChatState, {
+      type: "submit",
+      question: "old",
+      scope: {},
+    });
+    const after = chatReducer(before, {
+      type: "hydrate",
+      conversationId: "c1",
+      turns: [stored()],
+    });
+    expect(after.turns.map((t) => t.question)).toEqual(["Q?"]);
   });
 });

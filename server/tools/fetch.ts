@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { EmptyResultError } from "sequelize";
 import { type McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
@@ -10,6 +11,7 @@ import {
 } from "@server/models";
 import { authorize, can } from "@server/policies";
 import { AuthorizationError } from "@server/errors";
+import { isAIExcluded } from "@server/utils/aiExclusion";
 import { presentNavigationNode, presentUser } from "@server/presenters";
 import AuthenticationHelper from "@shared/helpers/AuthenticationHelper";
 import { presentCollection } from "./collections";
@@ -129,6 +131,12 @@ export function fetchTool(server: McpServer, scopes: string[]) {
             });
 
             authorize(actor, "read", document);
+            // Answers exactly like a missing document: no existence oracle.
+            if (await isAIExcluded(actor, document.collectionId)) {
+              throw new EmptyResultError(
+                `Document doesn't exist with id: ${id}`
+              );
+            }
 
             const [{ text, ...attributes }, breadcrumb, shareUrl] =
               await Promise.all([
@@ -177,9 +185,12 @@ export function fetchTool(server: McpServer, scopes: string[]) {
                 ...pathToUrl(actor.team, presented),
                 ...(shareUrl !== undefined && { shareUrl }),
               },
-              (collection.documentStructure ?? []).map((node) =>
-                presentNavigationNode(actor.team, node)
-              ),
+              // The collection is listed, but not its documents' titles.
+              collection.aiExcluded
+                ? []
+                : (collection.documentStructure ?? []).map((node) =>
+                    presentNavigationNode(actor.team, node)
+                  ),
             ]);
           }
 
@@ -210,6 +221,20 @@ export function fetchTool(server: McpServer, scopes: string[]) {
               throw AuthorizationError();
             }
 
+            // An attachment of a document in an AI-excluded collection answers
+            // like a missing one (rejectOnEmpty throws an EmptyResultError with an
+            // empty message).
+            const parent = attachment.documentId
+              ? await Document.unscoped().findOne({
+                  where: { id: attachment.documentId },
+                  attributes: ["collectionId"],
+                  paranoid: false,
+                })
+              : null;
+            if (await isAIExcluded(actor, parent?.collectionId)) {
+              throw new EmptyResultError("");
+            }
+
             return success({
               id: attachment.id,
               name: attachment.name,
@@ -226,6 +251,11 @@ export function fetchTool(server: McpServer, scopes: string[]) {
             });
 
             authorize(actor, "read", template);
+            if (await isAIExcluded(actor, template.collectionId)) {
+              throw new EmptyResultError(
+                `Template doesn't exist with id: ${id}`
+              );
+            }
 
             const { text, ...attributes } = await presentTemplate(template);
             return {

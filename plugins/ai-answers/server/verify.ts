@@ -1,9 +1,5 @@
 import type { Block } from "./blocks";
-import {
-  type FinishReason,
-  type ProviderCitation,
-  type ProviderResult,
-} from "./contract";
+import { type FinishReason, type ProviderCitation } from "./contract";
 import { redactSecrets } from "./redact";
 import type { AnswerSource } from "./retrieve";
 import { headingOf } from "./text";
@@ -14,20 +10,11 @@ export interface AnswerCitation {
   title: string;
   url: string;
   heading?: string;
+  /** The editor's heading id for the first cited section, when known. */
+  anchor?: string;
+  /** Plain visible text of that heading, when known and safe to show. */
+  headingText?: string;
   quote: string;
-}
-
-/** The outcome of asking a question. `answer` is null when nothing was found. */
-export interface AnswerResult {
-  answer: string | null;
-  citations: AnswerCitation[];
-}
-
-/** An answer result plus how many segments the verifier discarded. */
-export interface VerifiedAnswer extends AnswerResult {
-  droppedSegments: number;
-  /** True when the model abstained (replied with the NO_ANSWER sentinel). */
-  abstained: boolean;
 }
 
 const MAX_QUOTE = 300;
@@ -295,109 +282,6 @@ function supportRatio(
   // Counted with repeats too, so padding with one junk word cannot hide behind a single miss.
   const counted = all.filter((w) => passage.words.has(w)).length / all.length;
   return Math.min(unique, counted);
-}
-
-/**
- * Applies the trust rules to a provider result. A citation counts only when it
- * maps to real sections that were sent and its quote occurs in them. A cited
- * segment is kept only when its numbers, URLs, emails, code tokens and
- * acronyms all appear in the cited passage and most of its content words do
- * too; otherwise it is dropped. Uncited text is kept only when copied
- * verbatim (at least 25 characters) from a sent section. The answer is returned only with at least one real
- * model citation, and only when the provider finished cleanly.
- *
- * @param result the unverified provider result.
- * @param sources the sources that were sent, in order.
- * @returns the verified answer and citations, or `answer: null`.
- */
-export function verifyAnswer(
-  result: ProviderResult,
-  sources: AnswerSource[]
-): VerifiedAnswer {
-  // Anything but a clean finish (refusal, max_tokens, pause_turn, tool_use) may be partial.
-  if (result.finishReason !== "stop") {
-    return {
-      answer: null,
-      citations: [],
-      droppedSegments: 0,
-      abstained: false,
-    };
-  }
-
-  const flatSections = sources.flatMap((source) =>
-    source.sections.map((section) => ({
-      source,
-      section,
-      flat: flattenLines(section),
-    }))
-  );
-  const parts: string[] = [];
-  const citations = new Map<string, AnswerCitation>();
-  let hasModelCitation = false;
-  let droppedSegments = 0;
-  for (const segment of result.segments) {
-    const text = segment.text.trim();
-    const valid = segment.citations.flatMap((c) => {
-      const resolved = resolveCitation(c, sources);
-      return resolved ? [resolved] : [];
-    });
-    const backed = valid.length > 0;
-    const cited = valid.map((v) => v.passage).join(" ");
-    // Every sentence must stand alone: an invented one must not ride along with a real one.
-    if (
-      backed &&
-      !sentencesOf(text).every((sentence) => isTextSupported(sentence, cited))
-    ) {
-      droppedSegments++;
-      continue;
-    }
-    for (const v of valid) {
-      citations.set(v.key, v.entry);
-      hasModelCitation = true;
-    }
-    if (backed) {
-      parts.push(text);
-      continue;
-    }
-
-    // Whole sentences, lines, items or cells only: a substring could drop a
-    // negation ("Never run X." -> "Run X.").
-    const needle = verbatimNeedle(text);
-    if (needle.length < MIN_GROUNDED_LENGTH) {
-      droppedSegments++;
-      continue;
-    }
-    const match = flatSections.find((s) => containsWhole(s.flat, needle));
-    if (!match) {
-      droppedSegments++;
-      continue;
-    }
-    const heading = headingOf(match.section);
-    const key = `${match.source.document.id}:${heading ?? ""}`;
-    if (!citations.has(key)) {
-      citations.set(key, {
-        documentId: match.source.document.id,
-        title: match.source.document.title,
-        url: match.source.document.url,
-        heading,
-        quote: truncate(text),
-      });
-    }
-    parts.push(text);
-  }
-
-  const answer = parts.join(" ").trim();
-  // NO_ANSWER anywhere, even in dropped text, means the model abstained.
-  const abstained = result.segments.some((s) => SENTINEL_PATTERN.test(s.text));
-  if (!answer || abstained || !hasModelCitation) {
-    return { answer: null, citations: [], droppedSegments, abstained };
-  }
-  return {
-    answer,
-    citations: [...citations.values()],
-    droppedSegments,
-    abstained,
-  };
 }
 
 /** Why `verifyBlock` did not release a block. */
@@ -866,26 +750,30 @@ function resolveCitation(
   if (quote.length < MIN_QUOTE_LENGTH || !passage.includes(quote)) {
     return undefined;
   }
-  const entry = citationFor(source, section, citation.quote);
+  const entry = citationFor(source, citation.sectionIndex, citation.quote);
   return { key: citationKey(entry), passage, entry };
 }
 
 function citationFor(
   source: AnswerSource,
-  section: string,
+  at: number,
   quote: string
 ): AnswerCitation {
+  const anchor = source.anchors?.[at];
+  const headingText = source.headings?.[at];
   return {
     documentId: source.document.id,
     title: source.document.title,
     url: source.document.url,
-    heading: headingOf(section),
+    heading: headingOf(source.sections[at]),
+    ...(anchor ? { anchor } : {}),
+    ...(headingText ? { headingText } : {}),
     quote: truncate(quote),
   };
 }
 
 function citationKey(citation: AnswerCitation): string {
-  return `${citation.documentId}:${citation.heading ?? ""}`;
+  return `${citation.documentId}:${citation.anchor ?? citation.heading ?? ""}`;
 }
 
 /** Splits text into sentences and lines; an invented one must not ride along with a real one. */
@@ -1035,7 +923,7 @@ function findVerbatim(
       containsWhole(section, needle)
     );
     if (at !== -1) {
-      return citationFor(source, source.sections[at], text);
+      return citationFor(source, at, text);
     }
   }
   return undefined;
@@ -1218,7 +1106,7 @@ function verifyCode(block: Block, ctx: PreparedSources): BlockVerdict {
       return {
         ok: true,
         block: clean,
-        citations: [citationFor(source, source.sections[at], text)],
+        citations: [citationFor(source, at, text)],
         modelCited: false,
       };
     }

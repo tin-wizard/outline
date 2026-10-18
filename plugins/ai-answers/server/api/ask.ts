@@ -1,5 +1,5 @@
+import { randomUUID } from "node:crypto";
 import Router from "koa-router";
-import { safeSlugify } from "@shared/editor/lib/headingToSlug";
 import { toError } from "@shared/utils/error";
 import { NotFoundError } from "@server/errors";
 import Logger from "@server/logging/Logger";
@@ -13,7 +13,8 @@ import type { User } from "@server/models";
 import type { APIContext } from "@server/types";
 import { releaseRequestTransaction } from "@server/storage/requestContext";
 import { RateLimiterStrategy } from "@server/utils/RateLimiter";
-import { assertAIAnswersAllowed } from "../access";
+import { assertAIAnswersAllowed, isHistoryEnabled } from "../access";
+import { safeCitationTarget } from "../anchors";
 import { getClient } from "../anthropicClient";
 import {
   BlockSplitter,
@@ -28,6 +29,7 @@ import {
   ASK_MAX_IDLE_MS,
   ASK_MIN_DEADLINE_MS,
   ASK_MIN_IDLE_MS,
+  REQUEST_HEADROOM_MS,
   ZERO_USAGE,
   type FinishReason,
   type Usage,
@@ -38,15 +40,16 @@ import {
   createConversation,
   historyForModel,
   loadConversation,
+  seedConversation,
   type Conversation,
 } from "../conversation";
 import env from "../env";
+import { appendConversationTurn, getConversationForResume } from "../history";
 import { streamAnswer, type StreamProgress } from "../providers/anthropic";
 import { redactSecrets } from "../redact";
 import { retrieveSources, type AnswerSource } from "../retrieve";
 import { estimateUsage, record, reserveModelCall } from "../usage";
 import { AnswerVerifier, type AcceptedBlock } from "../verify";
-import { REQUEST_HEADROOM_MS } from "./answers";
 import * as T from "./schema";
 
 /** Why an answer ended without `done`. */
@@ -54,6 +57,7 @@ export type AskFailure =
   | "no_answer"
   | "unverified"
   | "budget"
+  | "quota"
   | "unavailable"
   | "timeout"
   | "cancelled"
@@ -80,6 +84,8 @@ export interface AskCitation {
   title: string;
   /** The document url, with the cited section's heading anchor when known. */
   url: string;
+  /** Plain visible text of the cited section's heading, when known. */
+  heading?: string;
   quote?: string;
 }
 
@@ -107,6 +113,8 @@ export interface AskEvents {
     usageId: string | null;
     usage: Usage;
     timings: { retrievalMs: number; firstBlockMs?: number; totalMs: number };
+    /** Blocks the verifier dropped from this answer; 0 when all were kept. */
+    dropped: number;
   };
   failed: { reason: AskFailure; partial: boolean };
 }
@@ -258,12 +266,18 @@ function citationsOf(
       return [];
     }
     const quote = redactSecrets(c.quote).text;
+    // Same rules as the stored history (see safeCitationTarget).
+    const { anchor, heading } = safeCitationTarget({
+      anchor: c.anchor,
+      heading: c.headingText,
+    });
     return [
       {
         n: source.n,
         documentId: source.documentId,
         title: source.title,
-        url: c.heading ? `${source.url}#${safeSlugify(c.heading)}` : source.url,
+        url: anchor ? `${source.url}#${anchor}` : source.url,
+        ...(heading ? { heading } : {}),
         ...(quote ? { quote } : {}),
       },
     ];
@@ -271,7 +285,7 @@ function citationsOf(
 }
 
 // Streams one AI turn as Server-Sent Events over POST (precedent:
-// server/routes/mcp/index.ts). Same guards as documents.answerQuestion: the
+// server/routes/mcp/index.ts). Guards: the
 // workspace preference, the role gate, abort on disconnect, a hard deadline,
 // the request transaction released before the model call, and budget,
 // unmetered flag and concurrency slot checked before any model call.
@@ -308,19 +322,38 @@ router.post(
     let usageId: string | null = null;
 
     try {
-      // Conversation: an unknown, expired or foreign id starts a new one.
+      // Conversation: an unknown, expired or foreign id starts a new one. With
+      // stored history, an expired one of the user's own is resumed from the
+      // database (re-authorised) and the hot cache rebuilt under the same id.
+      const historyOn = isHistoryEnabled(user.team);
       let conversation: Conversation | null = null;
       let unavailable = false;
       if (conversationId) {
         const loaded = await loadConversation(user, conversationId);
         conversation = loaded.conversation;
         unavailable = loaded.unavailable;
+        if (!conversation && historyOn) {
+          const stored = await getConversationForResume(user, conversationId);
+          if (stored) {
+            conversation = await seedConversation(
+              user,
+              stored.id,
+              stored.turns
+            );
+            unavailable = false;
+          }
+        }
       }
       if (!conversation && !unavailable) {
         conversation = await createConversation(user);
         unavailable = !conversation;
       }
-      const id = conversation?.id ?? null;
+      // With Redis down, stored history still keeps the turn under a new id.
+      const id = conversation?.id ?? (historyOn ? randomUUID() : null);
+      // An id minted in this request may create the stored conversation.
+      const minted = id !== conversationId;
+      // Blocks the verifier dropped (counted while streaming).
+      let dropped = 0;
       if (id) {
         stream.send("conversation", { id });
       }
@@ -341,17 +374,51 @@ router.post(
       }
       stream.send("status", { phase: "searching" });
 
-      /** Stores the turn (only verified blocks; [] on failure), then ends the stream. */
+      /**
+       * Stores the turn (only verified blocks; [] on failure) in the hot cache
+       * and, with history on, the database, then ends the stream. Nothing is
+       * stored once the client has gone. Runs after the request transaction
+       * was released: the database write is scoped by team and user and reads
+       * no other tenant data.
+       */
       const finish = async (
         released: AcceptedBlock[],
         end:
           | { failed: AskFailure }
-          | { done: Omit<AskEvents["done"], "conversationId" | "usageId"> }
+          | {
+              done: Omit<
+                AskEvents["done"],
+                "conversationId" | "usageId" | "dropped"
+              >;
+            }
       ) => {
-        const stored =
-          !!id &&
-          !clientGone.signal.aborted &&
-          (await appendTurn(user, id, { question: query, released }));
+        let stored = false;
+        if (id && !clientGone.signal.aborted) {
+          // SET XX: true only while the user's own hot cache key is live, so
+          // the id is theirs and not deleted (delete removes the key).
+          const cached = await appendTurn(user, id, {
+            question: query,
+            released,
+          });
+          // A live key may create a missing row (e.g. the first answer was
+          // stopped before anything was stored); otherwise only an existing
+          // row is continued, so a deleted conversation stays deleted.
+          // shortcut: a delete landing between the SET XX and this insert can
+          // still be undone by it; a tombstone would close that window.
+          const persisted = historyOn
+            ? await appendConversationTurn(user, {
+                conversationId: id,
+                create: minted || cached,
+                title: conversation?.turns[0]?.question,
+                question: query,
+                released,
+                outcome: "failed" in end ? end.failed : "answered",
+                usageId,
+                droppedSegments: dropped,
+              })
+            : null;
+          stored = cached || persisted === id;
+        }
         if ("failed" in end) {
           stream.send("failed", { reason: end.failed, partial: emitted > 0 });
         } else {
@@ -360,6 +427,7 @@ router.post(
             ...end.done,
             conversationId: stored ? id : null,
             usageId,
+            dropped,
           });
         }
       };
@@ -385,13 +453,10 @@ router.post(
       const retrievalMs = Date.now() - retrievalStartedAt;
       const presented = await presentSources(user, sources);
       stream.send("sources", presented);
-      if (sources.length === 0) {
-        await finish([], { failed: "no_answer" });
-        return;
-      }
 
       // Return the pinned connection before the slow model call (M1 task
-      // 1.2). No tenant-data reads after this point.
+      // 1.2) and before storing the turn, which takes its own connection. No
+      // tenant-data reads after this point.
       try {
         await releaseRequestTransaction();
       } catch (error) {
@@ -399,6 +464,10 @@ router.post(
           error: toError(error).message,
         });
         await finish([], { failed: "unavailable" });
+        return;
+      }
+      if (sources.length === 0) {
+        await finish([], { failed: "no_answer" });
         return;
       }
 
@@ -440,22 +509,24 @@ router.post(
 
       let reservation: Awaited<ReturnType<typeof reserveModelCall>>;
       try {
-        reservation = await reserveModelCall(user.teamId);
+        reservation = await reserveModelCall(user.teamId, user.id);
       } catch (error) {
         limits.stop();
         throw error;
       }
       if (!reservation.ok) {
         limits.stop();
-        if (reservation.reason === "budget") {
+        const { reason } = reservation;
+        if (reason === "budget" || reason === "quota") {
           await record({
             ...base,
             usage: ZERO_USAGE,
-            outcome: "budget_blocked",
+            outcome: reason === "budget" ? "budget_blocked" : "quota_blocked",
           });
         }
         await finish([], {
-          failed: reservation.reason === "budget" ? "budget" : "unavailable",
+          failed:
+            reason === "budget" || reason === "quota" ? reason : "unavailable",
         });
         return;
       }
@@ -476,7 +547,6 @@ router.post(
       let finishReason: FinishReason = "other";
       let refused = false;
       let usage: Usage | null = null;
-      let dropped = 0;
       let firstBlockMs: number | undefined;
       let sent = false;
       let recorded = false;
@@ -615,9 +685,10 @@ router.post(
   }
 );
 
-// Rates one answer. Stores only the rating and its time, never any text. Runs
-// in the request transaction (no model call here), so row-level security
-// applies as well as the explicit team and asker scoping below.
+// Rates one answer. Stores only the rating and its time, never any text. The
+// explicit team and asker WHERE below is the protection: row-level security
+// only covers reads routed through the request transaction, and the
+// production database role bypasses it.
 router.post(
   "ai.feedback",
   rateLimiter(RateLimiterStrategy.TenPerMinute),
