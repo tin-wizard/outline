@@ -39,6 +39,8 @@ export interface AskCitation {
   title: string;
   url: string;
   quote?: string;
+  /** Plain text of the cited section's heading; absent when unknown. */
+  heading?: string;
 }
 
 export interface AskEvents {
@@ -67,6 +69,8 @@ export interface AskEvents {
     conversationId: string | null;
     /** Id of the usage row, used for feedback; null if it was not recorded. */
     usageId: string | null;
+    /** Number of answer blocks the verifier left out. */
+    dropped?: number;
     usage: { inputTokens: number; outputTokens: number };
     timings: { retrievalMs: number; firstBlockMs?: number; totalMs: number };
   };

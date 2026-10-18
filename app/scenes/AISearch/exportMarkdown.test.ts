@@ -46,9 +46,22 @@ describe("turnToMarkdown", () => {
         "",
         "Sources",
         "",
-        "1. [Leave policy](https://wiki.example.com/doc/leave-abc#h-requests)",
+        "1. [Leave policy](https://wiki.example.com/doc/leave-abc#h-requests) - requests",
       ].join("\n")
     );
+  });
+
+  it("labels sources with the server heading, escaped", () => {
+    const base = make();
+    const turn = make({
+      blocks: [
+        {
+          ...base.blocks[0],
+          citations: [{ ...base.blocks[0].citations[0], heading: "Step *2*" }],
+        },
+      ],
+    });
+    expect(turnToMarkdown(turn, both)).toContain("#h-requests) - Step \\*2\\*");
   });
 
   it("omits question and sources when asked", () => {
@@ -108,7 +121,7 @@ describe("turnToMarkdown", () => {
     const md = turnToMarkdown(turn, both);
     const line = md.split("\n").pop() ?? "";
     expect(line).toBe(
-      "1. [\\[x\\]\\(javascript:alert\\(1\\)\\) \\`\\]\\` \\) \\<b\\>](https://wiki.example.com/doc/leave-abc#h-requests)"
+      "1. [\\[x\\]\\(javascript:alert\\(1\\)\\) \\`\\]\\` \\) \\<b\\>](https://wiki.example.com/doc/leave-abc#h-requests) - requests"
     );
   });
 

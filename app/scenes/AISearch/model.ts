@@ -58,6 +58,8 @@ export interface Turn {
   blocks: (BlockInput & { index: number })[];
   /** Indexes of stored blocks withheld because a cited source changed or is no longer readable. */
   hiddenBlocks?: number[];
+  /** Blocks the verifier left out of the answer; absent means 0. */
+  droppedSegments?: number;
   problem?: TurnProblem;
   /** Id of the metered usage row, needed to send feedback; null if not recorded. */
   usageId?: string | null;
@@ -113,6 +115,8 @@ export interface CitedSection {
   url: string;
   /** The cited passage, untrusted text. */
   quote?: string;
+  /** The section's heading text from the server, untrusted plain text. */
+  heading?: string;
 }
 
 export interface CitedSource {
@@ -139,18 +143,20 @@ export function citedSources(turn: Turn): CitedSource[] {
     for (const citation of block.citations) {
       const entry = byNumber.get(citation.n);
       const quote = citation.quote?.trim() || undefined;
+      const { heading } = citation;
       if (!entry) {
         byNumber.set(citation.n, {
           first: citation,
-          sections: [{ url: citation.url, quote }],
+          sections: [{ url: citation.url, quote, heading }],
         });
         continue;
       }
       const section = entry.sections.find((x) => x.url === citation.url);
       if (!section) {
-        entry.sections.push({ url: citation.url, quote });
-      } else if (!section.quote && quote) {
-        section.quote = quote;
+        entry.sections.push({ url: citation.url, quote, heading });
+      } else {
+        section.quote ||= quote;
+        section.heading ||= heading;
       }
     }
   }
@@ -190,6 +196,19 @@ export function sectionLabel(url: string): string | undefined {
   return label || undefined;
 }
 
+/**
+ * The label of a cited section: the server's heading text, or, when it sent
+ * none, one derived from the link's anchor.
+ *
+ * @param section the cited section.
+ * @returns the label, or undefined when there is no usable heading.
+ */
+export function sectionHeading(section: CitedSection): string | undefined {
+  return section.heading ?? sectionLabel(section.url);
+}
+
+const MAX_HEADING_LENGTH = 120;
+
 const BLOCK_KINDS = [
   "paragraph",
   "heading",
@@ -225,6 +244,23 @@ function validCitation(c: AskCitation): boolean {
     typeof c.title === "string" &&
     typeof c.url === "string"
   );
+}
+
+/** Keeps the heading only if it is non-empty plain text of sane length. */
+function cleanCitation(c: AskCitation): AskCitation {
+  const { heading, ...rest } = c;
+  const text = typeof heading === "string" ? heading.trim() : "";
+  // \p{C} covers control characters, including line breaks.
+  return text && text.length <= MAX_HEADING_LENGTH && !/\p{C}/u.test(text)
+    ? { ...rest, heading: text }
+    : rest;
+}
+
+/** A non-negative integer count, otherwise 0. */
+function cleanCount(value: unknown): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? value
+    : 0;
 }
 
 function validSource(source: AskSource): boolean {
@@ -371,7 +407,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
                 index,
                 kind,
                 markdown,
-                citations: citations.filter(validCitation),
+                citations: citations.filter(validCitation).map(cleanCitation),
               },
             ],
           });
@@ -380,6 +416,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           return update(
             {
               status: "done",
+              droppedSegments: cleanCount(event.data.dropped),
               usageId:
                 typeof event.data.usageId === "string" &&
                 isUUID(event.data.usageId)
@@ -472,7 +509,7 @@ function hydrateTurn(stored: StoredTurn, i: number): Turn | undefined {
       kind: b.kind,
       markdown: b.markdown,
       citations: b.citations.filter(validCitation).map((c) => ({
-        ...c,
+        ...cleanCitation(c),
         title: sources.find((s) => s.n === c.n)?.title ?? c.title,
       })),
     });
@@ -486,6 +523,7 @@ function hydrateTurn(stored: StoredTurn, i: number): Turn | undefined {
     sources,
     blocks,
     ...(hiddenBlocks.length ? { hiddenBlocks } : {}),
+    droppedSegments: cleanCount(stored.droppedSegments),
     ...(answered
       ? {}
       : {

@@ -1,5 +1,5 @@
 import type { Turn } from "./model";
-import { citedSources, isActive, sectionLabel } from "./model";
+import { citedSources, isActive, sectionHeading } from "./model";
 
 /** What the data held for a finished answer supports saying about it. */
 export type Verification =
@@ -10,13 +10,15 @@ export type Verification =
       /** Distinct sources cited by the shown answer. */
       cited: number;
     }
-  | { state: "partial" };
+  | { state: "partial" }
+  /** Finished, but the verifier left some statements out. */
+  | { state: "trimmed" };
 
 /**
  * The calm verification line for a turn, from data the reducer already holds.
  * Only released (verified) blocks are ever shown, so a finished answer with
  * blocks and no failure is "verified"; a failed, stopped or cut-short one with
- * blocks is "partial". Nothing is claimed while streaming or without blocks.
+ * blocks is "partial", and one where the verifier dropped statements is "trimmed". Nothing is claimed while streaming or without blocks.
  *
  * @param turn the turn.
  * @returns the line to show, or undefined when there is nothing to claim.
@@ -27,6 +29,9 @@ export function verificationOf(turn: Turn): Verification | undefined {
   }
   if (turn.problem || turn.status !== "done") {
     return { state: "partial" };
+  }
+  if (turn.droppedSegments) {
+    return { state: "trimmed" };
   }
   return {
     state: "verified",
@@ -88,7 +93,7 @@ export function followUpSuggestions(turn: Turn): FollowUp[] {
   const out: FollowUp[] = [];
   for (const source of sources) {
     for (const section of source.sections) {
-      const heading = sectionLabel(section.url);
+      const heading = sectionHeading(section);
       const key = heading?.toLowerCase();
       if (heading && key && !seen.has(key) && seen.size < MAX_HEADINGS) {
         seen.add(key);

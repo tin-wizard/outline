@@ -26,6 +26,8 @@ export interface StoredTurn {
   sources: AskSource[];
   blocks: StoredBlock[];
   hasHiddenBlocks: boolean;
+  /** Number of answer blocks the verifier left out. */
+  droppedSegments?: number;
 }
 
 /** A conversation with the AI Search assistant, owned by the current user. */

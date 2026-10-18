@@ -23,7 +23,7 @@ import {
   canRate,
   citedSources,
   isActive,
-  sectionLabel,
+  sectionHeading,
 } from "./model";
 
 interface Props {
@@ -231,9 +231,11 @@ export function AnswerTurn({
         )}
         {verification && (
           <Meta data-state={verification.state}>
-            {verification.state === "verified"
-              ? verifiedText(verification.documents, verification.cited, t)
-              : t("Not fully verified")}
+            {verification.state === "verified" &&
+              verifiedText(verification.documents, verification.cited, t)}
+            {verification.state === "partial" && t("Not fully verified")}
+            {verification.state === "trimmed" &&
+              t("Some statements could not be verified and were left out.")}
           </Meta>
         )}
         {cited.length > 0 && (
@@ -526,7 +528,7 @@ export function SourceEntry({
           return null;
         }
         const label =
-          sectionLabel(section.url) ??
+          sectionHeading(section) ??
           t("Section {{ number }}", { number: i + 1 });
         return (
           <SectionEntry key={section.url}>

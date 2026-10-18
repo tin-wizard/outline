@@ -269,6 +269,44 @@ describe("answer presentation", () => {
     );
   });
 
+  it("shows Verified only when no statements were dropped", () => {
+    expect(html({ ...turn, droppedSegments: 0 })).toContain("Verified ·");
+    const out = html({ ...turn, droppedSegments: 1 });
+    expect(out).toContain(
+      "Some statements could not be verified and were left out."
+    );
+    expect(out).not.toContain("Verified");
+    expect(out).not.toContain("Not fully verified");
+  });
+
+  it("labels sections and chips with the cited heading text", () => {
+    const withHeadings: Turn = {
+      ...turn,
+      blocks: [
+        {
+          ...turn.blocks[0],
+          citations: [
+            { ...turn.blocks[0].citations[0], heading: "Annual <b>Leave</b>" },
+            {
+              ...cite(1, "/doc/a#h-overview-1"),
+              heading: "Overview",
+            },
+          ],
+        },
+      ],
+    };
+    const out = html(withHeadings, {
+      onOpenSources: () => {},
+      onFollowUp: () => {},
+    });
+    expect(out).toContain(
+      'value="Tell me more about Annual &lt;b&gt;Leave&lt;/b&gt;"'
+    );
+    expect(out).toContain('value="Tell me more about Overview"');
+    expect(out).not.toContain("overview 1");
+    expect(out).not.toContain("<b>Leave");
+  });
+
   it("shows Not fully verified for partial turns", () => {
     const out = html({ ...turn, problem: "unverified" });
     expect(out).toContain("Not fully verified");

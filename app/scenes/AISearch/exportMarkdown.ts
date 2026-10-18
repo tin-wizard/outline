@@ -1,6 +1,6 @@
 import { isDocPath } from "./AnswerTurn";
 import type { Turn } from "./model";
-import { answerSegments, citedSources } from "./model";
+import { answerSegments, citedSources, sectionHeading } from "./model";
 
 export interface TurnOptions {
   /** Prefix the answer with the quoted question. */
@@ -55,8 +55,13 @@ function sourcesMarkdown(turn: Turn, origin: string): string {
       continue;
     }
     const title = escapeMarkdown(source.title).replace(/\s+/g, " ").trim();
+    const heading = sectionHeading(section);
     lines.push(
-      `${source.n}. [${title || "Untitled"}](${encodeDestination(origin + section.url)})`
+      `${source.n}. [${title || "Untitled"}](${encodeDestination(origin + section.url)})${
+        heading
+          ? ` - ${escapeMarkdown(heading).replace(/\s+/g, " ").trim()}`
+          : ""
+      }`
     );
   }
   return lines.length ? `Sources\n\n${lines.join("\n")}` : "";

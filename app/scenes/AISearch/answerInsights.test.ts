@@ -61,6 +61,15 @@ describe("verificationOf", () => {
     });
   });
 
+  it("is verified only when nothing was dropped", () => {
+    expect(verificationOf(turn({ droppedSegments: 0 }))?.state).toBe(
+      "verified"
+    );
+    expect(verificationOf(turn({ droppedSegments: 2 }))).toEqual({
+      state: "trimmed",
+    });
+  });
+
   it("claims nothing while streaming or without blocks", () => {
     expect(verificationOf(turn({ status: "generating" }))).toBeUndefined();
     expect(verificationOf(turn({ blocks: [] }))).toBeUndefined();
@@ -99,6 +108,26 @@ describe("followUpSuggestions", () => {
       { kind: "more", heading: "leave policy" },
       { kind: "more", heading: "pay" },
       { kind: "compare" },
+    ]);
+  });
+
+  it("prefers the server heading over the anchor label", () => {
+    const t = turn({
+      blocks: [
+        {
+          index: 0,
+          kind: "paragraph",
+          markdown: "x",
+          citations: [
+            { ...cite(1, "/doc/a#h-overview-1"), heading: "Overview" },
+            cite(2, "/doc/b#h-pay"),
+          ],
+        },
+      ],
+    });
+    expect(followUpSuggestions(t).slice(0, 2)).toEqual([
+      { kind: "more", heading: "Overview" },
+      { kind: "more", heading: "pay" },
     ]);
   });
 

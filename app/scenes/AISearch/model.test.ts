@@ -389,6 +389,97 @@ describe("usageId and feedback", () => {
   });
 });
 
+describe("heading and dropped count", () => {
+  const withHeading = (heading: unknown): AskEvent => ({
+    event: "block",
+    data: {
+      index: 0,
+      kind: "paragraph",
+      markdown: "x",
+      citations: [
+        {
+          n: 1,
+          documentId: "d",
+          title: "A",
+          url: "/doc/a#h-x",
+          heading: heading as string,
+        },
+      ],
+    },
+  });
+  const headingOf = (heading: unknown) =>
+    run([withHeading(heading)]).turns[0].blocks[0].citations[0].heading;
+
+  it("keeps a plain heading and drops invalid ones", () => {
+    expect(headingOf("  Annual leave ")).toBe("Annual leave");
+    expect(headingOf("a".repeat(120))).toBe("a".repeat(120));
+    expect(headingOf("a".repeat(121))).toBeUndefined();
+    expect(headingOf("two\nlines")).toBeUndefined();
+    expect(headingOf("   ")).toBeUndefined();
+    expect(headingOf(42)).toBeUndefined();
+    expect(headingOf(undefined)).toBeUndefined();
+  });
+
+  it("carries the heading into cited sections", () => {
+    const [source] = citedSources(run([withHeading("Annual leave")]).turns[0]);
+    expect(source.sections[0].heading).toBe("Annual leave");
+  });
+
+  it("stores the dropped count from done, defaulting to 0", () => {
+    const withDropped = (dropped: unknown): AskEvent => {
+      const e = done("c1");
+      if (e.event === "done") {
+        e.data.dropped = dropped as number;
+      }
+      return e;
+    };
+    expect(run([block(0), withDropped(3)]).turns[0].droppedSegments).toBe(3);
+    expect(run([block(0), withDropped(0)]).turns[0].droppedSegments).toBe(0);
+    for (const bad of [-1, 1.5, "2", null, undefined]) {
+      expect(run([block(0), withDropped(bad)]).turns[0].droppedSegments).toBe(
+        0
+      );
+    }
+  });
+
+  it("hydrates headings and droppedSegments", () => {
+    const [turn] = chatReducer(initialChatState, {
+      type: "hydrate",
+      conversationId: "c1",
+      turns: [
+        {
+          id: "t",
+          position: 0,
+          question: "Q?",
+          outcome: "answered",
+          usageId: null,
+          createdAt: "2026-10-18T10:00:00.000Z",
+          sources: [],
+          blocks: [
+            {
+              kind: "paragraph",
+              markdown: "x",
+              citations: [
+                {
+                  n: 1,
+                  documentId: "d",
+                  title: "A",
+                  url: "/doc/a#h-x",
+                  heading: "Step 2",
+                },
+              ],
+            },
+          ],
+          hasHiddenBlocks: false,
+          droppedSegments: 2,
+        },
+      ],
+    }).turns;
+    expect(turn.blocks[0].citations[0].heading).toBe("Step 2");
+    expect(turn.droppedSegments).toBe(2);
+  });
+});
+
 describe("hydrate", () => {
   const UUID = "0b8c7a4e-5b2f-4f5e-9d3a-1f2e3d4c5b6a";
   const stored = (patch: Partial<StoredTurn> = {}): StoredTurn => ({
