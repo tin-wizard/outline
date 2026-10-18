@@ -194,6 +194,7 @@ function CitationMarker({
     >
       <Marker
         type="button"
+        data-citation
         aria-label={t("Source {{ number }}", { number: n })}
         aria-describedby={showing ? id : undefined}
         onClick={handleClick}

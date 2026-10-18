@@ -1,14 +1,17 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
+import { toast } from "sonner";
 import styled from "styled-components";
 import { s } from "@shared/styles";
 import { ThumbsDownIcon, ThumbsUpIcon } from "outline-icons";
 import Button from "~/components/Button";
+import CopyToClipboard from "~/components/CopyToClipboard";
 import Tooltip from "~/components/Tooltip";
 import { AnswerBody } from "./AnswerBody";
 import type { CitationPreviewData } from "./CitationPreview";
 import { CitationQuote } from "./CitationQuote";
+import { turnToMarkdown } from "./exportMarkdown";
 import type { CitedSection, Rating, Turn, TurnProblem } from "./model";
 import { canRate, citedSources, isActive, sectionLabel } from "./model";
 
@@ -112,6 +115,8 @@ export function AnswerTurn({
   }, [isLast, turn.status]);
 
   const handleRetry = () => onRetry(turn);
+
+  const handleCopied = () => toast.success(t("Copied"));
 
   const handleCitationClick = React.useCallback(
     (n: number) => {
@@ -223,6 +228,21 @@ export function AnswerTurn({
           </Message>
         )}
       </Answer>
+      {turn.status === "done" && hasBlocks && (
+        <CopyActions data-print-hidden>
+          <CopyToClipboard
+            text={turnToMarkdown(turn, {
+              includeQuestion: false,
+              includeSources: true,
+            })}
+            onCopy={handleCopied}
+          >
+            <Button type="button" neutral>
+              {t("Copy answer")}
+            </Button>
+          </CopyToClipboard>
+        </CopyActions>
+      )}
       {onRate && canRate(turn) && <FeedbackBar turn={turn} onRate={onRate} />}
     </Section>
   );
@@ -421,6 +441,10 @@ function SourceEntry({
 const SectionEntry = styled.div`
   margin: 4px 0 0 18px;
   font-size: 13px;
+`;
+
+const CopyActions = styled.div`
+  margin: 8px 0 0;
 `;
 
 const Section = styled.section`

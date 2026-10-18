@@ -13,6 +13,7 @@ import useQuery from "~/hooks/useQuery";
 import useStores from "~/hooks/useStores";
 import { homePath } from "~/utils/routeHelpers";
 import { AnswerTurn } from "./AnswerTurn";
+import { ExportActions } from "./ExportActions";
 import { Composer, MAX_QUERY_LENGTH } from "./Composer";
 import type { ScopeChip } from "./ScopeChips";
 import { ScopeChips } from "./ScopeChips";
@@ -146,58 +147,98 @@ const Page = observer(function Page() {
       textTitle={t("AI Search")}
       actions={
         turns.length > 0 ? (
-          <Button type="button" neutral onClick={handleNewConversation}>
-            {t("New conversation")}
-          </Button>
+          <>
+            <ExportActions turns={turns} streaming={streaming} />
+            <Button type="button" neutral onClick={handleNewConversation}>
+              {t("New conversation")}
+            </Button>
+          </>
         ) : undefined
       }
     >
-      <ScopeChips chips={chips} disabled={streaming} />
-      {turns.length === 0 ? (
-        <Idle>
-          <p>
-            {t(
-              "Ask a question and get an answer built from your documents, with sources."
-            )}
-          </p>
-          <Suggestions aria-label={t("Example questions")}>
-            {suggestions.map((suggestion) => (
-              <li key={suggestion}>
-                <Suggestion
-                  type="button"
-                  value={suggestion}
-                  onClick={handleSuggestionClick}
-                >
-                  {suggestion}
-                </Suggestion>
-              </li>
-            ))}
-          </Suggestions>
-        </Idle>
-      ) : (
-        turns.map((turn) => (
-          <AnswerTurn
-            key={turn.id}
-            turn={turn}
-            isLast={turn === last}
-            scopeLabels={scopeLabels(turn.scope)}
+      <Root data-ai-search>
+        <div data-print-hidden>
+          <ScopeChips chips={chips} disabled={streaming} />
+        </div>
+        {turns.length === 0 ? (
+          <Idle>
+            <p>
+              {t(
+                "Ask a question and get an answer built from your documents, with sources."
+              )}
+            </p>
+            <Suggestions aria-label={t("Example questions")}>
+              {suggestions.map((suggestion) => (
+                <li key={suggestion}>
+                  <Suggestion
+                    type="button"
+                    value={suggestion}
+                    onClick={handleSuggestionClick}
+                  >
+                    {suggestion}
+                  </Suggestion>
+                </li>
+              ))}
+            </Suggestions>
+          </Idle>
+        ) : (
+          turns.map((turn) => (
+            <AnswerTurn
+              key={turn.id}
+              turn={turn}
+              isLast={turn === last}
+              scopeLabels={scopeLabels(turn.scope)}
+              onStop={stop}
+              onRate={rate}
+              onRetry={(failed) => submit(failed.question, failed.scope)}
+            />
+          ))
+        )}
+        <div data-print-hidden>
+          <Composer
+            value={text}
+            onChange={setText}
+            onSubmit={handleSubmit}
             onStop={stop}
-            onRate={rate}
-            onRetry={(failed) => submit(failed.question, failed.scope)}
+            busy={streaming}
+            textareaRef={textareaRef}
           />
-        ))
-      )}
-      <Composer
-        value={text}
-        onChange={setText}
-        onSubmit={handleSubmit}
-        onStop={stop}
-        busy={streaming}
-        textareaRef={textareaRef}
-      />
+        </div>
+      </Root>
     </Scene>
   );
 });
+
+const Root = styled.div`
+  @media print {
+    color: #000;
+    background: #fff;
+
+    [data-print-hidden],
+    button:not([data-citation]) {
+      display: none !important;
+    }
+
+    * {
+      color: #000 !important;
+      background: transparent !important;
+      box-shadow: none !important;
+    }
+
+    a {
+      text-decoration: underline;
+    }
+
+    a[href^="/doc/"]::after {
+      content: " (" attr(href) ")";
+      font-size: 0.85em;
+    }
+
+    section {
+      break-inside: avoid-page;
+    }
+  }
+`;
 
 const Idle = styled.div`
   margin: 32px 0;
