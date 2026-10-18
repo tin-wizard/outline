@@ -24,6 +24,7 @@ import {
   deleteConversation,
   historyForModel,
   loadConversation,
+  seedConversation,
   type TurnInput,
 } from "./conversation";
 import { retrieveSources } from "./retrieve";
@@ -220,6 +221,50 @@ describe("conversation store", () => {
     expect(turns.length).toBeLessThan(8);
     expect(turns.at(-1)?.question).toEqual("Last");
     expect(turns.at(-1)?.answer).toEqual(big);
+  });
+
+  it("seeds a conversation under a given id with the same caps, budget and TTL", async () => {
+    const { user } = await setupUser();
+    const id = randomUUID();
+    const big = "a".repeat(7500);
+    const turns = Array.from({ length: MAX_TURNS + 1 }, (_, i) => ({
+      question: `Q${i + 1}`,
+      answer: big,
+      citedDocumentIds: [randomUUID()],
+      at: i,
+    }));
+
+    const seeded = await seedConversation(user, id, turns);
+    expect(seeded.id).toEqual(id);
+    expect(seeded.turns.map((t) => t.question)).toEqual(
+      turns.slice(1).map((t) => t.question)
+    );
+    // Same rule as appendTurn: the oldest answers are cleared first.
+    expect(seeded.turns.at(-1)?.answer).toEqual(big);
+    expect(seeded.turns[0].answer).toBeNull();
+    expect(
+      await Redis.defaultClient.ttl(key(user.teamId, user.id, id))
+    ).toBeGreaterThan(3590);
+    expect((await loadConversation(user, id)).conversation).toEqual(seeded);
+    expect(await appendTurn(user, id, turn({ question: "Next" }))).toEqual(
+      true
+    );
+
+    const other = await buildUser({ teamId: user.teamId });
+    expect((await loadConversation(other, id)).conversation).toBeNull();
+  });
+
+  it("returns the seeded conversation even when Redis fails", async () => {
+    const { user } = await setupUser();
+    vi.spyOn(Redis.defaultClient, "set").mockRejectedValueOnce(
+      new Error("redis down")
+    );
+    const id = randomUUID();
+    const seeded = await seedConversation(user, id, [
+      { question: "Q", answer: "A", citedDocumentIds: [], at: 1 },
+    ]);
+    expect(seeded.turns.map((t) => t.question)).toEqual(["Q"]);
+    expect((await loadConversation(user, id)).conversation).toBeNull();
   });
 
   it("stores the derived answer and deduplicated cited document ids", async () => {

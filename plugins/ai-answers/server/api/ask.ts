@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import Router from "koa-router";
 import { toError } from "@shared/utils/error";
 import { NotFoundError } from "@server/errors";
@@ -12,7 +13,7 @@ import type { User } from "@server/models";
 import type { APIContext } from "@server/types";
 import { releaseRequestTransaction } from "@server/storage/requestContext";
 import { RateLimiterStrategy } from "@server/utils/RateLimiter";
-import { assertAIAnswersAllowed } from "../access";
+import { assertAIAnswersAllowed, isHistoryEnabled } from "../access";
 import { getClient } from "../anthropicClient";
 import {
   BlockSplitter,
@@ -38,9 +39,11 @@ import {
   createConversation,
   historyForModel,
   loadConversation,
+  seedConversation,
   type Conversation,
 } from "../conversation";
 import env from "../env";
+import { appendConversationTurn, getConversationForResume } from "../history";
 import { streamAnswer, type StreamProgress } from "../providers/anthropic";
 import { redactSecrets } from "../redact";
 import { retrieveSources, type AnswerSource } from "../retrieve";
@@ -308,19 +311,34 @@ router.post(
     let usageId: string | null = null;
 
     try {
-      // Conversation: an unknown, expired or foreign id starts a new one.
+      // Conversation: an unknown, expired or foreign id starts a new one. With
+      // stored history, an expired one of the user's own is resumed from the
+      // database (re-authorised) and the hot cache rebuilt under the same id.
+      const historyOn = isHistoryEnabled(user.team);
       let conversation: Conversation | null = null;
       let unavailable = false;
       if (conversationId) {
         const loaded = await loadConversation(user, conversationId);
         conversation = loaded.conversation;
         unavailable = loaded.unavailable;
+        if (!conversation && historyOn) {
+          const stored = await getConversationForResume(user, conversationId);
+          if (stored) {
+            conversation = await seedConversation(
+              user,
+              stored.id,
+              stored.turns
+            );
+            unavailable = false;
+          }
+        }
       }
       if (!conversation && !unavailable) {
         conversation = await createConversation(user);
         unavailable = !conversation;
       }
-      const id = conversation?.id ?? null;
+      // With Redis down, stored history still keeps the turn under a new id.
+      const id = conversation?.id ?? (historyOn ? randomUUID() : null);
       if (id) {
         stream.send("conversation", { id });
       }
@@ -341,17 +359,35 @@ router.post(
       }
       stream.send("status", { phase: "searching" });
 
-      /** Stores the turn (only verified blocks; [] on failure), then ends the stream. */
+      /**
+       * Stores the turn (only verified blocks; [] on failure) in the hot cache
+       * and, with history on, the database, then ends the stream. Nothing is
+       * stored once the client has gone. Runs after the request transaction
+       * was released: the database write is scoped by team and user and reads
+       * no other tenant data.
+       */
       const finish = async (
         released: AcceptedBlock[],
         end:
           | { failed: AskFailure }
           | { done: Omit<AskEvents["done"], "conversationId" | "usageId"> }
       ) => {
-        const stored =
-          !!id &&
-          !clientGone.signal.aborted &&
-          (await appendTurn(user, id, { question: query, released }));
+        let stored = false;
+        if (id && !clientGone.signal.aborted) {
+          const [cached, persisted] = await Promise.all([
+            appendTurn(user, id, { question: query, released }),
+            historyOn
+              ? appendConversationTurn(user, {
+                  conversationId: id,
+                  question: query,
+                  released,
+                  outcome: "failed" in end ? end.failed : "answered",
+                  usageId,
+                })
+              : null,
+          ]);
+          stored = cached || persisted === id;
+        }
         if ("failed" in end) {
           stream.send("failed", { reason: end.failed, partial: emitted > 0 });
         } else {

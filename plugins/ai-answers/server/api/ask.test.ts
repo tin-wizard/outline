@@ -3,7 +3,14 @@ import { Transaction } from "sequelize";
 import { vi } from "vitest";
 import { TeamPreference } from "@shared/types";
 import { ProsemirrorHelper } from "@shared/utils/ProsemirrorHelper";
-import { AIAnswerUsage, Team, type User } from "@server/models";
+import Logger from "@server/logging/Logger";
+import {
+  AIAnswerUsage,
+  AIConversation,
+  AIConversationTurn,
+  Team,
+  type User,
+} from "@server/models";
 import { DocumentHelper } from "@server/models/helpers/DocumentHelper";
 import {
   buildAdmin,
@@ -24,7 +31,11 @@ import {
   ASK_DEFAULT_IDLE_MS,
   ASK_MAX_DEADLINE_MS,
 } from "../contract";
-import { createConversation } from "../conversation";
+import {
+  createConversation,
+  deleteConversation,
+  loadConversation,
+} from "../conversation";
 import env from "../env";
 import * as usage from "../usage";
 import { acquireSlot, releaseSlot, SLOT_TTL_MS } from "../usage";
@@ -272,6 +283,20 @@ async function enable(user: User) {
   await team.save();
   return user;
 }
+
+/** Turns the workspace's AI conversation history off (Redis-only behaviour). */
+async function historyOff(user: User) {
+  const team = await Team.findByPk(user.teamId, { rejectOnEmpty: true });
+  team.setPreference(TeamPreference.AIConversationHistory, false);
+  await team.save();
+  return user;
+}
+
+const turnsOf = (conversationId: string) =>
+  AIConversationTurn.findAll({
+    where: { conversationId },
+    order: [["position", "ASC"]],
+  });
 
 const FACT = "Employees receive twenty five days of holiday.";
 
@@ -1073,7 +1098,7 @@ describe("#ai.ask", () => {
     });
 
     it("returns a null conversationId when the turn could not be stored", async () => {
-      const { user } = await setup();
+      const user = await historyOff((await setup()).user);
       upstream(() => anthropicEvents([cited]));
       const first = await askEvents(user);
       const id = first[0].data.id;
@@ -1095,7 +1120,7 @@ describe("#ai.ask", () => {
     });
 
     it("answers without history when Redis is down for the whole turn", async () => {
-      const { user } = await setup();
+      const user = await historyOff((await setup()).user);
       upstream(() => anthropicEvents([cited]));
       const set = vi
         .spyOn(Redis.defaultClient, "set")
@@ -1138,6 +1163,301 @@ describe("#ai.ask", () => {
       expect(events[1].data.phase).toEqual("notice");
       expect(events[1].data.notice).toEqual("conversation_new");
       expect(events.at(-1)?.data.conversationId).toEqual(events[0].data.id);
+    });
+  });
+
+  describe("stored history", () => {
+    // Synthetic, assembled at runtime so the repository holds no credential-like literal.
+    const planted = "sk-ant-" + "api03-" + "b".repeat(30);
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("stores the verified blocks, anchored citations and the redacted question on done", async () => {
+      const { user, document } = await setup();
+      upstream(() => anthropicEvents([cited]));
+      const events = await askEvents(user, {
+        query: `How many days of holiday? ${planted}`,
+      });
+      const id = events[0].data.id;
+      const done = events.at(-1);
+      expect(done?.event).toEqual("done");
+      expect(done?.data.conversationId).toEqual(id);
+
+      const conversation = await AIConversation.findByPk(id, {
+        rejectOnEmpty: true,
+      });
+      expect(conversation.userId).toEqual(user.id);
+      expect(conversation.teamId).toEqual(user.teamId);
+      expect(conversation.title).not.toContain(planted);
+      const [turn, ...rest] = await turnsOf(id);
+      expect(rest).toHaveLength(0);
+      expect(turn.question).not.toContain(planted);
+      expect(turn.question.startsWith("How many days of holiday?")).toBe(true);
+      expect(turn.outcome).toEqual("answered");
+      expect(turn.usageId).toEqual(done?.data.usageId);
+      expect(turn.citedDocumentIds).toEqual([document.id]);
+      expect(turn.blocks).toEqual([
+        {
+          kind: "paragraph",
+          markdown: FACT,
+          citations: [
+            {
+              documentId: document.id,
+              quote: FACT,
+              heading: "Leave",
+              anchor: "h-leave",
+            },
+          ],
+        },
+      ]);
+
+      // Reopening the chat links to the same section as the live answer.
+      const block = events.find((e) => e.event === "block");
+      const info = await server.post("/api/aiConversations.info", user, {
+        body: { id },
+      });
+      const { data } = await info.json();
+      expect(data.turns[0].blocks[0].citations[0].url).toEqual(
+        block?.data.citations[0].url
+      );
+      expect(block?.data.citations[0].url).toContain("#h-leave");
+    });
+
+    it("stores only the question when the answer fails, never partial blocks", async () => {
+      const { user } = await setup();
+      upstream(() => anthropicEvents([cited], { stop: "max_tokens" }));
+      const events = await askEvents(user);
+      expect(events.filter((e) => e.event === "block")).toHaveLength(1);
+      expect(events.at(-1)?.event).toEqual("failed");
+      const [turn] = await turnsOf(events[0].data.id);
+      expect(turn.question).toEqual("How many days of holiday?");
+      expect(turn.outcome).toEqual("error");
+      expect(turn.blocks).toEqual([]);
+      expect(turn.citedDocumentIds).toEqual([]);
+    });
+
+    it("stores the question of a turn that found no sources", async () => {
+      const user = await enable(await buildUser());
+      const events = await askEvents(user, { query: "zebra quokka" });
+      expect(events.at(-1)?.data.reason).toEqual("no_answer");
+      const [turn] = await turnsOf(events[0].data.id);
+      expect(turn.question).toEqual("zebra quokka");
+      expect(turn.outcome).toEqual("no_answer");
+    });
+
+    it("stores nothing when the client disconnects", async () => {
+      const { user } = await setup();
+      hangingUpstream(
+        anthropicEvents(
+          [{ text: `${FACT}\n\n`, citations: [{ quote: FACT }] }],
+          {
+            final: false,
+          }
+        )
+      );
+      const controller = new AbortController();
+      const res = await ask(user, undefined, { signal: controller.signal });
+      let seen = "";
+      try {
+        for await (const chunk of res.body) {
+          seen += chunk.toString();
+          if (seen.includes("event: block")) {
+            controller.abort();
+          }
+        }
+      } catch {
+        // The aborted body rejects; that is the disconnect.
+      }
+      expect(seen).toContain("event: block");
+      await rowsFor(user.teamId, true);
+      await expectSlotsFree(user.teamId);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(
+        await AIConversationTurn.count({ where: { userId: user.id } })
+      ).toEqual(0);
+      expect(
+        await AIConversation.count({ where: { userId: user.id } })
+      ).toEqual(0);
+    });
+
+    it("stores nothing in the database when history is off", async () => {
+      const user = await historyOff((await setup()).user);
+      upstream(() => anthropicEvents([cited]));
+      const events = await askEvents(user);
+      const id = events[0].data.id;
+      expect(events.at(-1)?.data.conversationId).toEqual(id);
+      expect(await AIConversation.findByPk(id)).toBeNull();
+
+      // Without stored history an expired conversation starts over, as before.
+      await deleteConversation(user, id);
+      const again = await askEvents(user, {
+        query: "Again?",
+        conversationId: id,
+      });
+      expect(again[0].data.id).not.toEqual(id);
+      expect(again[1].data.notice).toEqual("conversation_new");
+    });
+
+    it("keeps answering when storing fails, reporting the id that was stored", async () => {
+      const { user } = await setup();
+      upstream(() => anthropicEvents([cited]));
+      const warn = vi.spyOn(Logger, "warn");
+      vi.spyOn(AIConversationTurn, "create").mockRejectedValue(
+        new Error("db down")
+      );
+      const events = await askEvents(user);
+      const id = events[0].data.id;
+      // Redis still holds the turn.
+      expect(events.at(-1)?.event).toEqual("done");
+      expect(events.at(-1)?.data.conversationId).toEqual(id);
+      expect(await AIConversation.findByPk(id)).toBeNull();
+
+      // Neither store: null.
+      vi.spyOn(Redis.defaultClient, "set").mockRejectedValue(
+        new Error("redis down")
+      );
+      const next = await askEvents(user, {
+        query: "Holiday allowance?",
+        conversationId: id,
+      });
+      expect(next.at(-1)?.event).toEqual("done");
+      expect(next.at(-1)?.data.conversationId).toBeNull();
+      const logged = JSON.stringify(warn.mock.calls);
+      expect(logged).not.toContain("holiday");
+      expect(logged).not.toContain("Holiday");
+      expect(logged).not.toContain(FACT);
+    });
+
+    it("stores turns under a new id when Redis is down", async () => {
+      const { user } = await setup();
+      upstream(() => anthropicEvents([cited]));
+      vi.spyOn(Redis.defaultClient, "set").mockRejectedValue(
+        new Error("redis down")
+      );
+      vi.spyOn(Redis.defaultClient, "multi").mockImplementation(() => {
+        throw new Error("redis down");
+      });
+      const events = await askEvents(user);
+      expect(events[0].event).toEqual("conversation");
+      const id = events[0].data.id;
+      expect(events.at(-1)?.data.conversationId).toEqual(id);
+      expect(await turnsOf(id)).toHaveLength(1);
+
+      // Resumed from the database alone, with its context.
+      const bodies = upstream(() => anthropicEvents([cited]));
+      const next = await askEvents(user, {
+        query: "Does that include weekends?",
+        conversationId: id,
+      });
+      expect(next[0]).toEqual({ event: "conversation", data: { id } });
+      expect(next.some((e) => e.data?.phase === "notice")).toEqual(false);
+      expect(JSON.stringify(bodies[0])).toContain(
+        `<prior_answer>${FACT}</prior_answer>`
+      );
+      expect((await turnsOf(id)).map((t) => t.position)).toEqual([0, 1]);
+    });
+
+    it("continues a stored conversation with its context after the hot cache expired", async () => {
+      const { user } = await setup();
+      const bodies = upstream(() => anthropicEvents([cited]));
+      const first = await askEvents(user);
+      const id = first[0].data.id;
+      expect(await deleteConversation(user, id)).toEqual(true);
+
+      const second = await askEvents(user, {
+        query: "Does that include weekends?",
+        conversationId: id,
+      });
+      expect(second[0]).toEqual({ event: "conversation", data: { id } });
+      expect(second.some((e) => e.data?.notice === "conversation_new")).toEqual(
+        false
+      );
+      expect(second.at(-1)?.data.conversationId).toEqual(id);
+      expect(bodies).toHaveLength(2);
+      const sent = JSON.stringify(bodies[1]);
+      expect(sent).toContain(
+        "<prior_question>How many days of holiday?</prior_question>"
+      );
+      expect(sent).toContain(`<prior_answer>${FACT}</prior_answer>`);
+      expect((await turnsOf(id)).map((t) => t.position)).toEqual([0, 1]);
+      // The hot cache was rebuilt and holds both turns again.
+      expect(
+        (await loadConversation(user, id)).conversation?.turns.map(
+          (t) => t.question
+        )
+      ).toEqual(["How many days of holiday?", "Does that include weekends?"]);
+    });
+
+    it("hides a revoked source's answer from the model when resuming", async () => {
+      const { user, collection, document } = await setup();
+      await buildDocument({
+        teamId: user.teamId,
+        userId: user.id,
+        collectionId: collection.id,
+        title: "Carry over",
+        text: "# Carry over\nUnused holiday carries over until March.",
+      });
+      const bodies = upstream(() => anthropicEvents([cited]));
+      const id = (await askEvents(user))[0].data.id;
+      await deleteConversation(user, id);
+      await document.destroy();
+
+      await askEvents(user, {
+        query: "Does unused holiday carry over?",
+        conversationId: id,
+      });
+      expect(bodies).toHaveLength(2);
+      const sent = JSON.stringify(bodies[1]);
+      expect(sent).toContain("<prior_question>");
+      expect(sent).not.toContain("<prior_answer>");
+      expect(sent).not.toContain("twenty five");
+    });
+
+    it("starts a new conversation for another user's stored conversation", async () => {
+      const { user } = await setup();
+      upstream(() => anthropicEvents([cited]));
+      const other = await buildUser({ teamId: user.teamId });
+      const foreign = (await askEvents(other))[0].data.id;
+
+      const events = await askEvents(user, {
+        conversationId: foreign,
+        query: "How many days of holiday?",
+      });
+      expect(events[0].data.id).not.toEqual(foreign);
+      expect(events[1].data.notice).toEqual("conversation_new");
+      expect(events.at(-1)?.data.conversationId).toEqual(events[0].data.id);
+      expect(await turnsOf(foreign)).toHaveLength(1);
+      expect(await turnsOf(events[0].data.id)).toHaveLength(1);
+    });
+
+    it("reads no tenant data after the request transaction is released", async () => {
+      const { user } = await setup();
+      let modelCalled = false;
+      upstream(() => {
+        modelCalled = true;
+        return anthropicEvents([cited]);
+      });
+      const statements: string[] = [];
+      const query = sequelize.query.bind(sequelize);
+      vi.spyOn(sequelize, "query").mockImplementation(((
+        sql: Parameters<typeof sequelize.query>[0],
+        options?: Parameters<typeof sequelize.query>[1]
+      ) => {
+        if (modelCalled) {
+          statements.push(typeof sql === "string" ? sql : sql.query);
+        }
+        return query(sql, options);
+      }) as typeof sequelize.query);
+      const events = await askEvents(user);
+      expect(events.at(-1)?.event).toEqual("done");
+      expect(statements.join("\n")).toContain("ai_conversation_turns");
+      for (const statement of statements) {
+        expect(statement).not.toMatch(
+          /"(documents|collections|users|teams|user_memberships|group_memberships|group_users|groups|shares)"/
+        );
+      }
     });
   });
 

@@ -94,6 +94,43 @@ export async function createConversation(
 }
 
 /**
+ * Rebuilds the hot cache of a stored conversation under its own id, with the
+ * same turn cap, history budget and expiry as `appendTurn`. The caller passes
+ * turns it has already re-authorised for the user.
+ *
+ * @param user the owner.
+ * @param id the conversation id.
+ * @param turns the stored turns, oldest first.
+ * @returns the trimmed conversation; returned even when Redis failed, so the
+ * turn can still use it as context.
+ */
+export async function seedConversation(
+  user: User,
+  id: string,
+  turns: ConversationTurn[]
+): Promise<Conversation> {
+  const conversation: Conversation = {
+    id,
+    teamId: user.teamId,
+    userId: user.id,
+    turns: trimToBudget(turns),
+  };
+  try {
+    await withTimeout(
+      Redis.defaultClient.set(
+        conversationKey(user, id),
+        JSON.stringify(conversation),
+        "EX",
+        CONVERSATION_TTL_SECONDS
+      )
+    );
+  } catch {
+    Logger.warn("AI answers could not seed a conversation");
+  }
+  return conversation;
+}
+
+/**
  * Loads one of the user's conversations and refreshes its expiry.
  *
  * @param user the user.
