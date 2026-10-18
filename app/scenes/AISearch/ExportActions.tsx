@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import styled from "styled-components";
 import Button from "~/components/Button";
 import CopyToClipboard from "~/components/CopyToClipboard";
+import { downloadMarkdown } from "./download";
 import { conversationToMarkdown, exportFilename } from "./exportMarkdown";
 import type { Turn } from "./model";
 
@@ -29,19 +30,11 @@ export function ExportActions({ turns, streaming }: Props) {
 
   const handleCopied = () => toast.success(t("Copied"));
 
-  const handleDownload = () => {
-    const blob = new Blob([markdown()], {
-      type: "text/markdown;charset=utf-8",
-    });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = exportFilename(turns[0]?.question ?? "", new Date());
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
-  };
+  const handleDownload = () =>
+    downloadMarkdown(
+      markdown(),
+      exportFilename(turns[0]?.question ?? "", new Date())
+    );
 
   const handlePrint = () => window.print();
 

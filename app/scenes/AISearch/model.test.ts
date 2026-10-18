@@ -1,6 +1,14 @@
+import type { StoredTurn } from "~/models/AIConversation";
 import type { AskEvent } from "~/utils/streamFetch";
+import { isDocPath } from "./AnswerTurn";
 import type { ChatState } from "./model";
-import { canRate, chatReducer, citedSources, initialChatState } from "./model";
+import {
+  answerSegments,
+  canRate,
+  chatReducer,
+  citedSources,
+  initialChatState,
+} from "./model";
 
 const run = (events: AskEvent[], from: ChatState = initialChatState) =>
   events.reduce<ChatState>(
@@ -351,5 +359,146 @@ describe("usageId and feedback", () => {
       rating: "up",
     });
     expect(state.turns[0].feedback).toBeUndefined();
+  });
+});
+
+describe("hydrate", () => {
+  const UUID = "0b8c7a4e-5b2f-4f5e-9d3a-1f2e3d4c5b6a";
+  const stored = (patch: Partial<StoredTurn> = {}): StoredTurn => ({
+    id: "t",
+    position: 0,
+    question: "Q?",
+    outcome: "answered",
+    usageId: UUID,
+    createdAt: "2026-10-18T10:00:00.000Z",
+    sources: [{ n: 1, documentId: "d", title: "Fresh", url: "/doc/a-abc" }],
+    blocks: [
+      {
+        kind: "paragraph",
+        markdown: "One [1].",
+        citations: [
+          { n: 1, documentId: "d", title: "Stale", url: "/doc/a-abc#h-x" },
+        ],
+      },
+      { kind: "paragraph", hidden: true },
+      { kind: "paragraph", hidden: true },
+      { kind: "paragraph", markdown: "Two.", citations: [] },
+    ],
+    hasHiddenBlocks: true,
+    ...patch,
+  });
+
+  it("maps stored turns, keeps the conversation id and uses fresh titles", () => {
+    const state = chatReducer(initialChatState, {
+      type: "hydrate",
+      conversationId: "c1",
+      turns: [stored(), stored({ id: "u", question: "Q2?" })],
+    });
+    expect(state.conversationId).toBe("c1");
+    expect(state.turns.map((t) => [t.id, t.question, t.status])).toEqual([
+      [1, "Q?", "done"],
+      [2, "Q2?", "done"],
+    ]);
+    const first = state.turns[0];
+    expect(first.blocks.map((b) => b.index)).toEqual([0, 3]);
+    expect(first.blocks[0].citations[0].title).toBe("Fresh");
+    expect(first.hiddenBlocks).toEqual([1, 2]);
+    expect(first.usageId).toBe(UUID);
+    expect(canRate(first)).toBe(true);
+  });
+
+  it("never carries text of hidden blocks and splits segments in order", () => {
+    const [turn] = chatReducer(initialChatState, {
+      type: "hydrate",
+      conversationId: "c1",
+      turns: [stored()],
+    }).turns;
+    expect(JSON.stringify(turn)).not.toContain('hidden":true');
+    expect(
+      answerSegments(turn).map((s) =>
+        s.type === "hidden" ? "hidden" : s.blocks.map((b) => b.index)
+      )
+    ).toEqual([[0], "hidden", [3]]);
+  });
+
+  it("keeps unsafe urls verbatim for the renderer's isDocPath check", () => {
+    const [turn] = chatReducer(initialChatState, {
+      type: "hydrate",
+      conversationId: "c1",
+      turns: [
+        stored({
+          sources: [
+            { n: 1, documentId: "d", title: "T", url: "javascript:alert(1)" },
+          ],
+          blocks: [
+            {
+              kind: "paragraph",
+              markdown: "x [1]",
+              citations: [
+                { n: 1, documentId: "d", title: "T", url: "//evil.test/x" },
+              ],
+            },
+          ],
+        }),
+      ],
+    }).turns;
+    expect(isDocPath(turn.blocks[0].citations[0].url)).toBe(false);
+    expect(isDocPath(turn.sources?.[0].url ?? "")).toBe(false);
+  });
+
+  it("maps failed outcomes to a problem, unknown ones to error", () => {
+    const { turns } = chatReducer(initialChatState, {
+      type: "hydrate",
+      conversationId: "c1",
+      turns: [
+        stored({ outcome: "no_answer", blocks: [], usageId: null }),
+        stored({ outcome: "something_new", blocks: [] }),
+      ],
+    });
+    expect(turns.map((t) => [t.status, t.problem])).toEqual([
+      ["failed", "no_answer"],
+      ["failed", "error"],
+    ]);
+    expect(canRate(turns[0])).toBe(false);
+  });
+
+  it("drops malformed turns, blocks and usage ids instead of throwing", () => {
+    // Server JSON is untrusted, so parse it the way the client receives it.
+    const turns: StoredTurn[] = JSON.parse(
+      JSON.stringify([
+        null,
+        {
+          ...stored(),
+          usageId: "nope",
+          blocks: [
+            null,
+            { kind: "evil", markdown: "x", citations: [] },
+            { kind: "paragraph", markdown: 5 },
+          ],
+        },
+      ])
+    );
+    const state = chatReducer(initialChatState, {
+      type: "hydrate",
+      conversationId: "c1",
+      turns,
+    });
+    expect(state.turns).toHaveLength(1);
+    expect(state.turns[0].blocks).toEqual([]);
+    expect(state.turns[0].usageId).toBeNull();
+  });
+
+  it("replaces whatever was on the page", () => {
+    const before = chatReducer(initialChatState, {
+      type: "submit",
+      question: "old",
+      scope: {},
+    });
+    const after = chatReducer(before, {
+      type: "hydrate",
+      conversationId: "c1",
+      turns: [stored()],
+    });
+    expect(after.turns.map((t) => t.question)).toEqual(["Q?"]);
   });
 });

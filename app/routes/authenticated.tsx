@@ -139,7 +139,7 @@ function AuthenticatedRoutes() {
               />
               <Route
                 exact
-                path={aiPath()}
+                path={`${aiPath()}/:conversationId?`}
                 component={Scenes.AISearch.Component}
               />
               <Route

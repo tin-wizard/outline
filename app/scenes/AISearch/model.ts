@@ -5,6 +5,7 @@ import type {
   AskFailure,
   AskSource,
 } from "~/utils/streamFetch";
+import type { StoredTurn } from "~/models/AIConversation";
 import type { BlockInput } from "./markdown";
 
 /** Why a turn did not produce a complete answer. */
@@ -55,6 +56,8 @@ export interface Turn {
   /** Retrieved sources; null until the `sources` event. */
   sources: AskSource[] | null;
   blocks: (BlockInput & { index: number })[];
+  /** Indexes of stored blocks withheld because a cited source changed or is no longer readable. */
+  hiddenBlocks?: number[];
   problem?: TurnProblem;
   /** Id of the metered usage row, needed to send feedback; null if not recorded. */
   usageId?: string | null;
@@ -83,6 +86,7 @@ export type ChatAction =
     }
   | { type: "stopped" }
   | { type: "ended" }
+  | { type: "hydrate"; conversationId: string; turns: StoredTurn[] }
   | { type: "reset" };
 
 export const initialChatState: ChatState = { conversationId: null, turns: [] };
@@ -198,6 +202,14 @@ const FAILURES = [
   "cancelled",
   "error",
 ];
+function isBlockKind(kind: string): kind is BlockInput["kind"] {
+  return BLOCK_KINDS.includes(kind);
+}
+
+function isFailure(reason: string): reason is AskFailure {
+  return FAILURES.includes(reason);
+}
+
 const PHASE_ORDER = ["searching", "generating"];
 
 function validCitation(c: AskCitation): boolean {
@@ -229,6 +241,14 @@ function validSource(source: AskSource): boolean {
 export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   if (action.type === "reset") {
     return initialChatState;
+  }
+  if (action.type === "hydrate") {
+    return {
+      conversationId: action.conversationId,
+      turns: Array.isArray(action.turns)
+        ? action.turns.map(hydrateTurn).filter((t) => !!t)
+        : [],
+    };
   }
   if (action.type === "submit") {
     const id = (state.turns[state.turns.length - 1]?.id ?? 0) + 1;
@@ -365,6 +385,98 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     default:
       return state;
   }
+}
+
+/** A run of visible blocks, or a withheld part of a stored answer. */
+export type AnswerSegment =
+  | { type: "blocks"; blocks: Turn["blocks"] }
+  | { type: "hidden" };
+
+/**
+ * Splits an answer into runs of visible blocks with one `hidden` segment
+ * wherever stored blocks were withheld, keeping their original positions.
+ *
+ * @param turn the turn.
+ * @returns the segments in reading order.
+ */
+export function answerSegments(turn: Turn): AnswerSegment[] {
+  if (!turn.hiddenBlocks?.length) {
+    return turn.blocks.length ? [{ type: "blocks", blocks: turn.blocks }] : [];
+  }
+  const entries = [
+    ...turn.blocks.map((block) => ({ index: block.index, block })),
+    ...turn.hiddenBlocks.map((index) => ({ index, block: undefined })),
+  ].sort((a, b) => a.index - b.index);
+  const segments: AnswerSegment[] = [];
+  for (const { block } of entries) {
+    const last = segments[segments.length - 1];
+    if (!block) {
+      if (last?.type !== "hidden") {
+        segments.push({ type: "hidden" });
+      }
+    } else if (last?.type === "blocks") {
+      last.blocks.push(block);
+    } else {
+      segments.push({ type: "blocks", blocks: [block] });
+    }
+  }
+  return segments;
+}
+
+/**
+ * Maps one stored turn from `aiConversations.info` to the view model. The
+ * payload is server JSON: anything off-shape is dropped, hidden blocks keep
+ * only their position, and citation titles come from the fresh sources.
+ */
+function hydrateTurn(stored: StoredTurn, i: number): Turn | undefined {
+  if (!stored || typeof stored.question !== "string") {
+    return undefined;
+  }
+  const sources = (Array.isArray(stored.sources) ? stored.sources : []).filter(
+    validSource
+  );
+  const blocks: Turn["blocks"] = [];
+  const hiddenBlocks: number[] = [];
+  (Array.isArray(stored.blocks) ? stored.blocks : []).forEach((b, index) => {
+    if (!b || !isBlockKind(b.kind)) {
+      return;
+    }
+    if (b.hidden === true) {
+      hiddenBlocks.push(index);
+      return;
+    }
+    if (typeof b.markdown !== "string" || !Array.isArray(b.citations)) {
+      return;
+    }
+    blocks.push({
+      index,
+      kind: b.kind,
+      markdown: b.markdown,
+      citations: b.citations.filter(validCitation).map((c) => ({
+        ...c,
+        title: sources.find((s) => s.n === c.n)?.title ?? c.title,
+      })),
+    });
+  });
+  const answered = stored.outcome === "answered";
+  return {
+    id: i + 1,
+    question: stored.question,
+    scope: {},
+    status: answered ? "done" : "failed",
+    sources,
+    blocks,
+    ...(hiddenBlocks.length ? { hiddenBlocks } : {}),
+    ...(answered
+      ? {}
+      : {
+          problem: isFailure(stored.outcome) ? stored.outcome : "error",
+        }),
+    usageId:
+      typeof stored.usageId === "string" && isUUID(stored.usageId)
+        ? stored.usageId
+        : null,
+  };
 }
 
 /**

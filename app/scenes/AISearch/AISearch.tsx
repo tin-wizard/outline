@@ -2,16 +2,19 @@ import { observer } from "mobx-react";
 import { SparklesIcon } from "outline-icons";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { Redirect } from "react-router-dom";
+import { Link, Redirect, useParams } from "react-router-dom";
+import { toast } from "sonner";
 import { isUUID } from "validator";
 import styled from "styled-components";
 import { s } from "@shared/styles";
 import Button from "~/components/Button";
 import Scene from "~/components/Scene";
+import PlaceholderText from "~/components/PlaceholderText";
 import useAIAnswersEnabled from "~/hooks/useAIAnswersEnabled";
+import useAIHistoryEnabled from "~/hooks/useAIHistoryEnabled";
 import useQuery from "~/hooks/useQuery";
 import useStores from "~/hooks/useStores";
-import { homePath } from "~/utils/routeHelpers";
+import { aiPath, homePath } from "~/utils/routeHelpers";
 import { AnswerTurn } from "./AnswerTurn";
 import { ExportActions } from "./ExportActions";
 import { Composer, MAX_QUERY_LENGTH } from "./Composer";
@@ -20,30 +23,64 @@ import { ScopeChips } from "./ScopeChips";
 import type { Scope } from "./model";
 import { useAISearch } from "./useAISearch";
 import { useAutoSubmitQuery } from "./useAutoSubmitQuery";
+import { useConversationRoute } from "./useConversationRoute";
 
 /**
  * The AI Search page (`/ai`): a conversation with streamed, cited answers
  * built only from documents the user can read. `q`, `collectionId` and
  * `documentId` query parameters prefill the question and scope; a `q` is
- * submitted once on load.
+ * submitted once on load. `/ai/:conversationId` resumes a stored conversation
+ * when workspace history is on, and otherwise returns to `/ai`.
  *
- * @returns the page, or a redirect to home when AI answers are unavailable.
+ * @returns the page, or a redirect when AI answers are unavailable.
  */
 export const AISearch = observer(function AISearch() {
   const enabled = useAIAnswersEnabled();
-  return enabled ? <Page /> : <Redirect to={homePath()} />;
+  const historyEnabled = useAIHistoryEnabled();
+  const { conversationId } = useParams<{ conversationId?: string }>();
+  if (!enabled) {
+    return <Redirect to={homePath()} />;
+  }
+  if (conversationId && !historyEnabled) {
+    return <HistoryOff />;
+  }
+  return (
+    <Page conversationId={conversationId} historyEnabled={historyEnabled} />
+  );
 });
+
+/** Explains why a stored conversation cannot be opened, then shows a new chat. */
+function HistoryOff() {
+  const { t } = useTranslation();
+  React.useEffect(() => {
+    toast.info(t("Chat history is turned off for this workspace."));
+  }, [t]);
+  return <Redirect to={aiPath()} />;
+}
 
 /** Query-string ids are untrusted: only well-formed UUIDs are used as scope. */
 function validId(value: string | null): string | undefined {
   return value && isUUID(value) ? value : undefined;
 }
 
-const Page = observer(function Page() {
+const Page = observer(function Page({
+  conversationId,
+  historyEnabled,
+}: {
+  conversationId?: string;
+  historyEnabled: boolean;
+}) {
   const { t } = useTranslation();
   const { collections, documents } = useStores();
   const params = useQuery();
-  const { state, streaming, ask, stop, reset, rate } = useAISearch();
+  const { state, streaming, ask, stop, reset, hydrate, rate } = useAISearch();
+  const route = useConversationRoute({
+    routeId: conversationId,
+    enabled: historyEnabled,
+    state,
+    hydrate,
+    reset,
+  });
   const [text, setText] = React.useState(params.get("q") ?? "");
   const [scope, setScope] = React.useState<Scope>(() => ({
     collectionId: validId(params.get("collectionId")),
@@ -79,7 +116,7 @@ const Page = observer(function Page() {
     [ask, scope, streaming]
   );
 
-  useAutoSubmitQuery(submit);
+  useAutoSubmitQuery(submit, !conversationId);
 
   const handleSubmit = () => submit(text);
 
@@ -97,6 +134,7 @@ const Page = observer(function Page() {
     textareaRef.current?.focus();
   };
 
+  // The link to /ai starts a new chat; the stored one is kept, not deleted.
   const handleNewConversation = () => {
     reset();
     setText("");
@@ -149,7 +187,12 @@ const Page = observer(function Page() {
         turns.length > 0 ? (
           <>
             <ExportActions turns={turns} streaming={streaming} />
-            <Button type="button" neutral onClick={handleNewConversation}>
+            <Button
+              as={Link}
+              to={aiPath()}
+              neutral
+              onClick={handleNewConversation}
+            >
               {t("New conversation")}
             </Button>
           </>
@@ -160,7 +203,27 @@ const Page = observer(function Page() {
         <div data-print-hidden>
           <ScopeChips chips={chips} disabled={streaming} />
         </div>
-        {turns.length === 0 ? (
+        {route.status === "loading" ? (
+          <Idle aria-busy="true">
+            <span role="status">{t("Loading conversation…")}</span>
+            <PlaceholderText />
+            <PlaceholderText delay={0.2} />
+          </Idle>
+        ) : route.status === "notFound" ? (
+          <Idle role="alert">
+            <strong>{t("Conversation not found")}</strong>
+            <p>
+              <Link to={aiPath()}>{t("New chat")}</Link>
+            </p>
+          </Idle>
+        ) : route.status === "error" ? (
+          <Idle role="alert">
+            <p>{t("Could not load this conversation.")}</p>
+            <Button type="button" neutral onClick={route.retry}>
+              {t("Try again")}
+            </Button>
+          </Idle>
+        ) : turns.length === 0 ? (
           <Idle>
             <p>
               {t(
@@ -194,7 +257,7 @@ const Page = observer(function Page() {
             />
           ))
         )}
-        <div data-print-hidden>
+        <div data-print-hidden hidden={route.status !== "idle"}>
           <Composer
             value={text}
             onChange={setText}

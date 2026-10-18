@@ -8,8 +8,12 @@ import useQuery from "~/hooks/useQuery";
  * another billed request. Safe under React StrictMode's double effect.
  *
  * @param submit sends the question.
+ * @param enabled false to leave the parameter alone, such as on a stored conversation.
  */
-export function useAutoSubmitQuery(submit: (question: string) => void) {
+export function useAutoSubmitQuery(
+  submit: (question: string) => void,
+  enabled = true
+) {
   const history = useHistory();
   const params = useQuery();
   const done = React.useRef(false);
@@ -20,7 +24,7 @@ export function useAutoSubmitQuery(submit: (question: string) => void) {
 
   React.useEffect(() => {
     const q = params.get("q")?.trim();
-    if (!q || done.current) {
+    if (!enabled || !q || done.current) {
       return;
     }
     done.current = true;

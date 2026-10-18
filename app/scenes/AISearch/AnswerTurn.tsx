@@ -13,7 +13,13 @@ import type { CitationPreviewData } from "./CitationPreview";
 import { CitationQuote } from "./CitationQuote";
 import { turnToMarkdown } from "./exportMarkdown";
 import type { CitedSection, Rating, Turn, TurnProblem } from "./model";
-import { canRate, citedSources, isActive, sectionLabel } from "./model";
+import {
+  answerSegments,
+  canRate,
+  citedSources,
+  isActive,
+  sectionLabel,
+} from "./model";
 
 interface Props {
   turn: Turn;
@@ -129,6 +135,7 @@ export function AnswerTurn({
   );
 
   const hasBlocks = turn.blocks.length > 0;
+  const segments = React.useMemo(() => answerSegments(turn), [turn]);
   const noResults = turn.problem === "no_answer" && !hasBlocks;
 
   return (
@@ -176,12 +183,21 @@ export function AnswerTurn({
         {turn.problem && hasBlocks && (
           <Muted>{t("Partial answer, not fully verified")}</Muted>
         )}
-        {hasBlocks && (
-          <AnswerBody
-            blocks={turn.blocks}
-            previews={previews}
-            onCitationClick={handleCitationClick}
-          />
+        {segments.map((segment, i) =>
+          segment.type === "hidden" ? (
+            <Hidden key={`hidden-${i}`} role="note">
+              {t(
+                "This part is no longer available because a source changed or you no longer have access."
+              )}
+            </Hidden>
+          ) : (
+            <AnswerBody
+              key={`blocks-${i}`}
+              blocks={segment.blocks}
+              previews={previews}
+              onCitationClick={handleCitationClick}
+            />
+          )
         )}
         {cited.length > 0 && (
           <div>
@@ -497,6 +513,15 @@ const Muted = styled.p`
   margin: 4px 0;
   color: ${s("textSecondary")};
   font-size: 14px;
+`;
+
+const Hidden = styled.p`
+  margin: 8px 0;
+  padding: 8px 12px;
+  border-inline-start: 3px solid ${s("divider")};
+  color: ${s("textTertiary")};
+  font-size: 14px;
+  font-style: italic;
 `;
 
 const Message = styled.p`
