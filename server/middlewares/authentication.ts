@@ -8,7 +8,10 @@ import tracer, {
   getRootSpanFromRequestContext,
 } from "@server/logging/tracer";
 import { User, Team, ApiKey, OAuthAuthentication } from "@server/models";
-import { requestContext } from "@server/storage/requestContext";
+import {
+  isTransactionReleased,
+  requestContext,
+} from "@server/storage/requestContext";
 import type { AppContext } from "@server/types";
 import { AuthenticationType } from "@server/types";
 import { getJWTPayload, getUserForJWT } from "@server/utils/jwt";
@@ -130,9 +133,16 @@ export default function auth(options: AuthenticationOptions = {}) {
       store.transaction = t;
       try {
         await next();
-        await t.commit();
+        // A route may have committed it early (releaseRequestTransaction).
+        // Checked per transaction: a nested auth() (api.batch) replaces
+        // store.transaction, yet each auth() still settles the one it created.
+        if (!isTransactionReleased(t)) {
+          await t.commit();
+        }
       } catch (err) {
-        await t.rollback().catch(() => undefined);
+        if (!isTransactionReleased(t)) {
+          await t.rollback().catch(() => undefined);
+        }
         throw err;
       }
       return;

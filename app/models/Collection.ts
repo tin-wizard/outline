@@ -88,6 +88,11 @@ export default class Collection extends ParanoidModel {
   @Field
   @observable
   commenting?: boolean | null = undefined;
+
+  /** Whether documents in this collection are never used for AI answers. */
+  @Field
+  @observable
+  aiExcluded?: boolean = undefined;
   /** The child documents of the collection. */
   @observable
   documents?: NavigationNode[] = undefined;

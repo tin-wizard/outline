@@ -271,6 +271,11 @@ class Collection extends ParanoidModel<
   @Column(DataType.BOOLEAN)
   sharing: boolean;
 
+  /** Whether documents in this collection are never used for AI answers. */
+  @Default(false)
+  @Column(DataType.BOOLEAN)
+  aiExcluded: boolean;
+
   @Default({ field: "title", direction: "asc" })
   @Column({
     type: DataType.JSONB,

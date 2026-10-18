@@ -75,11 +75,15 @@ router.post(
       sort,
       index,
       commenting,
+      aiExcluded,
       templateManagement,
     } = ctx.input.body;
 
     const { user } = ctx.state.auth;
     authorize(user, "createCollection", user.team);
+    if (aiExcluded) {
+      authorize(user, "update", user.team);
+    }
 
     const collection = Collection.build({
       name,
@@ -94,6 +98,7 @@ router.post(
       sort,
       index,
       commenting,
+      aiExcluded,
       templateManagement,
     });
 
@@ -619,6 +624,7 @@ router.post(
       sort,
       sharing,
       commenting,
+      aiExcluded,
       templateManagement,
     } = ctx.input.body;
 
@@ -698,6 +704,12 @@ router.post(
 
     if (commenting !== undefined) {
       collection.commenting = commenting;
+    }
+
+    // Only workspace admins may change it; an unchanged value (sent by the edit form) is fine.
+    if (aiExcluded !== undefined && aiExcluded !== collection.aiExcluded) {
+      authorize(user, "update", user.team);
+      collection.aiExcluded = aiExcluded;
     }
 
     if (templateManagement !== undefined) {

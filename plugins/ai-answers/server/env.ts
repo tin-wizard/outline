@@ -2,6 +2,11 @@ import { IsBoolean, IsOptional, IsString } from "class-validator";
 import { Environment } from "@server/env";
 import { Public } from "@server/utils/decorators/Public";
 import environment from "@server/utils/environment";
+import {
+  ASK_DEFAULT_DEADLINE_MS,
+  ASK_DEFAULT_IDLE_MS,
+  DEFAULT_DEADLINE_MS,
+} from "./contract";
 
 class AIAnswersPluginEnvironment extends Environment {
   /**
@@ -26,7 +31,49 @@ class AIAnswersPluginEnvironment extends Environment {
   @IsOptional()
   @IsString()
   public AI_ANSWERS_MODEL =
-    this.toOptionalString(environment.AI_ANSWERS_MODEL) ?? "claude-haiku-5-5";
+    this.toOptionalString(environment.AI_ANSWERS_MODEL) ?? "claude-sonnet-5-5";
+
+  /**
+   * Monthly spend cap per workspace in USD (calendar month, UTC). Defaults to
+   * 25. A value of 0 or anything that is not a positive number disables AI
+   * answers, so a typo fails closed.
+   */
+  @IsOptional()
+  @IsString()
+  public AI_ANSWERS_MONTHLY_BUDGET_USD =
+    this.toOptionalString(environment.AI_ANSWERS_MONTHLY_BUDGET_USD) ?? "25";
+
+  /**
+   * Hard deadline in milliseconds for the model call of an answer: when it
+   * passes, the call is aborted and the retrieved documents are returned
+   * without an answer. Redis and database work around the call is not bounded
+   * by it. Clamped to 1000-30000 (the client timeout) at use; defaults to
+   * 15000. Deliberately not validated here: a failing validator exits the
+   * process, and a typo must not take the site down.
+   */
+  @IsOptional()
+  public AI_ANSWERS_DEADLINE_MS =
+    this.toOptionalNumber(environment.AI_ANSWERS_DEADLINE_MS) ??
+    DEFAULT_DEADLINE_MS;
+
+  /**
+   * Total cap in milliseconds of one streamed AI Search answer (`ai.ask`).
+   * Clamped to 10000-50000 at use, so it stays below the 60 s concurrency
+   * slot lifetime; defaults to 45000. Not validated, like the deadline above.
+   */
+  @IsOptional()
+  public AI_ASK_DEADLINE_MS =
+    this.toOptionalNumber(environment.AI_ASK_DEADLINE_MS) ??
+    ASK_DEFAULT_DEADLINE_MS;
+
+  /**
+   * How long in milliseconds a streamed answer may go without any event from
+   * the model before it is aborted. Clamped to 1000-30000 at use; defaults to
+   * 15000. Not validated, like the deadline above.
+   */
+  @IsOptional()
+  public AI_ASK_IDLE_MS =
+    this.toOptionalNumber(environment.AI_ASK_IDLE_MS) ?? ASK_DEFAULT_IDLE_MS;
 }
 
 export default new AIAnswersPluginEnvironment();

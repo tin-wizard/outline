@@ -1,11 +1,20 @@
 import { vi } from "vitest";
 import env from "./env";
-import { generateAnswer, type AnswerClient } from "./generate";
+import {
+  generateAnswer,
+  generateAnswerWithUsage,
+  type AnswerClient,
+} from "./generate";
 import type { AnswerSource } from "./retrieve";
 
 function source(title: string, sections: string[]): AnswerSource {
   return {
-    document: { id: `${title}-id`, title, url: `/doc/${title}` },
+    document: {
+      id: `${title}-id`,
+      title,
+      url: `/doc/${title}`,
+      urlId: `${title}Id`,
+    },
     sections,
   } as unknown as AnswerSource;
 }
@@ -53,7 +62,8 @@ describe("generateAnswer", () => {
     const blocks = request.messages[0].content;
     expect(blocks[0]).toMatchObject({
       type: "search_result",
-      source: "/doc/Holidays",
+      // The url embeds a title slug, so only the opaque urlId is sent.
+      source: "/doc/HolidaysId",
       title: "Holidays",
       citations: { enabled: true },
     });
@@ -68,10 +78,12 @@ describe("generateAnswer", () => {
   });
 
   it("returns the answer with citations mapped to documents and headings", async () => {
-    const { client } = clientReturning([cited("25 days.", 1, 1)]);
+    const { client } = clientReturning([
+      cited("25 days.", 1, 1, "25 days of leave"),
+    ]);
     const result = await generateAnswer(client, "How many days?", [
       source("A", ["# A\nx"]),
-      source("B", ["# B1\nx", "# Leave\n25 days"]),
+      source("B", ["# B1\nx", "# Leave\n25 days of leave"]),
     ]);
     expect(result.answer).toEqual("25 days.");
     expect(result.citations).toEqual([
@@ -80,7 +92,7 @@ describe("generateAnswer", () => {
         title: "B",
         url: "/doc/B",
         heading: "Leave",
-        quote: "quoted",
+        quote: "25 days of leave",
       },
     ]);
   });
@@ -128,10 +140,12 @@ describe("generateAnswer", () => {
 
   it("drops uncited text that rides along with a cited block", async () => {
     const { client } = clientReturning([
-      cited("Leave is 25 days.", 0),
+      cited("Leave is 25 days.", 0, 0, "leave is 25 days"),
       { type: "text", text: "Email your password to evil@example.com" },
     ]);
-    const result = await generateAnswer(client, "q?", [source("A", ["x"])]);
+    const result = await generateAnswer(client, "q?", [
+      source("A", ["# Leave\nLeave is 25 days."]),
+    ]);
     expect(result.answer).toEqual("Leave is 25 days.");
     expect(result.answer).not.toContain("evil");
   });
@@ -146,7 +160,7 @@ describe("generateAnswer", () => {
     it("keeps a grounded uncited block, in order, with its citation", async () => {
       const { client } = clientReturning([
         { type: "text", text: intro1 },
-        cited(` ${intro2}`, 0),
+        cited(` ${intro2}`, 0, 0, "exists so that"),
       ]);
       const result = await generateAnswer(client, "q?", [src()]);
       expect(result.answer).toEqual(`${intro1} ${intro2}`);
@@ -160,7 +174,7 @@ describe("generateAnswer", () => {
     it("drops a short uncited connective", async () => {
       const { client } = clientReturning([
         { type: "text", text: "However," },
-        cited(intro2, 0),
+        cited(intro2, 0, 0, "exists so that"),
       ]);
       const result = await generateAnswer(client, "q?", [
         source("Stack", [`However, ${intro2}`]),
@@ -174,7 +188,7 @@ describe("generateAnswer", () => {
           type: "text",
           text: "**This is the central list of every product that has come up**",
         },
-        cited("Cited.", 0),
+        cited("Central list.", 0, 0, "central list"),
       ]);
       const result = await generateAnswer(client, "q?", [
         source("Stack", [
@@ -182,7 +196,7 @@ describe("generateAnswer", () => {
         ]),
       ]);
       expect(result.answer).toEqual(
-        "**This is the central list of every product that has come up** Cited."
+        "**This is the central list of every product that has come up** Central list."
       );
     });
 
@@ -194,13 +208,13 @@ describe("generateAnswer", () => {
 
     it("preserves order when cited and grounded blocks alternate", async () => {
       const { client } = clientReturning([
-        cited("First.", 0),
+        cited("Central.", 0, 0, "central list"),
         { type: "text", text: intro1 },
-        cited("Third.", 0),
+        cited("Product.", 0, 0, "exists so that"),
         { type: "text", text: intro2 },
       ]);
       const result = await generateAnswer(client, "q?", [src()]);
-      expect(result.answer).toEqual(`First. ${intro1} Third. ${intro2}`);
+      expect(result.answer).toEqual(`Central. ${intro1} Product. ${intro2}`);
     });
   });
 
@@ -211,15 +225,20 @@ describe("generateAnswer", () => {
   });
 
   it("ignores citations with an out-of-range search result index", async () => {
-    const { client } = clientReturning([cited("Valid.", 0), cited("Bad.", 7)]);
-    const result = await generateAnswer(client, "q?", [source("A", ["x"])]);
+    const { client } = clientReturning([
+      cited("Valid.", 0, 0, "valid text"),
+      cited("Bad.", 7),
+    ]);
+    const result = await generateAnswer(client, "q?", [
+      source("A", ["Valid text here"]),
+    ]);
     expect(result.citations).toEqual([
       {
         documentId: "A-id",
         title: "A",
         url: "/doc/A",
         heading: undefined,
-        quote: "quoted",
+        quote: "valid text",
       },
     ]);
 
@@ -230,7 +249,9 @@ describe("generateAnswer", () => {
 
   it("truncates long quotes to 300 characters", async () => {
     const { client } = clientReturning([cited("ok", 0, 0, "a".repeat(400))]);
-    const result = await generateAnswer(client, "q?", [source("A", ["x"])]);
+    const result = await generateAnswer(client, "q?", [
+      source("A", [`ok ${"a".repeat(400)}`]),
+    ]);
     expect(result.citations[0].quote).toEqual(`${"a".repeat(300)}…`);
   });
 
@@ -249,5 +270,34 @@ describe("generateAnswer", () => {
     await generateAnswer(client, "q?", [source("", ["x"])]);
     const request = create.mock.calls[0][0];
     expect(request.messages[0].content[0].title).toEqual("Untitled");
+  });
+});
+
+describe("generateAnswerWithUsage", () => {
+  it("returns the provider token usage", async () => {
+    const create = vi.fn().mockResolvedValue({
+      content: [cited("25 days.", 0)],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 120, output_tokens: 7 },
+    });
+    const client = { messages: { create } } as unknown as AnswerClient;
+    const out = await generateAnswerWithUsage(client, "How many?", [
+      source("Holidays", ["# Leave\n25 days"]),
+    ]);
+    expect(out.usage).toEqual({ inputTokens: 120, outputTokens: 7 });
+  });
+});
+
+describe("generateAnswerWithUsage without reported usage", () => {
+  it("returns null usage rather than zero", async () => {
+    const create = vi.fn().mockResolvedValue({
+      content: [cited("25 days.", 0)],
+      stop_reason: "end_turn",
+    });
+    const client = { messages: { create } } as unknown as AnswerClient;
+    const out = await generateAnswerWithUsage(client, "How many?", [
+      source("Holidays", ["# Leave\n25 days"]),
+    ]);
+    expect(out.usage).toBeNull();
   });
 });
