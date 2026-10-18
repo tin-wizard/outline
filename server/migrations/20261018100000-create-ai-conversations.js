@@ -49,6 +49,11 @@ module.exports = {
         ["teamId", "userId", { name: "updatedAt", order: "DESC" }],
         { name: "ai_conversations_team_user_updated_at", transaction }
       );
+      // The daily retention scan deletes by activity time across all teams.
+      await queryInterface.addIndex("ai_conversations", ["updatedAt"], {
+        name: "ai_conversations_updated_at",
+        transaction,
+      });
 
       await queryInterface.createTable(
         "ai_conversation_turns",
@@ -60,18 +65,10 @@ module.exports = {
             references: { model: "ai_conversations", key: "id" },
             onDelete: "CASCADE",
           },
-          teamId: {
-            type: Sequelize.UUID,
-            allowNull: false,
-            references: { model: "teams", key: "id" },
-            onDelete: "CASCADE",
-          },
-          userId: {
-            type: Sequelize.UUID,
-            allowNull: false,
-            references: { model: "users", key: "id" },
-            onDelete: "CASCADE",
-          },
+          // Plain columns for scoping and row-level security; the conversation
+          // foreign key already removes turns with their team or owner.
+          teamId: { type: Sequelize.UUID, allowNull: false },
+          userId: { type: Sequelize.UUID, allowNull: false },
           position: { type: Sequelize.INTEGER, allowNull: false },
           question: { type: Sequelize.TEXT, allowNull: false },
           blocks: {
