@@ -6,6 +6,7 @@ import { Link, Redirect, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { transparentize } from "polished";
 import styled from "styled-components";
+import { HEADER_HEIGHT } from "@shared/constants";
 import { breakpoints, s } from "@shared/styles";
 import Button from "~/components/Button";
 import CollectionIcon from "~/components/Icons/CollectionIcon";
@@ -103,11 +104,20 @@ const Page = observer(function Page({
     reset();
     setScope({});
   }, [reset]);
+  // The stored chat most recently opened; its last scope replaces the chips.
+  const [hydratedId, setHydratedId] = React.useState<string | null>(null);
+  const hydrateChat = React.useCallback(
+    (id: string, turns: Parameters<typeof hydrate>[1]) => {
+      hydrate(id, turns);
+      setHydratedId(id);
+    },
+    [hydrate]
+  );
   const route = useConversationRoute({
     routeId: conversationId,
     enabled: historyEnabled,
     state,
-    hydrate,
+    hydrate: hydrateChat,
     reset: resetChat,
   });
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
@@ -118,12 +128,18 @@ const Page = observer(function Page({
   const restoredFor = React.useRef<string | null>(null);
   React.useEffect(() => {
     const id = state.conversationId;
-    if (!id || !lastStored || restoredFor.current === id) {
+    if (!id || restoredFor.current === id) {
       return;
     }
-    restoredFor.current = id;
-    setScope(scopeFromStored(lastStored));
-  }, [state.conversationId, lastStored]);
+    if (lastStored) {
+      restoredFor.current = id;
+      setScope(scopeFromStored(lastStored));
+    } else if (id === hydratedId) {
+      // An opened chat without a stored scope must not keep the previous chat's chips.
+      restoredFor.current = id;
+      setScope({});
+    }
+  }, [state.conversationId, lastStored, hydratedId]);
 
   // Ask AI buttons pass ids only: fetch what the chips need to show names.
   React.useEffect(() => {
@@ -472,15 +488,20 @@ const Panes = styled.div`
 `;
 
 const Chat = styled.div`
+  display: flex;
   flex: 1;
+  flex-direction: column;
   min-width: 0;
   max-width: 46em;
+  /* Lets the composer sit at the bottom of the screen even when a chat is short. */
+  min-height: calc(100dvh - ${HEADER_HEIGHT}px - 4px);
 `;
 
 /** Keeps the composer in reach at the bottom while a long chat scrolls. */
 const ComposerDock = styled.div<{ $hero?: boolean }>`
   position: ${(props) => (props.$hero ? "static" : "sticky")};
   bottom: 0;
+  margin-top: ${(props) => (props.$hero ? 0 : "auto")};
   z-index: 1;
   padding: ${(props) =>
     props.$hero
@@ -504,9 +525,14 @@ const Welcome = styled.div`
   display: flex;
   flex-direction: column;
   align-items: center;
-  margin: max(32px, 8vh) 0 0;
+  /* Centres the hero group (title, composer, cards) like the mockup. */
+  margin: max(32px, 22vh) 0 0;
   color: ${s("textSecondary")};
   text-align: center;
+
+  @media (max-width: ${breakpoints.tablet - 1}px) {
+    margin-top: max(32px, 8vh);
+  }
 
   p {
     margin: 6px 0 0;

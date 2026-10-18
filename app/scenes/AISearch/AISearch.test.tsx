@@ -576,6 +576,31 @@ describe("AISearch page, stored conversations", () => {
     expect(mocked).toHaveBeenCalledTimes(1);
   });
 
+  it("moves a not-covered new chat to /ai/:id too (it is stored)", async () => {
+    const stream = controlled();
+    const { history } = mount("/ai?q=hello");
+    await tick();
+    await stream.push(
+      { event: "conversation", data: { id: CONVERSATION } },
+      { event: "failed", data: { reason: "no_answer", partial: false } }
+    );
+    await stream.end();
+    expect(history.location.pathname).toBe(`/ai/${CONVERSATION}`);
+    expect(mockFetchPage).toHaveBeenCalledWith({ limit: 25 });
+  });
+
+  it("keeps /ai for a failure that is not stored", async () => {
+    const stream = controlled();
+    const { history } = mount("/ai?q=hello");
+    await tick();
+    await stream.push(
+      { event: "conversation", data: { id: CONVERSATION } },
+      { event: "failed", data: { reason: "scope_forbidden", partial: false } }
+    );
+    await stream.end();
+    expect(history.location.pathname).toBe("/ai");
+  });
+
   it("starts a new chat when navigating from /ai/:id to /ai", async () => {
     mockFetchConversation.mockResolvedValue({ turns: [storedTurn()] });
     const { history, host } = mount(`/ai/${CONVERSATION}`);
@@ -867,6 +892,15 @@ describe("AISearch page, scope", () => {
     expect(text).not.toContain(HIDDEN_COLLECTION);
     // The composer continues with what is still visible.
     expect(chip(host, "Engineering")).toBeTruthy();
+  });
+
+  it("drops earlier chips when an opened chat has no stored scope", async () => {
+    historyEnabled.mockReturnValue(true);
+    mockFetchConversation.mockResolvedValue({ turns: [storedTurn()] });
+    const { host } = mount(`/ai/${CONVERSATION}?collectionId=${ENG}`);
+    await tick();
+    expect(chip(host, "All collections")).toBeTruthy();
+    expect(chip(host, "Engineering")).toBeUndefined();
   });
 
   it("starts over with no scope on New chat", async () => {
