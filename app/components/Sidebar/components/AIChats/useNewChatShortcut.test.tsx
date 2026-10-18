@@ -3,6 +3,7 @@ import { act } from "react";
 import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
 import { Router } from "react-router-dom";
+import { isSplitViewNavigationSuppressed } from "~/utils/splitView";
 import { useNewChatShortcut } from "./useNewChatShortcut";
 
 const roots: Root[] = [];
@@ -59,6 +60,14 @@ describe("useNewChatShortcut", () => {
     });
     expect(history.location.pathname).toBe("/ai");
     expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("navigates in place, not into the split view (same modifier)", () => {
+    const history = mount(true);
+    const suppressed: boolean[] = [];
+    history.listen(() => suppressed.push(isSplitViewNavigationSuppressed()));
+    press({ key: "o", shiftKey: true, metaKey: true, ctrlKey: true });
+    expect(suppressed).toEqual([true]);
   });
 
   it("ignores other combinations and a disabled state", () => {

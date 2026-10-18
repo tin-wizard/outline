@@ -97,7 +97,7 @@ export const AIChats = observer(function AIChats({ deleteOnly }: Props) {
             {t("New chat")}
             {!isMobile && (
               <Hint>
-                <KeyboardShortcut keys={["Meta", "Shift", "O"]} />
+                <KeyboardShortcut keys={["meta", "shift", "o"]} />
               </Hint>
             )}
           </NewChatLabel>
