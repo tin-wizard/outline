@@ -1,6 +1,7 @@
 import { EditorStyleHelper } from "@shared/editor/styles/EditorStyleHelper";
 import { ProsemirrorHelper } from "@shared/utils/ProsemirrorHelper";
 import { DocumentHelper } from "@server/models/helpers/DocumentHelper";
+import { redactSecrets } from "./redact";
 import { headingOf } from "./text";
 
 type Content = Parameters<typeof DocumentHelper.toProsemirror>[0];
@@ -36,30 +37,74 @@ export function sectionAnchors(
   document: Content,
   sections: string[]
 ): (string | undefined)[] {
+  return sectionTargets(document, sections).map((t) => t?.id);
+}
+
+/** Longest heading text of a section target, in characters. */
+export const MAX_HEADING_CHARS = 120;
+
+/** The editor heading a section belongs to. */
+export interface SectionTarget {
+  /** The editor's heading id (see `sectionAnchors`). */
+  id: string;
+  /**
+   * The heading's visible text, without Markdown syntax, at most 120
+   * characters; omitted when the text itself would be redacted.
+   */
+  heading?: string;
+}
+
+/**
+ * The editor heading of each section, paired as `sectionAnchors` describes:
+ * size-split sections inherit the previous one, text before the first heading
+ * and headings the redactor changed get none.
+ *
+ * @param document the document, or its Prosemirror data, the sections came from.
+ * @param sections the (redacted) Markdown sections in document order.
+ * @returns one target or undefined per section.
+ */
+export function sectionTargets(
+  document: Content,
+  sections: string[]
+): (SectionTarget | undefined)[] {
   const doc = DocumentHelper.toProsemirror(document);
   const headings = ProsemirrorHelper.getAnchors(doc)
     .filter((a) => a.className === EditorStyleHelper.headingPositionAnchor)
-    .map((a) => ({
-      id: a.id,
-      key: keyOf(doc.nodeAt(a.pos)?.textContent ?? ""),
-    }));
+    .map((a) => {
+      const text = (doc.nodeAt(a.pos)?.textContent ?? "")
+        .replace(/\s+/g, " ")
+        .trim();
+      const heading = [...text].slice(0, MAX_HEADING_CHARS).join("").trim();
+      return {
+        id: a.id,
+        key: keyOf(text),
+        heading:
+          heading && redactSecrets(heading).text === heading
+            ? heading
+            : undefined,
+      };
+    });
 
   let next = 0;
-  const anchors: (string | undefined)[] = [];
+  const targets: (SectionTarget | undefined)[] = [];
   for (const section of sections) {
     const heading = headingOf(section);
     if (heading === undefined) {
-      anchors.push(anchors.at(-1));
+      targets.push(targets.at(-1));
       continue;
     }
     const key = keyOf(linkText(heading));
     const at = headings.findIndex((h, i) => i >= next && h.key === key);
     if (at === -1) {
-      anchors.push(undefined);
+      targets.push(undefined);
       continue;
     }
     next = at + 1;
-    anchors.push(headings[at].id);
+    const found = headings[at];
+    targets.push({
+      id: found.id,
+      ...(found.heading ? { heading: found.heading } : {}),
+    });
   }
-  return anchors;
+  return targets;
 }

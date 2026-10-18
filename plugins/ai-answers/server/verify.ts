@@ -12,6 +12,8 @@ export interface AnswerCitation {
   heading?: string;
   /** The editor's heading id for the first cited section, when known. */
   anchor?: string;
+  /** Plain visible text of that heading, when known and safe to show. */
+  headingText?: string;
   quote: string;
 }
 
@@ -758,12 +760,14 @@ function citationFor(
   quote: string
 ): AnswerCitation {
   const anchor = source.anchors?.[at];
+  const headingText = source.headings?.[at];
   return {
     documentId: source.document.id,
     title: source.document.title,
     url: source.document.url,
     heading: headingOf(source.sections[at]),
     ...(anchor ? { anchor } : {}),
+    ...(headingText ? { headingText } : {}),
     quote: truncate(quote),
   };
 }

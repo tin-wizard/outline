@@ -1,6 +1,6 @@
 import { DocumentHelper } from "@server/models/helpers/DocumentHelper";
 import { buildDocument } from "@server/test/factories";
-import { sectionAnchors } from "./anchors";
+import { sectionAnchors, sectionTargets } from "./anchors";
 import { redactSecrets } from "./redact";
 import { splitIntoSections } from "./text";
 
@@ -65,5 +65,45 @@ describe("sectionAnchors", () => {
     );
     expect(sections[0]).toContain("REDACTED");
     expect(anchors).toEqual([undefined, "h-next"]);
+  });
+});
+
+describe("sectionTargets headings", () => {
+  async function headingsFor(text: string, maxChars?: number) {
+    const document = await buildDocument({ text });
+    const { text: markdown } = redactSecrets(
+      await DocumentHelper.toMarkdown(document, { includeTitle: false })
+    );
+    const sections = splitIntoSections(markdown, maxChars);
+    return {
+      sections,
+      headings: sectionTargets(document, sections).map((t) => t?.heading),
+    };
+  }
+
+  it("returns the visible heading text without Markdown syntax", async () => {
+    const { headings } = await headingsFor(
+      "Preamble.\n\n## See [docs](https://example.com)\na\n\n## **Bold** and `code`\nb"
+    );
+    expect(headings).toEqual([undefined, "See docs", "Bold and code"]);
+  });
+
+  it("lets size-split sections inherit the heading and caps its length", async () => {
+    const long = "Word ".repeat(40).trim();
+    const body = Array.from({ length: 6 }, (_, i) => `Paragraph ${i} text.`);
+    const { headings } = await headingsFor(
+      `# ${long}\n${body.join("\n\n")}`,
+      50
+    );
+    expect(headings.length).toBeGreaterThan(2);
+    expect(new Set(headings).size).toEqual(1);
+    expect(headings[0]).toEqual(long.slice(0, 120).trim());
+  });
+
+  it("omits the heading the redactor changed", async () => {
+    const { headings } = await headingsFor(
+      "# Keys AKIAIOSFODNN7EXAMPLE\nbody\n\n# Next\nmore"
+    );
+    expect(headings).toEqual([undefined, "Next"]);
   });
 });

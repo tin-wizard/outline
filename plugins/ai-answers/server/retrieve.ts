@@ -10,7 +10,7 @@ import SearchProviderManager from "@server/utils/SearchProviderManager";
 import { dropAIExcluded } from "@server/utils/aiExclusion";
 import type * as T from "./api/schema";
 import { redactSecrets } from "./redact";
-import { sectionAnchors } from "./anchors";
+import { sectionTargets } from "./anchors";
 import {
   selectSectionIndices,
   splitIntoSections,
@@ -28,6 +28,8 @@ export interface AnswerSource {
    * with `sections`; undefined entries have no safe anchor.
    */
   anchors?: (string | undefined)[];
+  /** The plain heading text for each section (see `sectionTargets`), aligned with `sections`. */
+  headings?: (string | undefined)[];
 }
 
 const MAX_DOCUMENTS = 5;
@@ -121,13 +123,14 @@ export async function retrieveSources(
       await DocumentHelper.toMarkdown(document, { includeTitle: false })
     );
     const all = splitIntoSections(markdown);
-    const allAnchors = sectionAnchors(document, all);
+    const targets = sectionTargets(document, all);
     const chosen = selectSectionIndices(all, keywords, MAX_CHARS_PER_DOCUMENT);
     if (chosen.length > 0) {
       sources.push({
         document,
         sections: chosen.map((i) => all[i]),
-        anchors: chosen.map((i) => allAnchors[i]),
+        anchors: chosen.map((i) => targets[i]?.id),
+        headings: chosen.map((i) => targets[i]?.heading),
       });
     }
   }
