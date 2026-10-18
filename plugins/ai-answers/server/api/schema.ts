@@ -25,6 +25,8 @@ export const AIAskSchema = BaseSchema.extend({
       dateFrom: z.iso.date().optional(),
       /** Only use documents updated on or before this UTC day (YYYY-MM-DD). */
       dateTo: z.iso.date().optional(),
+      /** "compare" answers with a table of values quoted from each source. */
+      mode: z.enum(["answer", "compare"]).default("answer"),
     })
     .refine((b) => !b.dateFrom || !b.dateTo || b.dateFrom <= b.dateTo, {
       message: "dateFrom must not be after dateTo",

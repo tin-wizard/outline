@@ -531,6 +531,37 @@ describe("aiConversations", () => {
       expect(turn.hasHiddenBlocks).toEqual(false);
     });
 
+    it("returns the compare mode of a turn, stored in its scope", async () => {
+      const user = await enable(await buildUser());
+      const doc = await buildDocument({
+        teamId: user.teamId,
+        userId: user.id,
+        title: "Runbook",
+      });
+      const id = await appendConversationTurn(user, {
+        question: "Compare the runbooks",
+        released: [released("The runbook is here.", [doc])],
+        outcome: "answered",
+        usageId: null,
+        scope: { collectionIds: [], documentIds: [], mode: "compare" },
+      });
+      if (!id) {
+        throw new Error("not stored");
+      }
+      const [stored] = await AIConversationTurn.findAll({
+        where: { conversationId: id },
+      });
+      expect(stored.scope).toEqual({
+        collectionIds: [],
+        documentIds: [],
+        mode: "compare",
+      });
+      const turn = (await (await post("info", user, { id })).json()).data
+        .turns[0];
+      expect(turn.mode).toEqual("compare");
+      expect(turn.scope).toEqual({ collections: [], documents: [] });
+    });
+
     it("omits the last editor's name when that user is gone", async () => {
       const user = await enable(await buildUser());
       const editor = await buildUser({ teamId: user.teamId });

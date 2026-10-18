@@ -13,7 +13,11 @@ import type { User } from "@server/models";
 import type { APIContext } from "@server/types";
 import { releaseRequestTransaction } from "@server/storage/requestContext";
 import { RateLimiterStrategy } from "@server/utils/RateLimiter";
-import { assertAIAnswersAllowed, isHistoryEnabled } from "../access";
+import {
+  assertAIAnswersAllowed,
+  assertCompareAllowed,
+  isHistoryEnabled,
+} from "../access";
 import { safeCitationTarget } from "../anchors";
 import { getClient } from "../anthropicClient";
 import {
@@ -31,6 +35,7 @@ import {
   ASK_MIN_IDLE_MS,
   REQUEST_HEADROOM_MS,
   ZERO_USAGE,
+  type AnswerMode,
   type FinishReason,
   type Usage,
 } from "../contract";
@@ -50,7 +55,7 @@ import { redactSecrets } from "../redact";
 import { presentSourceDetails, type SourceDetails } from "../presenters/source";
 import { askScope, retrieveWithCounts, type AnswerSource } from "../retrieve";
 import { estimateUsage, record, reserveModelCall } from "../usage";
-import { AnswerVerifier, type AcceptedBlock } from "../verify";
+import { AnswerVerifier, compareSources, type AcceptedBlock } from "../verify";
 import * as T from "./schema";
 
 /** Why an answer ended without `done`. */
@@ -63,6 +68,8 @@ export type AskFailure =
   | "timeout"
   | "cancelled"
   | "scope_forbidden"
+  /** Compare mode found fewer than two documents to compare. */
+  | "compare_needs_two"
   | "error";
 
 /** Extra facts about a failure; never names or ids of scoped content. */
@@ -134,6 +141,8 @@ export interface AskEvents {
     /** Blocks the verifier dropped from this answer; 0 when all were kept. */
     dropped: number;
     retrieval: AskRetrieval;
+    /** The mode the answer was verified in. */
+    mode: AnswerMode;
   };
   failed: { reason: AskFailure; partial: boolean; detail?: AskFailureDetail };
 }
@@ -338,10 +347,17 @@ router.post(
   timeout(clampAskDeadline(env.AI_ASK_DEADLINE_MS) + REQUEST_HEADROOM_MS),
   async (ctx: APIContext<T.AIAskReq>) => {
     const { user } = ctx.state.auth;
-    const { query, conversationId } = ctx.input.body;
-    const scope = askScope(ctx.input.body);
+    const { query, conversationId, mode } = ctx.input.body;
+    const compare = mode === "compare";
+    const scope = {
+      ...askScope(ctx.input.body),
+      ...(compare ? { mode: "compare" as const } : {}),
+    };
 
     assertAIAnswersAllowed(user);
+    if (compare) {
+      assertCompareAllowed(user);
+    }
 
     const startedAt = Date.now();
     const clientGone = new AbortController();
@@ -431,7 +447,7 @@ router.post(
           | {
               done: Omit<
                 AskEvents["done"],
-                "conversationId" | "usageId" | "dropped" | "retrieval"
+                "conversationId" | "usageId" | "dropped" | "retrieval" | "mode"
               >;
             }
       ) => {
@@ -479,6 +495,7 @@ router.post(
             usageId,
             dropped,
             retrieval,
+            mode,
           });
         }
       };
@@ -495,7 +512,8 @@ router.post(
           { ...ctx.input.body, query: standalone },
           clientGone.signal
         );
-        sources = found.sources;
+        // A comparison puts at most three documents with distinct titles side by side.
+        sources = compare ? compareSources(found.sources) : found.sources;
         retrieval = { fetched: found.candidatesFetched, used: sources.length };
       } catch (error) {
         if (clientGone.signal.aborted) {
@@ -523,6 +541,10 @@ router.post(
           error: toError(error).message,
         });
         await finish([], { failed: "unavailable" });
+        return;
+      }
+      if (compare && sources.length < 2) {
+        await finish([], { failed: "compare_needs_two" });
         return;
       }
       if (sources.length === 0) {
@@ -555,7 +577,7 @@ router.post(
         outputTokens: Math.max(1, Math.ceil(progress.outputChars / 3)),
       });
       // Built before the slot is taken, so a failure here cannot leak it.
-      const verifier = new AnswerVerifier(sources);
+      const verifier = new AnswerVerifier(sources, mode);
       const splitter = new BlockSplitter();
       // CLIENT_MAX_RETRIES must stay 0: one billed call per request.
       const limits = streamLimits(
@@ -656,6 +678,7 @@ router.post(
             question: query,
             sources,
             history,
+            mode,
             signal,
             onEvent: limits.touch,
             progress,

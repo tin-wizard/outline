@@ -136,6 +136,8 @@ export interface PresentedTurn {
   timings?: { totalMs: number; firstBlockMs?: number };
   /** Retrieval counts, when stored. */
   retrieval?: AskRetrieval;
+  /** Set when the question was asked in compare mode. */
+  mode?: "compare";
 }
 
 /**
@@ -467,6 +469,7 @@ export async function presentTurns(
             },
           }
         : {}),
+      ...(turn.scope?.mode === "compare" ? { mode: "compare" as const } : {}),
       ...(turn.totalMs !== null
         ? {
             timings: {
@@ -504,12 +507,14 @@ function storedScope(scope: StoredScope | undefined): StoredScope | null {
     documentIds: ids(scope.documentIds, MAX_SCOPE_DOCUMENTS),
     ...(scope.dateFrom ? { dateFrom: scope.dateFrom } : {}),
     ...(scope.dateTo ? { dateTo: scope.dateTo } : {}),
+    ...(scope.mode === "compare" ? { mode: "compare" as const } : {}),
   };
   const empty =
     stored.collectionIds.length === 0 &&
     stored.documentIds.length === 0 &&
     !stored.dateFrom &&
-    !stored.dateTo;
+    !stored.dateTo &&
+    !stored.mode;
   return empty ? null : stored;
 }
 

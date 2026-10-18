@@ -40,6 +40,8 @@ export interface StoredScope {
   dateFrom?: string;
   /** Last day of the updatedAt range, inclusive (YYYY-MM-DD, UTC). */
   dateTo?: string;
+  /** Set when the question was asked in compare mode. */
+  mode?: "compare";
 }
 
 /**

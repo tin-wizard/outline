@@ -1,5 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import {
+  COMPARE_SYSTEM_PROMPT,
   MAX_OUTPUT_TOKENS,
   STRUCTURED_SYSTEM_PROMPT,
   type AnswerRequest,
@@ -72,7 +73,10 @@ export async function* streamAnswer(
     {
       model: env.AI_ANSWERS_MODEL,
       max_tokens: MAX_OUTPUT_TOKENS,
-      system: STRUCTURED_SYSTEM_PROMPT,
+      system:
+        request.mode === "compare"
+          ? COMPARE_SYSTEM_PROMPT
+          : STRUCTURED_SYSTEM_PROMPT,
       stream: true,
       messages: [
         {

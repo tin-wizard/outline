@@ -1812,6 +1812,151 @@ describe("#ai.ask", () => {
     });
   });
 
+  describe("compare", () => {
+    const BASIC = "The Basic plan costs 10 EUR per month.";
+    const PRO = "The Pro plan costs 30 EUR per month.";
+    const QUERY = "Compare the plan pricing";
+
+    async function compareOn(user: User) {
+      const team = await Team.findByPk(user.teamId, { rejectOnEmpty: true });
+      team.setPreference(TeamPreference.AICompare, true);
+      await team.save();
+      return user;
+    }
+
+    async function plans(count = 2) {
+      const user = await compareOn(await enable(await buildUser()));
+      const docs = [
+        ["Basic Plan", `# Pricing\n${BASIC}`],
+        ["Pro Plan", `# Pricing\n${PRO}`],
+      ].slice(0, count);
+      for (const [title, text] of docs) {
+        await buildDocument({
+          teamId: user.teamId,
+          userId: user.id,
+          title,
+          text,
+        });
+      }
+      return user;
+    }
+
+    /** The index of the sent search result with this title. */
+    const indexOf = (body: object, title: string) =>
+      (
+        body as { messages: { content: { type: string; title?: string }[] }[] }
+      ).messages[0].content
+        .filter((c) => c.type === "search_result")
+        .findIndex((c) => c.title === title);
+
+    const comparison = (body: object) =>
+      anthropicEvents([
+        { text: "| Aspect | Basic Plan | Pro Plan |\n| --- | --- | --- |\n" },
+        {
+          text: "| Pricing | 10 EUR per month | 30 EUR per month |\n",
+          citations: [
+            { quote: BASIC, source: indexOf(body, "Basic Plan") },
+            { quote: PRO, source: indexOf(body, "Pro Plan") },
+          ],
+        },
+        { text: "\nThe Pro plan is the better choice.\n" },
+        { text: "\nThe documents do not cover discounts." },
+      ]);
+
+    it("is off by default and rejected with compare_disabled, without a model call", async () => {
+      const { user } = await setup();
+      const bodies = upstream(() => anthropicEvents([cited]));
+      const res = await ask(user, { query: QUERY, mode: "compare" });
+      expect(res.status).toEqual(403);
+      expect((await res.json()).error).toEqual("compare_disabled");
+      expect(bodies).toHaveLength(0);
+    });
+
+    it("rejects an unknown mode with 400", async () => {
+      const { user } = await setup();
+      expect(
+        (await ask(user, { query: QUERY, mode: "summary" })).status
+      ).toEqual(400);
+    });
+
+    it("streams a verified comparison table with per-source citations and done.mode", async () => {
+      const user = await plans();
+      const bodies = upstream(comparison);
+      const events = await askEvents(user, { query: QUERY, mode: "compare" });
+      expect((bodies[0] as { system: string }).system).toContain("Aspect");
+      const blocks = events.filter((e) => e.event === "block");
+      expect(blocks.map((b) => b.data.kind)).toEqual([
+        "tableHeader",
+        "tableRow",
+        "paragraph",
+      ]);
+      expect(
+        blocks[1].data.citations.map((c: { title: string }) => c.title)
+      ).toEqual(["Basic Plan", "Pro Plan"]);
+      expect(blocks[2].data.markdown).toEqual(
+        "The documents do not cover discounts."
+      );
+      const done = events.at(-1);
+      expect(done?.event).toEqual("done");
+      expect(done?.data.mode).toEqual("compare");
+      expect(done?.data.dropped).toEqual(1);
+      const [turn] = await turnsOf(events[0].data.id);
+      expect(turn.scope).toEqual({
+        collectionIds: [],
+        documentIds: [],
+        mode: "compare",
+      });
+    });
+
+    it("fails with compare_needs_two and no model call when fewer than two documents are found", async () => {
+      const user = await plans(1);
+      const bodies = upstream(comparison);
+      const events = await askEvents(user, { query: QUERY, mode: "compare" });
+      expect(events.at(-1)).toEqual({
+        event: "failed",
+        data: { reason: "compare_needs_two", partial: false },
+      });
+      expect(bodies).toHaveLength(0);
+      expect(await rowsFor(user.teamId)).toHaveLength(0);
+    });
+
+    it("keeps the budget gate in compare mode", async () => {
+      const user = await plans();
+      const bodies = upstream(comparison);
+      await AIAnswerUsage.create({
+        teamId: user.teamId,
+        userId: null,
+        model: "claude-sonnet-5-5",
+        inputTokens: 0,
+        outputTokens: 0,
+        costMicroUsd: String(26_000_000),
+        outcome: "answered",
+        droppedSegments: 0,
+        durationMs: 0,
+      });
+      const events = await askEvents(user, { query: QUERY, mode: "compare" });
+      expect(events.at(-1)?.data.reason).toEqual("budget");
+      expect(bodies).toHaveLength(0);
+    });
+
+    it("answers in answer mode by default, with the answer prompt and done.mode", async () => {
+      const user = await plans();
+      const bodies = upstream((body) =>
+        anthropicEvents([
+          {
+            text: BASIC,
+            citations: [{ quote: BASIC, source: indexOf(body, "Basic Plan") }],
+          },
+        ])
+      );
+      const events = await askEvents(user, { query: QUERY });
+      expect((bodies[0] as { system: string }).system).not.toContain(
+        "| Aspect |"
+      );
+      expect(events.at(-1)?.data.mode).toEqual("answer");
+    });
+  });
+
   it("never sends or emits planted secrets from a document or the query", async () => {
     const user = await enable(await buildUser());
     // Synthetic values assembled at runtime so no real-looking secret is committed.

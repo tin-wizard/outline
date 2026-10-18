@@ -1,3 +1,4 @@
+import httpErrors from "http-errors";
 import { TeamPreference } from "@shared/types";
 import { AuthorizationError } from "@server/errors";
 import type { Team, User } from "@server/models";
@@ -16,6 +17,22 @@ export function assertAIAnswersAllowed(user: User): void {
   }
   if (user.isGuest || user.isViewer) {
     throw AuthorizationError("AI answers are not available for your role");
+  }
+}
+
+/**
+ * Throws unless compare mode is on in the user's workspace. Call after
+ * `assertAIAnswersAllowed`.
+ *
+ * @param user the authenticated user.
+ * @throws a 403 error with id "compare_disabled" when compare mode is off.
+ */
+export function assertCompareAllowed(user: User): void {
+  if (!user.team.getPreference(TeamPreference.AICompare)) {
+    throw httpErrors(403, "Compare mode is not enabled for this workspace", {
+      id: "compare_disabled",
+      isReportable: false,
+    });
   }
 }
 
