@@ -20,11 +20,13 @@ const {
   mockFetchDocument,
   mockFetchConversation,
   mockFetchPage,
+  mockGetConversation,
 } = vi.hoisted(() => ({
   mockFetchCollection: vi.fn(() => Promise.resolve()),
   mockFetchDocument: vi.fn(() => Promise.resolve()),
   mockFetchConversation: vi.fn(),
   mockFetchPage: vi.fn(),
+  mockGetConversation: vi.fn(),
 }));
 
 vi.mock("~/utils/streamFetch", async (importOriginal) => ({
@@ -43,7 +45,7 @@ vi.mock("~/hooks/useStores", () => {
     aiConversations: {
       fetch: mockFetchConversation,
       fetchPage: mockFetchPage,
-      get: () => undefined,
+      get: mockGetConversation,
     },
   };
   return { default: () => stores };
@@ -51,16 +53,46 @@ vi.mock("~/hooks/useStores", () => {
 vi.mock("~/components/Scene", () => ({
   default: ({
     children,
+    left,
     actions,
   }: {
     children?: React.ReactNode;
+    left?: React.ReactNode;
     actions?: React.ReactNode;
   }) => (
     <div>
-      {actions}
+      <header>
+        {left}
+        {actions}
+      </header>
       {children}
     </div>
   ),
+}));
+vi.mock("~/components/Breadcrumb", () => ({
+  default: ({
+    actions,
+    children,
+  }: {
+    actions: { name: string; to: string }[];
+    children?: React.ReactNode;
+  }) => (
+    <nav aria-label="Breadcrumb">
+      {actions.map((action) => (
+        <a key={action.name} href={action.to}>
+          {action.name}
+        </a>
+      ))}
+      {children}
+    </nav>
+  ),
+}));
+vi.mock("~/components/Tooltip", () => ({
+  default: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+}));
+// The export menu needs the action context of the real header; it has its own tests.
+vi.mock("./ExportActions", () => ({
+  ExportActions: () => <button type="button">Export conversation</button>,
 }));
 vi.mock("~/components/Button", () => ({
   default: ({
@@ -70,15 +102,25 @@ vi.mock("~/components/Button", () => ({
     type,
     to: _to,
     as: _as,
+    "aria-label": ariaLabel,
+    "aria-pressed": ariaPressed,
   }: {
     to?: unknown;
     as?: unknown;
     children?: React.ReactNode;
-    onClick?: () => void;
+    onClick?: React.MouseEventHandler<HTMLButtonElement>;
     disabled?: boolean;
     type?: "submit" | "button";
+    "aria-label"?: string;
+    "aria-pressed"?: boolean;
   }) => (
-    <button type={type} onClick={onClick} disabled={disabled}>
+    <button
+      type={type}
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={ariaLabel}
+      aria-pressed={ariaPressed}
+    >
       {children}
     </button>
   ),
@@ -103,6 +145,8 @@ beforeEach(() => {
   mockFetchDocument.mockClear();
   mockFetchConversation.mockReset();
   mockFetchPage.mockReset().mockResolvedValue([]);
+  mockGetConversation.mockReset().mockReturnValue(undefined);
+  window.sessionStorage.clear();
   enabled.mockReturnValue(true);
   historyEnabled.mockReturnValue(false);
 });
@@ -508,5 +552,155 @@ describe("AISearch page, stored conversations", () => {
     await tick();
     expect(host.textContent).not.toContain("Meet your buddy");
     expect(mocked).not.toHaveBeenCalled();
+  });
+});
+
+describe("AISearch page, shell", () => {
+  const header = (host: HTMLElement) => host.querySelector("header");
+
+  it("shows the breadcrumb at rest, with New chat for an empty chat", () => {
+    const { host } = mount("/ai");
+    const crumb = host.querySelector("nav[aria-label=Breadcrumb]");
+    expect(crumb?.textContent).toBe("AI SearchNew chat");
+    expect(crumb?.querySelector("a")?.getAttribute("href")).toBe("/ai");
+    expect(header(host)?.textContent).not.toContain("Private");
+    // Nothing to export or toggle before the first question.
+    expect(header(host)?.querySelector("button")).toBeNull();
+  });
+
+  it("shows the stored title and a Private badge for a stored chat", async () => {
+    historyEnabled.mockReturnValue(true);
+    mockGetConversation.mockReturnValue({
+      title: "Onboarding questions",
+      createdAt: "2026-10-16T12:00:00.000Z",
+      turns: [storedTurn()],
+    });
+    mockFetchConversation.mockResolvedValue({ turns: [storedTurn()] });
+    const { host } = mount(`/ai/${CONVERSATION}`);
+    await tick();
+    expect(host.querySelector("nav")?.textContent).toBe(
+      "AI SearchOnboarding questions"
+    );
+    expect(header(host)?.textContent).toContain("Private");
+  });
+
+  it("marks a resumed chat with its start date, but not a new one", async () => {
+    historyEnabled.mockReturnValue(true);
+    mockGetConversation.mockReturnValue({
+      title: "Onboarding questions",
+      createdAt: "2026-10-16T12:00:00.000Z",
+      turns: [storedTurn()],
+    });
+    mockFetchConversation.mockResolvedValue({ turns: [storedTurn()] });
+    const { host } = mount(`/ai/${CONVERSATION}`);
+    await tick();
+    expect(host.querySelector("[data-resumed]")?.textContent).toMatch(
+      /^Resumed · started \w{3}, \w{3} 1[56]$/
+    );
+    expect(host.textContent).toContain("How do we onboard?");
+  });
+
+  it("shows no divider when the stored date is unusable", async () => {
+    historyEnabled.mockReturnValue(true);
+    mockGetConversation.mockReturnValue({
+      title: "x",
+      createdAt: "garbage",
+      turns: [{ ...storedTurn(), createdAt: "garbage" }],
+    });
+    mockFetchConversation.mockResolvedValue({ turns: [storedTurn()] });
+    const { host } = mount(`/ai/${CONVERSATION}`);
+    await tick();
+    expect(host.querySelector("[data-resumed]")).toBeNull();
+    expect(host.textContent).toContain("How do we onboard?");
+  });
+
+  it("falls back to the first turn's date when the chat has no createdAt", async () => {
+    historyEnabled.mockReturnValue(true);
+    mockGetConversation.mockReturnValue({
+      title: "x",
+      turns: [storedTurn()],
+    });
+    mockFetchConversation.mockResolvedValue({ turns: [storedTurn()] });
+    const { host } = mount(`/ai/${CONVERSATION}`);
+    await tick();
+    expect(host.querySelector("[data-resumed]")?.textContent).toMatch(
+      /Resumed · started .*18/
+    );
+  });
+
+  it("toggles the Sources drawer from the header", async () => {
+    const stream = controlled();
+    const { host } = mount("/ai?q=hello");
+    await tick();
+    await stream.push(
+      {
+        event: "sources",
+        data: [{ n: 1, documentId: "d1", title: "Doc 1", url: "/doc/a-abc" }],
+      },
+      {
+        event: "block",
+        data: {
+          index: 0,
+          kind: "paragraph",
+          markdown: "Claim [1].",
+          citations: [
+            { n: 1, documentId: "d1", title: "Doc 1", url: "/doc/a-abc#h" },
+          ],
+        },
+      },
+      done("c1")
+    );
+    await stream.end();
+    const toggle = () =>
+      host.querySelector<HTMLButtonElement>("[aria-label='Toggle sources']");
+    expect(toggle()?.getAttribute("aria-pressed")).toBe("false");
+    expect(host.querySelector("aside")).toBeNull();
+    act(() => toggle()?.click());
+    expect(host.querySelector("aside")).not.toBeNull();
+    expect(toggle()?.getAttribute("aria-pressed")).toBe("true");
+    act(() => toggle()?.click());
+    expect(host.querySelector("aside")).toBeNull();
+    expect(toggle()?.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("has a New chat icon link that starts over", async () => {
+    historyEnabled.mockReturnValue(true);
+    mockFetchConversation.mockResolvedValue({ turns: [storedTurn()] });
+    const { host } = mount(`/ai/${CONVERSATION}`);
+    await tick();
+    const button = header(host)?.querySelector<HTMLButtonElement>(
+      "[aria-label='New chat']"
+    );
+    expect(button).not.toBeNull();
+  });
+});
+
+describe("AISearch page, empty state", () => {
+  it("shows the hero, the composer under it, then 2x2 suggestions and a disclaimer", () => {
+    const { host } = mount("/ai");
+    expect(host.querySelector("h2")?.textContent).toBe(
+      "What do you want to know?"
+    );
+    expect(host.textContent).toContain(
+      "Answers use only documents you can access and every statement links to its source."
+    );
+    const list = host.querySelector("ul[aria-label]");
+    expect(list?.querySelectorAll("button[value]")).toHaveLength(4);
+    const textarea = host.querySelector("textarea");
+    expect(
+      textarea &&
+        list &&
+        textarea.compareDocumentPosition(list) &
+          Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+  });
+
+  it("drops the hero and suggestions once the chat has turns", async () => {
+    historyEnabled.mockReturnValue(true);
+    mockFetchConversation.mockResolvedValue({ turns: [storedTurn()] });
+    const { host } = mount(`/ai/${CONVERSATION}`);
+    await tick();
+    expect(host.textContent).not.toContain("What do you want to know?");
+    expect(host.querySelector("ul[aria-label='Example questions']")).toBeNull();
   });
 });

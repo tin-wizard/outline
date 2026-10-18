@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { Link, Redirect, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { isUUID } from "validator";
+import { transparentize } from "polished";
 import styled from "styled-components";
 import { breakpoints, s } from "@shared/styles";
 import Button from "~/components/Button";
@@ -12,10 +13,18 @@ import Scene from "~/components/Scene";
 import PlaceholderText from "~/components/PlaceholderText";
 import useAIAnswersEnabled from "~/hooks/useAIAnswersEnabled";
 import useAIHistoryEnabled from "~/hooks/useAIHistoryEnabled";
+import useMobile from "~/hooks/useMobile";
 import useQuery from "~/hooks/useQuery";
 import useStores from "~/hooks/useStores";
 import { aiPath, homePath } from "~/utils/routeHelpers";
 import { AnswerTurn } from "./AnswerTurn";
+import {
+  ChatBreadcrumb,
+  NewChatIconLink,
+  PrivateBadge,
+  ResumedDivider,
+  SourcesToggle,
+} from "./ChatShell";
 import { ExportActions } from "./ExportActions";
 import { SourcesDrawer } from "./SourcesDrawer";
 import { Composer, MAX_QUERY_LENGTH } from "./Composer";
@@ -24,6 +33,7 @@ import { ScopeChips } from "./ScopeChips";
 import type { Scope } from "./model";
 import { citedSources } from "./model";
 import { useAISearch } from "./useAISearch";
+import { startedLabel } from "./startedLabel";
 import { useAutoSubmitQuery } from "./useAutoSubmitQuery";
 import { useConversationRoute } from "./useConversationRoute";
 import { useSourcesDrawer } from "./useSourcesDrawer";
@@ -76,7 +86,8 @@ const Page = observer(function Page({
   conversationId?: string;
   historyEnabled: boolean;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const isMobile = useMobile();
   const { collections, documents, aiConversations } = useStores();
   const params = useQuery();
   const { state, streaming, ask, stop, reset, hydrate, rate } = useAISearch();
@@ -186,6 +197,7 @@ const Page = observer(function Page({
     t("How do we onboard a new team member?"),
     t("What are the steps to request access to a tool?"),
     t("What does our handbook say about time off?"),
+    t("Where is our incident response process documented?"),
   ];
 
   const { turns } = state;
@@ -199,24 +211,44 @@ const Page = observer(function Page({
     [...turns].reverse().find((turn) => citedSources(turn).length > 0) ??
     last;
 
+  const stored = conversationId
+    ? aiConversations.get(conversationId)
+    : undefined;
+  const crumbTitle = stored?.title || turns[0]?.question || t("New chat");
+  // A chat opened from history; a chat begun in this session has no divider.
+  const resumedOn = stored?.turns?.length
+    ? startedLabel(
+        stored.createdAt ?? stored.turns[0]?.createdAt,
+        i18n.language
+      )
+    : undefined;
+  const isStored = historyEnabled && !!(conversationId || state.conversationId);
+  const empty = route.status === "idle" && turns.length === 0;
+
+  const handleToggleSources = (event: React.MouseEvent<HTMLButtonElement>) => {
+    if (drawer.open) {
+      drawer.close();
+    } else if (drawerTurn) {
+      drawer.show(drawerTurn.id, undefined, event.currentTarget);
+    }
+  };
+
   return (
     <Scene
-      title={title}
-      icon={<SparklesIcon />}
       textTitle={title}
       centered={false}
+      left={
+        <>
+          <ChatBreadcrumb title={crumbTitle} titleOnly={isMobile} />
+          {isStored && <PrivateBadge />}
+        </>
+      }
       actions={
         turns.length > 0 ? (
           <>
             <ExportActions turns={turns} streaming={streaming} title={title} />
-            <Button
-              as={Link}
-              to={aiPath()}
-              neutral
-              onClick={handleNewConversation}
-            >
-              {t("New chat")}
-            </Button>
+            <SourcesToggle open={drawer.open} onClick={handleToggleSources} />
+            <NewChatIconLink onClick={handleNewConversation} />
           </>
         ) : undefined
       }
@@ -248,44 +280,40 @@ const Page = observer(function Page({
                 </Button>
               </Idle>
             ) : turns.length === 0 ? (
-              <Welcome>
-                <SparklesIcon size={32} />
-                <WelcomeTitle>{t("Ask your documents")}</WelcomeTitle>
+              <Welcome data-print-hidden>
+                <WelcomeMark>
+                  <SparklesIcon size={26} />
+                </WelcomeMark>
+                <WelcomeTitle>{t("What do you want to know?")}</WelcomeTitle>
                 <p>
                   {t(
-                    "Ask a question and get an answer built from your documents, with sources."
+                    "Answers come only from documents you can open, with a source for every statement."
                   )}
                 </p>
-                <Suggestions aria-label={t("Example questions")}>
-                  {suggestions.map((suggestion) => (
-                    <li key={suggestion}>
-                      <Suggestion
-                        type="button"
-                        value={suggestion}
-                        onClick={handleSuggestionClick}
-                      >
-                        {suggestion}
-                      </Suggestion>
-                    </li>
-                  ))}
-                </Suggestions>
               </Welcome>
             ) : (
-              turns.map((turn) => (
-                <AnswerTurn
-                  key={turn.id}
-                  turn={turn}
-                  isLast={turn === last}
-                  scopeLabels={scopeLabels(turn.scope)}
-                  onStop={stop}
-                  onRate={rate}
-                  onOpenSources={drawer.show}
-                  onFollowUp={handleFollowUp}
-                  onRetry={(failed) => submit(failed.question, failed.scope)}
-                />
-              ))
+              <>
+                {resumedOn && <ResumedDivider date={resumedOn} />}
+                {turns.map((turn) => (
+                  <AnswerTurn
+                    key={turn.id}
+                    turn={turn}
+                    isLast={turn === last}
+                    scopeLabels={scopeLabels(turn.scope)}
+                    onStop={stop}
+                    onRate={rate}
+                    onOpenSources={drawer.show}
+                    onFollowUp={handleFollowUp}
+                    onRetry={(failed) => submit(failed.question, failed.scope)}
+                  />
+                ))}
+              </>
             )}
-            <ComposerDock data-print-hidden hidden={route.status !== "idle"}>
+            <ComposerDock
+              data-print-hidden
+              hidden={route.status !== "idle"}
+              $hero={empty}
+            >
               <Composer
                 value={text}
                 onChange={setText}
@@ -294,7 +322,30 @@ const Page = observer(function Page({
                 busy={streaming}
                 textareaRef={textareaRef}
               />
+              <Disclaimer>
+                {t(
+                  "Answers use only documents you can access and every statement links to its source."
+                )}
+              </Disclaimer>
             </ComposerDock>
+            {empty && (
+              <Suggestions
+                aria-label={t("Example questions")}
+                data-print-hidden
+              >
+                {suggestions.map((suggestion) => (
+                  <li key={suggestion}>
+                    <Suggestion
+                      type="button"
+                      value={suggestion}
+                      onClick={handleSuggestionClick}
+                    >
+                      {suggestion}
+                    </Suggestion>
+                  </li>
+                ))}
+              </Suggestions>
+            )}
           </Chat>
           {drawer.open && drawerTurn && (
             <SourcesDrawer
@@ -370,36 +421,66 @@ const Chat = styled.div`
 `;
 
 /** Keeps the composer in reach at the bottom while a long chat scrolls. */
-const ComposerDock = styled.div`
-  position: sticky;
+const ComposerDock = styled.div<{ $hero?: boolean }>`
+  position: ${(props) => (props.$hero ? "static" : "sticky")};
   bottom: 0;
   z-index: 1;
-  padding: 8px 0 max(12px, env(safe-area-inset-bottom));
+  padding: ${(props) =>
+    props.$hero
+      ? "24px 0 8px"
+      : "8px 0 max(12px, env(safe-area-inset-bottom))"};
   background: ${s("background")};
+`;
+
+const Disclaimer = styled.p`
+  margin: 8px 0 0;
+  color: ${s("textTertiary")};
+  font-size: 12px;
+  text-align: center;
+
+  @media (max-width: ${breakpoints.tablet - 1}px) {
+    display: none;
+  }
 `;
 
 const Welcome = styled.div`
   display: flex;
   flex-direction: column;
   align-items: center;
-  margin: 48px 0 32px;
+  margin: max(32px, 8vh) 0 0;
   color: ${s("textSecondary")};
   text-align: center;
+
+  p {
+    margin: 6px 0 0;
+    font-size: 15px;
+  }
+`;
+
+const WelcomeMark = styled.div`
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 14px;
+  border-radius: 12px;
+  background: ${(props) => transparentize(0.88, props.theme.accent)};
 
   svg {
     fill: ${s("accent")};
   }
-
-  ul {
-    width: 100%;
-    text-align: start;
-  }
 `;
 
 const WelcomeTitle = styled.h2`
-  margin: 8px 0 0;
+  margin: 0;
   color: ${s("text")};
-  font-size: 20px;
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+
+  @media (max-width: ${breakpoints.tablet - 1}px) {
+    font-size: 22px;
+  }
 `;
 
 const Idle = styled.div`
@@ -408,22 +489,30 @@ const Idle = styled.div`
 `;
 
 const Suggestions = styled.ul`
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin: 12px 0 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 16px 0 32px;
   padding: 0;
   list-style: none;
+
+  @media (max-width: ${breakpoints.tablet - 1}px) {
+    grid-template-columns: minmax(0, 1fr);
+  }
 `;
 
 const Suggestion = styled.button`
   width: 100%;
-  padding: 10px 14px;
-  border: 1px solid ${s("divider")};
-  border-radius: 8px;
-  background: ${s("background")};
+  height: 100%;
+  padding: 12px 14px;
+  border: 0;
+  border-radius: 10px;
+  box-shadow: inset 0 0 0 1px ${s("divider")};
+  background: transparent;
   color: ${s("text")};
   font: inherit;
+  font-size: 14.5px;
+  line-height: 1.4;
   text-align: left;
   cursor: var(--pointer);
 
