@@ -19,6 +19,7 @@ export function presentAIConversation(
     pinnedAt: conversation.pinnedAt,
     createdAt: conversation.createdAt,
     updatedAt: conversation.updatedAt,
-    ...(turns ? { turns } : {}),
+    // For "Resumed · started …": when the first turn was asked.
+    ...(turns ? { startedAt: conversation.createdAt, turns } : {}),
   };
 }

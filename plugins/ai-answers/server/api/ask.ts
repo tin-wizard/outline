@@ -7,7 +7,7 @@ import auth from "@server/middlewares/authentication";
 import { rateLimiter } from "@server/middlewares/rateLimiter";
 import timeout from "@server/middlewares/timeout";
 import validate from "@server/middlewares/validate";
-import { AIAnswerUsage, Collection, Document } from "@server/models";
+import { AIAnswerUsage, Document } from "@server/models";
 import type { AIAnswerOutcome } from "@server/models/AIAnswerUsage";
 import type { User } from "@server/models";
 import type { APIContext } from "@server/types";
@@ -47,7 +47,8 @@ import env from "../env";
 import { appendConversationTurn, getConversationForResume } from "../history";
 import { streamAnswer, type StreamProgress } from "../providers/anthropic";
 import { redactSecrets } from "../redact";
-import { retrieveSources, type AnswerSource } from "../retrieve";
+import { presentSourceDetails, type SourceDetails } from "../presenters/source";
+import { askScope, retrieveWithCounts, type AnswerSource } from "../retrieve";
 import { estimateUsage, record, reserveModelCall } from "../usage";
 import { AnswerVerifier, type AcceptedBlock } from "../verify";
 import * as T from "./schema";
@@ -61,19 +62,36 @@ export type AskFailure =
   | "unavailable"
   | "timeout"
   | "cancelled"
+  | "scope_forbidden"
   | "error";
+
+/** Extra facts about a failure; never names or ids of scoped content. */
+export interface AskFailureDetail {
+  /** For `budget` and `quota`: ISO time the limit resets (UTC). */
+  resetsAt?: string;
+}
 
 /** Why a `notice` status was sent. */
 export type AskNotice = "history_unavailable" | "conversation_new";
 
 /** A retrieved document as the client may show it. */
-export interface AskSource {
+export interface AskSource extends Partial<SourceDetails> {
   /** 1-based number, referenced by block citations. */
   n: number;
   documentId: string;
   title: string;
   url: string;
-  collectionName?: string;
+}
+
+/** How many documents retrieval looked at and used for one answer. */
+export interface AskRetrieval {
+  /**
+   * Readable, not AI-excluded candidates fetched before the cut, at most 20.
+   * Not the number of matching documents.
+   */
+  fetched: number;
+  /** Documents sent to the model (at most 5). */
+  used: number;
 }
 
 /** A citation of one released block. */
@@ -115,8 +133,9 @@ export interface AskEvents {
     timings: { retrievalMs: number; firstBlockMs?: number; totalMs: number };
     /** Blocks the verifier dropped from this answer; 0 when all were kept. */
     dropped: number;
+    retrieval: AskRetrieval;
   };
-  failed: { reason: AskFailure; partial: boolean };
+  failed: { reason: AskFailure; partial: boolean; detail?: AskFailureDetail };
 }
 
 /** Comment line that keeps proxies and the socket idle timeout from closing a quiet stream. */
@@ -218,39 +237,60 @@ function openEventStream(ctx: APIContext<T.AIAskReq>) {
 }
 
 /**
+ * When a monthly workspace budget (UTC calendar month) or a daily user quota
+ * (UTC calendar day) resets.
+ *
+ * @param reason the limit that was reached.
+ * @param now the current time.
+ * @returns the ISO time of the next UTC month or day start.
+ */
+export function limitResetsAt(
+  reason: "budget" | "quota",
+  now = new Date()
+): string {
+  const [year, month, day] = [
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate(),
+  ];
+  return new Date(
+    reason === "budget"
+      ? Date.UTC(year, month + 1, 1)
+      : Date.UTC(year, month, day + 1)
+  ).toISOString();
+}
+
+/** True for the error raised when a scoped collection or document is not readable. */
+function isAuthorizationError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "id" in error &&
+    error.id === "authorization_error"
+  );
+}
+
+/**
  * The sources as the client may show them: redacted titles, urls built from
- * the redacted title, and collection names only for collections the user is a
- * member of. Reads tenant data, so it runs before the transaction is released.
+ * the redacted title, and details (collection only when accessible, last
+ * editor only when visible). Reads tenant data, so it runs before the
+ * transaction is released.
  */
 async function presentSources(
   user: User,
   sources: AnswerSource[]
 ): Promise<AskSource[]> {
-  const memberOf = new Set(await user.collectionIds());
-  const ids = [...new Set(sources.map((s) => s.document.collectionId))].filter(
-    (id): id is string => !!id && memberOf.has(id)
-  );
-  const names = new Map(
-    ids.length > 0
-      ? (
-          await Collection.findAll({
-            where: { id: ids, teamId: user.teamId },
-            attributes: ["id", "name"],
-          })
-        ).map((c) => [c.id, redactSecrets(c.name).text])
-      : []
+  const details = await presentSourceDetails(
+    user,
+    sources.map((s) => s.document)
   );
   return sources.map((s, i) => {
     const title = redactSecrets(s.document.title || "Untitled").text;
-    const collectionName = s.document.collectionId
-      ? names.get(s.document.collectionId)
-      : undefined;
     return {
       n: i + 1,
       documentId: s.document.id,
       title,
       url: Document.getPath({ title, urlId: s.document.urlId }),
-      ...(collectionName ? { collectionName } : {}),
+      ...details.get(s.document.id),
     };
   });
 }
@@ -298,7 +338,8 @@ router.post(
   timeout(clampAskDeadline(env.AI_ASK_DEADLINE_MS) + REQUEST_HEADROOM_MS),
   async (ctx: APIContext<T.AIAskReq>) => {
     const { user } = ctx.state.auth;
-    const { query, conversationId, collectionId, documentId } = ctx.input.body;
+    const { query, conversationId } = ctx.input.body;
+    const scope = askScope(ctx.input.body);
 
     assertAIAnswersAllowed(user);
 
@@ -354,6 +395,8 @@ router.post(
       const minted = id !== conversationId;
       // Blocks the verifier dropped (counted while streaming).
       let dropped = 0;
+      // Set once retrieval ran; every stored turn has it.
+      let retrieval: AskRetrieval = { fetched: 0, used: 0 };
       if (id) {
         stream.send("conversation", { id });
       }
@@ -384,11 +427,11 @@ router.post(
       const finish = async (
         released: AcceptedBlock[],
         end:
-          | { failed: AskFailure }
+          | { failed: AskFailure; detail?: AskFailureDetail }
           | {
               done: Omit<
                 AskEvents["done"],
-                "conversationId" | "usageId" | "dropped"
+                "conversationId" | "usageId" | "dropped" | "retrieval"
               >;
             }
       ) => {
@@ -415,12 +458,19 @@ router.post(
                 outcome: "failed" in end ? end.failed : "answered",
                 usageId,
                 droppedSegments: dropped,
+                scope,
+                retrieval,
+                timings: "done" in end ? end.done.timings : undefined,
               })
             : null;
           stored = cached || persisted === id;
         }
         if ("failed" in end) {
-          stream.send("failed", { reason: end.failed, partial: emitted > 0 });
+          stream.send("failed", {
+            reason: end.failed,
+            partial: emitted > 0,
+            ...(end.detail ? { detail: end.detail } : {}),
+          });
         } else {
           // Only claim a conversation the turn was really stored in.
           stream.send("done", {
@@ -428,6 +478,7 @@ router.post(
             conversationId: stored ? id : null,
             usageId,
             dropped,
+            retrieval,
           });
         }
       };
@@ -439,13 +490,21 @@ router.post(
       let sources: AnswerSource[];
       try {
         // The standalone query only drives retrieval; the model gets `query`.
-        sources = await retrieveSources(
+        const found = await retrieveWithCounts(
           user,
-          { query: standalone, collectionId, documentId },
+          { ...ctx.input.body, query: standalone },
           clientGone.signal
         );
+        sources = found.sources;
+        retrieval = { fetched: found.candidatesFetched, used: sources.length };
       } catch (error) {
         if (clientGone.signal.aborted) {
+          return;
+        }
+        // An unreadable, unknown or foreign scope id: one reason for all,
+        // naming nothing, and nothing is stored since retrieval never ran.
+        if (isAuthorizationError(error)) {
+          stream.send("failed", { reason: "scope_forbidden", partial: false });
           return;
         }
         throw error;
@@ -524,10 +583,12 @@ router.post(
             outcome: reason === "budget" ? "budget_blocked" : "quota_blocked",
           });
         }
-        await finish([], {
-          failed:
-            reason === "budget" || reason === "quota" ? reason : "unavailable",
-        });
+        await finish(
+          [],
+          reason === "budget" || reason === "quota"
+            ? { failed: reason, detail: { resetsAt: limitResetsAt(reason) } }
+            : { failed: "unavailable" }
+        );
         return;
       }
 
@@ -685,7 +746,9 @@ router.post(
   }
 );
 
-// Rates one answer. Stores only the rating and its time, never any text. The
+// Rates one answer. Stores the rating, its time and, with a "down" rating,
+// an optional reason and the asker's redacted comment; never answer text. A
+// plain "down" keeps an earlier report; "up" and "clear" remove it. The
 // explicit team and asker WHERE below is the protection: row-level security
 // only covers reads routed through the request transaction, and the
 // production database role bypasses it.
@@ -696,13 +759,27 @@ router.post(
   validate(T.AIFeedbackSchema),
   async (ctx: APIContext<T.AIFeedbackReq>) => {
     const { user } = ctx.state.auth;
-    const { usageId, rating } = ctx.input.body;
+    const { usageId, rating, reason, comment } = ctx.input.body;
 
     assertAIAnswersAllowed(user);
 
     const feedback = rating === "up" ? 1 : rating === "down" ? -1 : null;
+    const reported = reason !== undefined || comment !== undefined;
+    // Redaction may lengthen the text; the column holds at most 500 characters.
+    const redacted = comment
+      ? [...redactSecrets(comment).text].slice(0, 500).join("").trim()
+      : "";
     const [updated] = await AIAnswerUsage.update(
-      { feedback, feedbackAt: feedback === null ? null : new Date() },
+      {
+        feedback,
+        feedbackAt: feedback === null ? null : new Date(),
+        ...(feedback !== -1 || reported
+          ? {
+              feedbackReason: reason ?? null,
+              feedbackComment: redacted || null,
+            }
+          : {}),
+      },
       { where: { id: usageId, teamId: user.teamId, userId: user.id } }
     );
     // Same answer for a missing row and someone else's row.

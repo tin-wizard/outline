@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { http, HttpResponse } from "msw";
 import { Transaction } from "sequelize";
 import { vi } from "vitest";
@@ -44,6 +45,7 @@ import {
   clampAskDeadline,
   clampAskIdle,
   HEARTBEAT_MS,
+  limitResetsAt,
   streamLimits,
 } from "./ask";
 
@@ -333,6 +335,16 @@ async function askEvents(user: User, body?: Record<string, unknown>) {
 
 const cited = { text: FACT, citations: [{ quote: FACT }] };
 
+const nextUtcMonth = (now = new Date()) =>
+  new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)
+  ).toISOString();
+
+const nextUtcDay = (now = new Date()) =>
+  new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)
+  ).toISOString();
+
 describe("#ai.ask", () => {
   it("requires authentication", async () => {
     const res = await server.post("/api/ai.ask", {
@@ -408,7 +420,7 @@ describe("#ai.ask", () => {
     });
 
     it("streams conversation, status, sources, blocks and done in order", async () => {
-      const { user, document } = await setup();
+      const { user, collection, document } = await setup();
       const bodies = upstream(() => anthropicEvents([cited]));
       const res = await ask(user);
 
@@ -435,7 +447,12 @@ describe("#ai.ask", () => {
           documentId: document.id,
           title: "Holidays",
           url: `/doc/holidays-${document.urlId}`,
+          collectionId: document.collectionId,
           collectionName: "People",
+          ...(collection.color ? { collectionColor: collection.color } : {}),
+          updatedAt: document.updatedAt.toISOString(),
+          updatedByName: user.name,
+          publishedAt: document.publishedAt?.toISOString(),
         },
       ]);
       expect(events[3].data).toEqual({ phase: "generating" });
@@ -458,6 +475,7 @@ describe("#ai.ask", () => {
       expect(done.usage).toEqual({ inputTokens: 100, outputTokens: 50 });
       expect(done.timings.totalMs).toBeGreaterThanOrEqual(0);
       expect(done.timings.firstBlockMs).toBeGreaterThanOrEqual(0);
+      expect(done.retrieval).toEqual({ fetched: 1, used: 1 });
 
       // The model got the structured prompt and streaming.
       const sent = bodies[0] as { system: string; stream: boolean };
@@ -656,7 +674,11 @@ describe("#ai.ask", () => {
       const events = await askEvents(user);
       expect(events.at(-1)).toEqual({
         event: "failed",
-        data: { reason: "budget", partial: false },
+        data: {
+          reason: "budget",
+          partial: false,
+          detail: { resetsAt: nextUtcMonth() },
+        },
       });
       expect(bodies).toHaveLength(0);
       const rows = await rowsFor(user.teamId);
@@ -683,7 +705,11 @@ describe("#ai.ask", () => {
       const events = await askEvents(user);
       expect(events.at(-1)).toEqual({
         event: "failed",
-        data: { reason: "quota", partial: false },
+        data: {
+          reason: "quota",
+          partial: false,
+          detail: { resetsAt: nextUtcDay() },
+        },
       });
       expect(bodies).toHaveLength(0);
       const rows = await rowsFor(user.teamId);
@@ -1651,6 +1677,141 @@ describe("#ai.ask", () => {
     });
   });
 
+  describe("scope", () => {
+    it("rejects too many scope ids, bad dates and an inverted range with 400, without a model call", async () => {
+      const { user } = await setup();
+      const bodies = upstream(() => anthropicEvents([cited]));
+      const ids = (n: number) => Array.from({ length: n }, () => randomUUID());
+      for (const extra of [
+        { collectionIds: ids(11) },
+        { collectionIds: ids(10), collectionId: randomUUID() },
+        { documentIds: ids(21) },
+        { documentIds: ids(20), documentId: randomUUID() },
+        { collectionIds: ["nope"] },
+        { dateFrom: "2026-13-01" },
+        { dateFrom: "yesterday" },
+        { dateFrom: "2026-10-02", dateTo: "2026-10-01" },
+      ]) {
+        const res = await ask(user, { query: "holiday", ...extra });
+        expect(res.status).toEqual(400);
+      }
+      expect(bodies).toHaveLength(0);
+    });
+
+    it("answers within several collections and documents", async () => {
+      const { user, collection, document } = await setup();
+      const other = await buildCollection({
+        teamId: user.teamId,
+        userId: user.id,
+      });
+      upstream(() => anthropicEvents([cited]));
+      const events = await askEvents(user, {
+        query: "How many days of holiday?",
+        collectionIds: [collection.id, other.id],
+        documentIds: [document.id],
+        dateFrom: "2000-01-01",
+      });
+      expect(events.at(-1)?.event).toEqual("done");
+      const sources = events.find((e) => e.event === "sources");
+      expect(
+        sources?.data.map((s: { documentId: string }) => s.documentId)
+      ).toEqual([document.id]);
+    });
+
+    it.each([
+      ["an unreadable collection", "collectionIds"],
+      ["an unreadable document", "documentIds"],
+      ["another workspace's collection", "collectionIds"],
+      ["an unknown document", "documentIds"],
+    ])(
+      "fails with scope_forbidden for %s, naming nothing and storing nothing",
+      async (label, field) => {
+        const { user, collection } = await setup();
+        const bodies = upstream(() => anthropicEvents([cited]));
+        const owner = await buildUser({ teamId: user.teamId });
+        const secret = await buildCollection({
+          teamId: user.teamId,
+          userId: owner.id,
+          permission: null,
+          name: "Board Minutes",
+        });
+        const hidden = await buildDocument({
+          teamId: user.teamId,
+          userId: owner.id,
+          collectionId: secret.id,
+          title: "Salaries",
+        });
+        const foreign = await buildCollection({ name: "Elsewhere" });
+        const id = label.startsWith("an unreadable collection")
+          ? secret.id
+          : label.startsWith("an unreadable document")
+            ? hidden.id
+            : label.startsWith("another")
+              ? foreign.id
+              : randomUUID();
+        const res = await ask(user, {
+          query: "How many days of holiday?",
+          ...(field === "collectionIds"
+            ? { collectionIds: [collection.id, id] }
+            : { documentIds: [id] }),
+        });
+        expect(res.status).toEqual(200);
+        const text = await res.text();
+        const { events } = parseSse(text);
+        expect(events.at(-1)).toEqual({
+          event: "failed",
+          data: { reason: "scope_forbidden", partial: false },
+        });
+        expect(events.some((e) => e.event === "sources")).toBe(false);
+        for (const name of ["Board Minutes", "Salaries", "Elsewhere", id]) {
+          expect(text).not.toContain(name);
+        }
+        expect(bodies).toHaveLength(0);
+        expect(await rowsFor(user.teamId)).toHaveLength(0);
+        expect(
+          await AIConversationTurn.count({ where: { userId: user.id } })
+        ).toEqual(0);
+      }
+    );
+
+    it("stores the scope, timings and retrieval counts with the turn", async () => {
+      const { user, collection, document } = await setup();
+      upstream(() => anthropicEvents([cited]));
+      const events = await askEvents(user, {
+        query: "How many days of holiday?",
+        collectionId: collection.id,
+        documentIds: [document.id, document.id],
+        dateFrom: "2000-01-01",
+        dateTo: "2999-12-31",
+      });
+      const done = events.at(-1);
+      expect(done?.event).toEqual("done");
+      const [turn] = await turnsOf(events[0].data.id);
+      expect(turn.scope).toEqual({
+        collectionIds: [collection.id],
+        documentIds: [document.id],
+        dateFrom: "2000-01-01",
+        dateTo: "2999-12-31",
+      });
+      expect(turn.totalMs).toEqual(done?.data.timings.totalMs);
+      expect(turn.firstBlockMs).toEqual(done?.data.timings.firstBlockMs);
+      expect(turn.retrievalFetched).toEqual(1);
+      expect(turn.retrievalUsed).toEqual(1);
+    });
+
+    it("stores no scope or timings for an unscoped turn that found nothing", async () => {
+      const { user } = await setup();
+      upstream(() => anthropicEvents([cited]));
+      const events = await askEvents(user, { query: "zebra migration" });
+      expect(events.at(-1)?.data.reason).toEqual("no_answer");
+      const [turn] = await turnsOf(events[0].data.id);
+      expect(turn.scope).toBeNull();
+      expect(turn.totalMs).toBeNull();
+      expect(turn.retrievalFetched).toEqual(0);
+      expect(turn.retrievalUsed).toEqual(0);
+    });
+  });
+
   it("never sends or emits planted secrets from a document or the query", async () => {
     const user = await enable(await buildUser());
     // Synthetic values assembled at runtime so no real-looking secret is committed.
@@ -1684,6 +1845,17 @@ describe("#ai.ask", () => {
       expect(text).not.toContain(secret);
     }
     expect(text.toLowerCase()).not.toContain("wq7wq7wq7");
+  });
+});
+
+describe("limitResetsAt", () => {
+  it("resets the budget at the next UTC month and the quota at the next UTC day", () => {
+    const late = new Date("2026-12-31T23:30:00-05:00"); // 2027-01-01T04:30Z
+    expect(limitResetsAt("budget", late)).toEqual("2027-02-01T00:00:00.000Z");
+    expect(limitResetsAt("quota", late)).toEqual("2027-01-02T00:00:00.000Z");
+    const dec = new Date("2026-12-31T12:00:00Z");
+    expect(limitResetsAt("budget", dec)).toEqual("2027-01-01T00:00:00.000Z");
+    expect(limitResetsAt("quota", dec)).toEqual("2027-01-01T00:00:00.000Z");
   });
 });
 

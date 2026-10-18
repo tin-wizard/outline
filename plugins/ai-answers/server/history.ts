@@ -5,11 +5,12 @@ import type { User } from "@server/models";
 import type {
   StoredBlock,
   StoredCitation,
+  StoredScope,
 } from "@server/models/AIConversationTurn";
 import { sequelize } from "@server/storage/database";
 import { isHistoryEnabled } from "./access";
 import { safeCitationTarget } from "./anchors";
-import type { AskCitation, AskSource } from "./api/ask";
+import type { AskCitation, AskRetrieval, AskSource } from "./api/ask";
 import { blockToMarkdown } from "./blocks";
 import {
   MAX_ANSWER_CHARS,
@@ -21,7 +22,12 @@ import {
   type Conversation,
 } from "./conversation";
 import env from "./env";
+import {
+  accessibleCollections,
+  presentSourceDetails,
+} from "./presenters/source";
 import { redactSecrets } from "./redact";
+import { MAX_SCOPE_COLLECTIONS, MAX_SCOPE_DOCUMENTS } from "./retrieve";
 import type { AcceptedBlock } from "./verify";
 
 /** Days a conversation is kept after its last activity, unless configured. */
@@ -33,8 +39,17 @@ export const MAX_STORED_TURNS = 100;
 /** Longest conversation title, in characters. */
 export const MAX_TITLE_CHARS = 80;
 
-/** Largest dropped-block count stored (smallint column). */
-const MAX_DROPPED = 32_767;
+/** Largest value of a smallint column. */
+const MAX_SMALLINT = 32_767;
+
+/** Largest value of an integer column. */
+const MAX_INTEGER = 2_147_483_647;
+
+/** A whole number clamped to [0, max]; null when not a finite number. */
+const clampCount = (value: number | undefined, max: number) =>
+  value === undefined || !Number.isFinite(value)
+    ? null
+    : Math.min(Math.max(Math.trunc(value), 0), max);
 
 /** What `ai.ask` hands over to store a turn: never free-form model text. */
 export interface StoreTurnInput {
@@ -59,6 +74,32 @@ export interface StoreTurnInput {
   outcome: string;
   /** The metered usage row of the answer, if any. */
   usageId: string | null;
+  /** The scope the question was asked in (ids only; already authorised). */
+  scope?: StoredScope;
+  /** Candidates fetched and documents used by retrieval. */
+  retrieval?: AskRetrieval;
+  /** Timings of an answered turn. */
+  timings?: { totalMs: number; firstBlockMs?: number };
+}
+
+/** A scoped collection; `name` only while the reader can access it. */
+export interface PresentedScopeCollection {
+  id: string;
+  name?: string;
+}
+
+/** A scoped document; `title` only while the reader can read it. */
+export interface PresentedScopeDocument {
+  id: string;
+  title?: string;
+}
+
+/** The scope of a stored turn, re-authorised for the reader. */
+export interface PresentedScope {
+  collections: PresentedScopeCollection[];
+  documents: PresentedScopeDocument[];
+  dateFrom?: string;
+  dateTo?: string;
 }
 
 /** A stored block that may no longer be shown. */
@@ -89,6 +130,12 @@ export interface PresentedTurn {
   blocks: (VisibleBlock | HiddenBlock)[];
   /** True when the turn cites a document the reader can no longer read. */
   hasHiddenBlocks: boolean;
+  /** The scope the question was asked in, when it had one. */
+  scope?: PresentedScope;
+  /** Timings of an answered turn, when stored. */
+  timings?: { totalMs: number; firstBlockMs?: number };
+  /** Retrieval counts, when stored. */
+  retrieval?: AskRetrieval;
 }
 
 /**
@@ -202,10 +249,13 @@ export async function appendConversationTurn(
           citedDocumentIds,
           outcome: input.outcome,
           usageId: input.usageId,
-          droppedSegments: Math.min(
-            Math.max(Math.trunc(input.droppedSegments ?? 0), 0),
-            MAX_DROPPED
-          ),
+          droppedSegments:
+            clampCount(input.droppedSegments ?? 0, MAX_SMALLINT) ?? 0,
+          scope: storedScope(input.scope),
+          totalMs: clampCount(input.timings?.totalMs, MAX_INTEGER),
+          firstBlockMs: clampCount(input.timings?.firstBlockMs, MAX_INTEGER),
+          retrievalFetched: clampCount(input.retrieval?.fetched, MAX_SMALLINT),
+          retrievalUsed: clampCount(input.retrieval?.used, MAX_SMALLINT),
         },
         { transaction }
       );
@@ -321,10 +371,18 @@ export async function presentTurns(
   user: User,
   turns: AIConversationTurn[]
 ): Promise<PresentedTurn[]> {
-  const readable = await readableDocuments(
-    user,
-    turns.flatMap((t) => t.citedDocumentIds)
-  );
+  const scopes = turns.map((t) => t.scope).filter((x) => !!x);
+  const readable = await readableDocuments(user, [
+    ...turns.flatMap((t) => t.citedDocumentIds),
+    ...scopes.flatMap((x) => x.documentIds),
+  ]);
+  const [details, collections] = await Promise.all([
+    presentSourceDetails(user, [...readable.values()]),
+    accessibleCollections(
+      user,
+      scopes.flatMap((x) => x.collectionIds)
+    ),
+  ]);
   return turns.map((turn) => {
     const sources: AskSource[] = [];
     const sourceOf = (documentId: string): AskSource => {
@@ -339,6 +397,7 @@ export async function presentTurns(
         documentId,
         title,
         url: Document.getPath({ title, urlId: document?.urlId ?? "" }),
+        ...details.get(documentId),
       };
       sources.push(source);
       return source;
@@ -387,8 +446,71 @@ export async function presentTurns(
       sources,
       blocks,
       hasHiddenBlocks: blocks.some((b) => "hidden" in b),
+      ...(turn.scope
+        ? {
+            scope: {
+              collections: turn.scope.collectionIds.map((id) => {
+                const name = collections.get(id)?.name;
+                return name ? { id, name } : { id };
+              }),
+              documents: turn.scope.documentIds.map((id) => {
+                const document = readable.get(id);
+                return document
+                  ? {
+                      id,
+                      title: redactSecrets(document.title || "Untitled").text,
+                    }
+                  : { id };
+              }),
+              ...(turn.scope.dateFrom ? { dateFrom: turn.scope.dateFrom } : {}),
+              ...(turn.scope.dateTo ? { dateTo: turn.scope.dateTo } : {}),
+            },
+          }
+        : {}),
+      ...(turn.totalMs !== null
+        ? {
+            timings: {
+              totalMs: turn.totalMs,
+              ...(turn.firstBlockMs !== null
+                ? { firstBlockMs: turn.firstBlockMs }
+                : {}),
+            },
+          }
+        : {}),
+      ...(turn.retrievalFetched !== null && turn.retrievalUsed !== null
+        ? {
+            retrieval: {
+              fetched: turn.retrievalFetched,
+              used: turn.retrievalUsed,
+            },
+          }
+        : {}),
     };
   });
+}
+
+/**
+ * The scope as stored: valid ids only, capped, dates kept as given; null
+ * when nothing is scoped.
+ */
+function storedScope(scope: StoredScope | undefined): StoredScope | null {
+  if (!scope) {
+    return null;
+  }
+  const ids = (list: string[], max: number) =>
+    [...new Set(list.filter((id) => isUUID(id)))].slice(0, max);
+  const stored: StoredScope = {
+    collectionIds: ids(scope.collectionIds, MAX_SCOPE_COLLECTIONS),
+    documentIds: ids(scope.documentIds, MAX_SCOPE_DOCUMENTS),
+    ...(scope.dateFrom ? { dateFrom: scope.dateFrom } : {}),
+    ...(scope.dateTo ? { dateTo: scope.dateTo } : {}),
+  };
+  const empty =
+    stored.collectionIds.length === 0 &&
+    stored.documentIds.length === 0 &&
+    !stored.dateFrom &&
+    !stored.dateTo;
+  return empty ? null : stored;
 }
 
 /**

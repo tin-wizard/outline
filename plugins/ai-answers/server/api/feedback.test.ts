@@ -125,6 +125,131 @@ describe("#ai.feedback", () => {
     expect((await reload(row.id)).feedback).toBeNull();
   });
 
+  describe("report reasons", () => {
+    const report = (user: User, body: Record<string, unknown>) =>
+      server.post("/api/ai.feedback", user, { body });
+    // Synthetic, assembled at runtime so the repository holds no credential-like literal.
+    const secret = "sk-ant-" + "api03-" + "c".repeat(30);
+
+    it("stores a reason and a redacted, trimmed comment with a down rating", async () => {
+      const user = await enable(await buildUser());
+      const row = await buildRow(user);
+      const res = await report(user, {
+        usageId: row.id,
+        rating: "down",
+        reason: "outdated",
+        comment: `  The policy changed in 2026, see ${secret}  `,
+      });
+      expect(res.status).toEqual(200);
+      expect((await res.json()).success).toEqual(true);
+      const saved = await reload(row.id);
+      expect(saved.feedback).toEqual(-1);
+      expect(saved.feedbackReason).toEqual("outdated");
+      expect(saved.feedbackComment).not.toContain(secret);
+      expect(saved.feedbackComment).toContain("[REDACTED:");
+      expect(saved.feedbackComment?.startsWith("The policy changed")).toBe(
+        true
+      );
+    });
+
+    it("keeps an earlier report on a plain down, and clears it on up or clear", async () => {
+      const user = await enable(await buildUser());
+      const row = await buildRow(user);
+      await report(user, {
+        usageId: row.id,
+        rating: "down",
+        reason: "inaccurate",
+        comment: "Wrong number",
+      });
+      expect((await rate(user, row.id, "down")).status).toEqual(200);
+      let saved = await reload(row.id);
+      expect(saved.feedbackReason).toEqual("inaccurate");
+      expect(saved.feedbackComment).toEqual("Wrong number");
+
+      // A new report replaces reason and comment together.
+      await report(user, { usageId: row.id, rating: "down", reason: "other" });
+      saved = await reload(row.id);
+      expect(saved.feedbackReason).toEqual("other");
+      expect(saved.feedbackComment).toBeNull();
+
+      for (const rating of ["up", "clear"]) {
+        await report(user, {
+          usageId: row.id,
+          rating: "down",
+          reason: "incomplete",
+          comment: "x",
+        });
+        expect((await rate(user, row.id, rating)).status).toEqual(200);
+        saved = await reload(row.id);
+        expect(saved.feedbackReason).toBeNull();
+        expect(saved.feedbackComment).toBeNull();
+      }
+    });
+
+    it("rejects an unknown reason, an oversized comment, and a report with up or clear", async () => {
+      const user = await enable(await buildUser());
+      const row = await buildRow(user);
+      for (const body of [
+        { rating: "down", reason: "rude" },
+        { rating: "down", reason: "" },
+        { rating: "down", comment: "a".repeat(501) },
+        { rating: "down", comment: 42 },
+        { rating: "up", reason: "inaccurate" },
+        { rating: "clear", comment: "hi" },
+      ]) {
+        expect(
+          (await report(user, { usageId: row.id, ...body })).status
+        ).toEqual(400);
+      }
+      const saved = await reload(row.id);
+      expect(saved.feedback).toBeNull();
+      expect(saved.feedbackReason).toBeNull();
+      expect(saved.feedbackComment).toBeNull();
+    });
+
+    it("accepts a 500-character comment and caps it at 500 after redaction", async () => {
+      const user = await enable(await buildUser());
+      const row = await buildRow(user);
+      const comment = `${secret} ${"b".repeat(500 - secret.length - 1)}`;
+      expect(comment).toHaveLength(500);
+      const res = await report(user, {
+        usageId: row.id,
+        rating: "down",
+        reason: "other",
+        comment,
+      });
+      expect(res.status).toEqual(200);
+      const saved = await reload(row.id);
+      expect([...(saved.feedbackComment ?? "")].length).toBeLessThanOrEqual(
+        500
+      );
+      expect(saved.feedbackComment).not.toContain(secret);
+    });
+
+    it("only changes the asker's own row and never returns comments", async () => {
+      const user = await enable(await buildUser());
+      const other = await buildUser({ teamId: user.teamId });
+      const row = await buildRow(user);
+      await report(user, {
+        usageId: row.id,
+        rating: "down",
+        reason: "inaccurate",
+        comment: "Mine",
+      });
+      const res = await report(other, {
+        usageId: row.id,
+        rating: "down",
+        reason: "other",
+        comment: "Theirs",
+      });
+      expect(res.status).toEqual(404);
+      expect(await res.text()).not.toContain("Mine");
+      const saved = await reload(row.id);
+      expect(saved.feedbackReason).toEqual("inaccurate");
+      expect(saved.feedbackComment).toEqual("Mine");
+    });
+  });
+
   it("lets an admin rate their own row", async () => {
     const admin = await enable(await buildAdmin());
     const row = await buildRow(admin);
