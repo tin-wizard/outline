@@ -624,7 +624,11 @@ describe("#ai.ask", () => {
       });
       expect(bodies).toHaveLength(0);
       const rows = await rowsFor(user.teamId);
-      expect(rows.map((r) => [r.outcome, r.costMicroUsd]).sort()).toEqual([
+      expect(
+        rows
+          .map((r) => [r.outcome, r.costMicroUsd])
+          .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+      ).toEqual([
         ["answered", "2000000"],
         ["quota_blocked", "0"],
       ]);

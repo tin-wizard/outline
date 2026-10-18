@@ -413,7 +413,7 @@ describe("per-user daily quota", () => {
     );
     await addRow(team.id, 800, new Date(Date.UTC(2026, 9, 17, 0)), user.id);
     await addRow(team.id, 1600, now, peer.id);
-    await addRow(other.id, 3200, now, null);
+    await addRow(other.id, 3200, now, user.id);
     expect(await getUserDailySpendMicroUsd(team.id, user.id, now)).toEqual(300);
   });
 

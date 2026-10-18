@@ -384,7 +384,10 @@ export async function reserveModelCall(
       return { ok: false, reason: "budget" };
     }
     if (await isOverUserQuota(teamId, userId)) {
-      Logger.warn("AI answers refused: user daily limit reached", { teamId });
+      Logger.warn("AI answers refused: user daily limit reached", {
+        teamId,
+        userId,
+      });
       return { ok: false, reason: "quota" };
     }
     const token = await acquireSlot(teamId);

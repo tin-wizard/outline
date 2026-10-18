@@ -222,7 +222,8 @@ export function fetchTool(server: McpServer, scopes: string[]) {
             }
 
             // An attachment of a document in an AI-excluded collection answers
-            // like a missing one (the error rejectOnEmpty throws above).
+            // like a missing one (rejectOnEmpty throws an EmptyResultError with an
+            // empty message).
             const parent = attachment.documentId
               ? await Document.unscoped().findOne({
                   where: { id: attachment.documentId },
@@ -231,7 +232,7 @@ export function fetchTool(server: McpServer, scopes: string[]) {
                 })
               : null;
             if (await isAIExcluded(actor, parent?.collectionId)) {
-              throw new EmptyResultError();
+              throw new EmptyResultError("");
             }
 
             return success({
