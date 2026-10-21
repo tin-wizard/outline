@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CollectionPermission, UserRole } from "@shared/types";
 import { BaseSchema } from "@server/routes/api/schema";
 
 export const OpsTeamCreateSchema = BaseSchema.extend({
@@ -58,4 +59,78 @@ export const OpsUserSetPlatformAdminSchema = BaseSchema.extend({
 
 export type OpsUserSetPlatformAdminSchemaReq = z.infer<
   typeof OpsUserSetPlatformAdminSchema
+>;
+
+export const OpsUsersListSchema = BaseSchema.extend({
+  body: z.object({
+    /** Optional case-insensitive search across user name and email */
+    query: z.string().optional(),
+    /** Optional workspace ID to restrict results to a single tenant */
+    teamId: z.string().uuid().optional(),
+    /** Optional workspace role to restrict results to */
+    role: z.enum(UserRole).optional(),
+  }),
+});
+
+export type OpsUsersListSchemaReq = z.infer<typeof OpsUsersListSchema>;
+
+export const OpsUserSetRoleSchema = BaseSchema.extend({
+  body: z.object({
+    /** The ID of the user to update */
+    userId: z.string().uuid(),
+    /** The workspace role to assign to the user */
+    role: z.enum(UserRole),
+  }),
+});
+
+export type OpsUserSetRoleSchemaReq = z.infer<typeof OpsUserSetRoleSchema>;
+
+export const OpsCollectionsListSchema = BaseSchema.extend({
+  body: z.object({
+    /** Optional case-insensitive search across collection names */
+    query: z.string().optional(),
+    /** Optional workspace ID to restrict results to a single tenant */
+    teamId: z.string().uuid().optional(),
+  }),
+});
+
+export type OpsCollectionsListSchemaReq = z.infer<
+  typeof OpsCollectionsListSchema
+>;
+
+export const OpsCollectionIdSchema = BaseSchema.extend({
+  body: z.object({
+    /** The ID of the collection */
+    id: z.string().uuid(),
+  }),
+});
+
+export type OpsCollectionIdSchemaReq = z.infer<typeof OpsCollectionIdSchema>;
+
+export const OpsCollectionAddUserSchema = BaseSchema.extend({
+  body: z.object({
+    /** The ID of the collection */
+    id: z.string().uuid(),
+    /** The ID of the user to add, who must belong to the collection's workspace */
+    userId: z.string().uuid(),
+    /** The permission to grant, defaults to the user's default permission */
+    permission: z.enum(CollectionPermission).optional(),
+  }),
+});
+
+export type OpsCollectionAddUserSchemaReq = z.infer<
+  typeof OpsCollectionAddUserSchema
+>;
+
+export const OpsCollectionRemoveUserSchema = BaseSchema.extend({
+  body: z.object({
+    /** The ID of the collection */
+    id: z.string().uuid(),
+    /** The ID of the user to remove from the collection */
+    userId: z.string().uuid(),
+  }),
+});
+
+export type OpsCollectionRemoveUserSchemaReq = z.infer<
+  typeof OpsCollectionRemoveUserSchema
 >;
