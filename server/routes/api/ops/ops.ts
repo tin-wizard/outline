@@ -297,7 +297,11 @@ router.post(
       User.findAll({
         where,
         include: [
-          { model: Team, as: "team", attributes: ["id", "name", "subdomain"] },
+          {
+            model: Team,
+            as: "team",
+            attributes: ["id", "name", "subdomain", "suspendedAt"],
+          },
         ],
         order: [
           ["name", "ASC"],
