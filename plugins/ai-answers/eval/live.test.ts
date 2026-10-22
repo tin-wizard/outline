@@ -9,7 +9,11 @@ import {
 } from "@server/test/factories";
 import { BlockSplitter, blockToMarkdown, type Block } from "../server/blocks";
 import type { FinishReason, Usage } from "../server/contract";
-import { streamAnswer, type AnswerClient } from "../server/providers/anthropic";
+import env from "../server/env";
+import {
+  createAnthropicStreamingProvider,
+  type AnswerClient,
+} from "../server/providers/anthropic";
 import { retrieveSources, type AnswerSource } from "../server/retrieve";
 import { AnswerVerifier } from "../server/verify";
 import cases from "./cases.json";
@@ -56,7 +60,10 @@ async function askOnce(
       }
     }
   };
-  for await (const event of streamAnswer(client, {
+  for await (const event of createAnthropicStreamingProvider(
+    client,
+    env.AI_ANSWERS_MODEL
+  ).stream({
     question,
     sources,
     history: [],

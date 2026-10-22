@@ -19,7 +19,6 @@ import {
   isHistoryEnabled,
 } from "../access";
 import { safeCitationTarget } from "../anchors";
-import { getClient } from "../anthropicClient";
 import {
   BlockSplitter,
   blockToMarkdown,
@@ -37,6 +36,7 @@ import {
   ZERO_USAGE,
   type AnswerMode,
   type FinishReason,
+  type StreamProgress,
   type Usage,
 } from "../contract";
 import {
@@ -50,7 +50,7 @@ import {
 } from "../conversation";
 import env from "../env";
 import { appendConversationTurn, getConversationForResume } from "../history";
-import { streamAnswer, type StreamProgress } from "../providers/anthropic";
+import { getProviders } from "../providers/registry";
 import { redactSecrets } from "../redact";
 import { presentSourceDetails, type SourceDetails } from "../presenters/source";
 import { askScope, retrieveWithCounts, type AnswerSource } from "../retrieve";
@@ -674,7 +674,7 @@ router.post(
         limits.touch();
         try {
           sent = true;
-          for await (const event of streamAnswer(getClient(), {
+          for await (const event of getProviders()[0].stream({
             question: query,
             sources,
             history,

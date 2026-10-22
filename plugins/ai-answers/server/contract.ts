@@ -1,3 +1,4 @@
+import type { HistoryTurn } from "./conversation";
 import type { AnswerSource } from "./retrieve";
 
 /** Token counts for one model call. */
@@ -73,6 +74,74 @@ export interface AnswerRequest {
   signal?: AbortSignal;
   /** Defaults to "answer". */
   mode?: AnswerMode;
+}
+
+/** One event of a streamed answer, before verification. */
+export type ProviderStreamEvent =
+  | {
+      type: "text";
+      /** The text of one finished content block. */
+      text: string;
+      /** The citations the provider attached to that content block. */
+      citations: ProviderCitation[];
+    }
+  | {
+      type: "end";
+      finishReason: FinishReason;
+      /** True when the model declined to answer (stop reason `refusal`). */
+      refused: boolean;
+      /** Null when the stream did not report final usage; callers must fail closed. */
+      usage: Usage | null;
+    };
+
+/** What a stream has produced so far, for billing a call that is cut short. */
+export interface StreamProgress {
+  /** Billed input tokens from `message_start`; null until it arrives. */
+  inputTokens: number | null;
+  /** Characters of answer text received so far. */
+  outputChars: number;
+  /** The provider and model that served the answer, once known. */
+  served?: { provider: string; model: string };
+}
+
+/** A streamed answer request: the original question plus prior turns. */
+export interface StreamRequest extends AnswerRequest {
+  /** Earlier turns, sent as quoted reference data, never as instructions. */
+  history: HistoryTurn[];
+  /** Called for every provider event, e.g. to reset an idle timer. */
+  onEvent?: () => void;
+  /** Updated as events arrive. */
+  progress?: StreamProgress;
+}
+
+/** Why a provider call failed, as far as failover is concerned. */
+export type ProviderErrorKind =
+  | "billing"
+  | "rate_limit"
+  | "overloaded"
+  | "network"
+  | "auth"
+  | "bad_request"
+  | "other";
+
+/** A model supplier that can stream a grounded answer. */
+export interface StreamingProvider {
+  readonly id: string;
+  readonly model: string;
+  /**
+   * Streams an answer for the request.
+   *
+   * @param request the question, sources, prior turns and abort signal.
+   * @returns the unverified text events, then one `end` event.
+   */
+  stream(request: StreamRequest): AsyncGenerator<ProviderStreamEvent>;
+  /**
+   * Classifies an error thrown by `stream`.
+   *
+   * @param error the thrown error.
+   * @returns the failure kind.
+   */
+  classify(error: Error): ProviderErrorKind;
 }
 
 /** The reply the model gives when the sources do not contain the answer. */

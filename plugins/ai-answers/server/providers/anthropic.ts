@@ -3,55 +3,38 @@ import {
   COMPARE_SYSTEM_PROMPT,
   MAX_OUTPUT_TOKENS,
   STRUCTURED_SYSTEM_PROMPT,
-  type AnswerRequest,
-  type FinishReason,
   type ProviderCitation,
-  type Usage,
+  type ProviderErrorKind,
+  type ProviderStreamEvent,
+  type StreamRequest,
+  type StreamingProvider,
 } from "../contract";
 import type { HistoryTurn } from "../conversation";
-import env from "../env";
 import { redactSecrets } from "../redact";
 import type { AnswerSource } from "../retrieve";
-
-/** One event of a streamed answer, before verification. */
-export type ProviderStreamEvent =
-  | {
-      type: "text";
-      /** The text of one finished content block. */
-      text: string;
-      /** The citations the provider attached to that content block. */
-      citations: ProviderCitation[];
-    }
-  | {
-      type: "end";
-      finishReason: FinishReason;
-      /** True when the model declined to answer (stop reason `refusal`). */
-      refused: boolean;
-      /** Null when the stream did not report final usage; callers must fail closed. */
-      usage: Usage | null;
-    };
-
-/** What a stream has produced so far, for billing a call that is cut short. */
-export interface StreamProgress {
-  /** Billed input tokens from `message_start`; null until it arrives. */
-  inputTokens: number | null;
-  /** Characters of answer text received so far. */
-  outputChars: number;
-}
-
-/** A streamed answer request: the original question plus prior turns. */
-export interface StreamRequest extends AnswerRequest {
-  /** Earlier turns, sent as quoted reference data, never as instructions. */
-  history: HistoryTurn[];
-  /** Called for every provider event, e.g. to reset an idle timer. */
-  onEvent?: () => void;
-  /** Updated as events arrive. */
-  progress?: StreamProgress;
-}
 
 /** The part of the SDK client this module needs; lets tests pass a fake. */
 export interface AnswerClient {
   messages: { create: Anthropic["messages"]["create"] };
+}
+
+/**
+ * Wraps an Anthropic client as a neutral streaming provider.
+ *
+ * @param client the Anthropic client.
+ * @param model the model id to request.
+ * @returns the provider; `classify` returns "other" until errors are classified.
+ */
+export function createAnthropicStreamingProvider(
+  client: AnswerClient,
+  model: string
+): StreamingProvider {
+  return {
+    id: "anthropic",
+    model,
+    stream: (request) => streamAnswer(client, model, request),
+    classify: (): ProviderErrorKind => "other",
+  };
 }
 
 /**
@@ -61,17 +44,19 @@ export interface AnswerClient {
  * Rejects when the signal aborts.
  *
  * @param client the Anthropic client.
+ * @param model the model id to request.
  * @param request the original question, sources, prior turns and abort signal.
  * @returns the unverified text events, then one `end` event.
  */
-export async function* streamAnswer(
+async function* streamAnswer(
   client: AnswerClient,
+  model: string,
   request: StreamRequest
 ): AsyncGenerator<ProviderStreamEvent> {
   const prior = historyText(request.history);
   const stream = await client.messages.create(
     {
-      model: env.AI_ANSWERS_MODEL,
+      model,
       max_tokens: MAX_OUTPUT_TOKENS,
       system:
         request.mode === "compare"
