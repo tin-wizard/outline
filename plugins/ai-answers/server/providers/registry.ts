@@ -3,6 +3,7 @@ import { getClient } from "../anthropicClient";
 import type { StreamingProvider } from "../contract";
 import env from "../env";
 import { createAnthropicStreamingProvider } from "./anthropic";
+import { createGoogleProvider } from "./google";
 
 /**
  * Parses a provider spec: a comma list of `id:model` in failover order.
@@ -47,4 +48,7 @@ export function getProviders(): StreamingProvider[] {
 
 const factories: Record<string, (model: string) => StreamingProvider> = {
   anthropic: (model) => createAnthropicStreamingProvider(getClient(), model),
+  // Off unless named in AI_ANSWERS_PROVIDERS; without GEMINI_API_KEY every call fails as auth.
+  google: (model) =>
+    createGoogleProvider(model, { apiKey: env.GEMINI_API_KEY }),
 };

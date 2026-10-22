@@ -26,6 +26,18 @@ describe("parseProviderSpec", () => {
     ]);
   });
 
+  it("accepts google entries", () => {
+    expect(
+      parseProviderSpec(
+        "anthropic:claude-sonnet-5-5,google:gemini-3.8-flash",
+        "m"
+      )
+    ).toEqual([
+      { id: "anthropic", model: "claude-sonnet-5-5" },
+      { id: "google", model: "gemini-3.8-flash" },
+    ]);
+  });
+
   it("returns nothing for an empty or all-unknown spec", () => {
     expect(parseProviderSpec("", "m")).toEqual([]);
     expect(parseProviderSpec("nope:x", "m")).toEqual([]);
@@ -34,9 +46,11 @@ describe("parseProviderSpec", () => {
 
 describe("getProviders", () => {
   const original = env.AI_ANSWERS_PROVIDERS;
+  const originalKey = env.GEMINI_API_KEY;
 
   afterEach(() => {
     env.AI_ANSWERS_PROVIDERS = original;
+    env.GEMINI_API_KEY = originalKey;
   });
 
   it("builds one anthropic provider with AI_ANSWERS_MODEL by default", () => {
@@ -55,5 +69,25 @@ describe("getProviders", () => {
       "claude-haiku-5-5",
       "claude-sonnet-5-5",
     ]);
+  });
+
+  it("builds a google provider only when named, failing closed as auth without a key", async () => {
+    env.AI_ANSWERS_PROVIDERS = undefined;
+    expect(getProviders().map(({ id }) => id)).toEqual(["anthropic"]);
+
+    env.AI_ANSWERS_PROVIDERS = "google:gemini-3.8-flash";
+    env.GEMINI_API_KEY = undefined;
+    const [google] = getProviders();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const error = await google
+      .stream({ question: "q", sources: [], history: [] })
+      .next()
+      .catch((e: Error) => e);
+
+    expect(google.id).toBe("google");
+    expect(error).toBeInstanceOf(Error);
+    expect(google.classify(error as Error)).toBe("auth");
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
   });
 });
