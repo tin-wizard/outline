@@ -1,57 +1,90 @@
 import type Anthropic from "@anthropic-ai/sdk";
+import { APIConnectionError, APIError } from "@anthropic-ai/sdk";
 import {
   COMPARE_SYSTEM_PROMPT,
   MAX_OUTPUT_TOKENS,
   STRUCTURED_SYSTEM_PROMPT,
-  type AnswerRequest,
-  type FinishReason,
   type ProviderCitation,
-  type Usage,
+  type ProviderErrorKind,
+  type ProviderStreamEvent,
+  type StreamRequest,
+  type StreamingProvider,
 } from "../contract";
 import type { HistoryTurn } from "../conversation";
-import env from "../env";
 import { redactSecrets } from "../redact";
 import type { AnswerSource } from "../retrieve";
-
-/** One event of a streamed answer, before verification. */
-export type ProviderStreamEvent =
-  | {
-      type: "text";
-      /** The text of one finished content block. */
-      text: string;
-      /** The citations the provider attached to that content block. */
-      citations: ProviderCitation[];
-    }
-  | {
-      type: "end";
-      finishReason: FinishReason;
-      /** True when the model declined to answer (stop reason `refusal`). */
-      refused: boolean;
-      /** Null when the stream did not report final usage; callers must fail closed. */
-      usage: Usage | null;
-    };
-
-/** What a stream has produced so far, for billing a call that is cut short. */
-export interface StreamProgress {
-  /** Billed input tokens from `message_start`; null until it arrives. */
-  inputTokens: number | null;
-  /** Characters of answer text received so far. */
-  outputChars: number;
-}
-
-/** A streamed answer request: the original question plus prior turns. */
-export interface StreamRequest extends AnswerRequest {
-  /** Earlier turns, sent as quoted reference data, never as instructions. */
-  history: HistoryTurn[];
-  /** Called for every provider event, e.g. to reset an idle timer. */
-  onEvent?: () => void;
-  /** Updated as events arrive. */
-  progress?: StreamProgress;
-}
 
 /** The part of the SDK client this module needs; lets tests pass a fake. */
 export interface AnswerClient {
   messages: { create: Anthropic["messages"]["create"] };
+}
+
+/**
+ * Wraps an Anthropic client as a neutral streaming provider.
+ *
+ * @param client the Anthropic client.
+ * @param model the model id to request.
+ * @returns the provider.
+ */
+export function createAnthropicStreamingProvider(
+  client: AnswerClient,
+  model: string
+): StreamingProvider {
+  return {
+    id: "anthropic",
+    model,
+    stream: (request) => streamAnswer(client, model, request),
+    classify: classifyAnthropicError,
+  };
+}
+
+/**
+ * Classifies an error thrown by the Anthropic SDK for failover. Billing is
+ * matched on the body's error type, code and message before status, because
+ * Anthropic reports an exhausted credit balance as a 400.
+ *
+ * @param error the thrown error.
+ * @returns the failure kind.
+ */
+export function classifyAnthropicError(error: Error): ProviderErrorKind {
+  if (error instanceof APIConnectionError) {
+    return "network";
+  }
+  if (!(error instanceof APIError)) {
+    const code = "code" in error ? error.code : undefined;
+    return code === "ECONNRESET" || error.message.includes("fetch failed")
+      ? "network"
+      : "other";
+  }
+  // `error.error` is the whole response body: { type: "error", error: {...} }.
+  const status = error.status;
+  const details = field(field(error.error, "error"), "details");
+  if (
+    status === 402 ||
+    error.type === "billing_error" ||
+    field(details, "error_code") === "enforced_spend_limit_reached" ||
+    (status === 400 && BILLING_MESSAGE.test(error.message))
+  ) {
+    return "billing";
+  }
+  if (status === 429 || error.type === "rate_limit_error") {
+    return "rate_limit";
+  }
+  // Without a status the error came as an SSE `error` event after a 200.
+  if (
+    (status !== undefined && OVERLOADED_STATUSES.includes(status)) ||
+    error.type === "overloaded_error" ||
+    (status === undefined && error.type === "api_error")
+  ) {
+    return "overloaded";
+  }
+  if (status === 401 || status === 403) {
+    return "auth";
+  }
+  if (status !== undefined && status >= 400 && status < 500) {
+    return "bad_request";
+  }
+  return "other";
 }
 
 /**
@@ -61,17 +94,19 @@ export interface AnswerClient {
  * Rejects when the signal aborts.
  *
  * @param client the Anthropic client.
+ * @param model the model id to request.
  * @param request the original question, sources, prior turns and abort signal.
  * @returns the unverified text events, then one `end` event.
  */
-export async function* streamAnswer(
+async function* streamAnswer(
   client: AnswerClient,
+  model: string,
   request: StreamRequest
 ): AsyncGenerator<ProviderStreamEvent> {
   const prior = historyText(request.history);
   const stream = await client.messages.create(
     {
-      model: env.AI_ANSWERS_MODEL,
+      model,
       max_tokens: MAX_OUTPUT_TOKENS,
       system:
         request.mode === "compare"
@@ -224,4 +259,18 @@ function historyText(history: HistoryTurn[]): string | undefined {
       ].join("\n")
     ),
   ].join("\n");
+}
+
+/** Messages Anthropic sends with a 400 when the account cannot pay. */
+const BILLING_MESSAGE =
+  /credit balance is too low|usage limit|spend(ing)? limit/i;
+
+/** Statuses Anthropic returns when it is down or overloaded. */
+const OVERLOADED_STATUSES = [500, 502, 503, 504, 529];
+
+/** A property of an untyped JSON value, or undefined. */
+function field(value: unknown, key: string): unknown {
+  return typeof value === "object" && value !== null && key in value
+    ? Object.getOwnPropertyDescriptor(value, key)?.value
+    : undefined;
 }

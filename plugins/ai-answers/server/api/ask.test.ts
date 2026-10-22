@@ -39,7 +39,16 @@ import {
   deleteConversation,
   loadConversation,
 } from "../conversation";
+import { getClient } from "../anthropicClient";
+import type {
+  ProviderErrorKind,
+  ProviderStreamEvent,
+  StreamingProvider,
+} from "../contract";
 import env from "../env";
+import { costMicroUsd } from "../pricing";
+import { createAnthropicStreamingProvider } from "../providers/anthropic";
+import * as registry from "../providers/registry";
 import * as usage from "../usage";
 import { acquireSlot, releaseSlot, SLOT_TTL_MS } from "../usage";
 import * as verify from "../verify";
@@ -772,6 +781,130 @@ describe("#ai.ask", () => {
       } finally {
         await Redis.defaultClient.del(key);
       }
+    });
+  });
+
+  describe("providers", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    /** A provider that fails before its first event with `kind`. */
+    const failing = (kind: ProviderErrorKind): StreamingProvider => ({
+      // Unique per test: the in-process breaker outlives a test.
+      id: `failing-${randomUUID()}`,
+      model: "claude-opus-5-5",
+      // oxlint-disable-next-line require-yield
+      async *stream(): AsyncGenerator<ProviderStreamEvent> {
+        throw new Error(kind);
+      },
+      classify: () => kind,
+    });
+
+    it("bills the model that served the answer", async () => {
+      const { user } = await setup();
+      const bodies = upstream(() => anthropicEvents([cited]));
+      vi.spyOn(registry, "getProviders").mockReturnValue([
+        failing("billing"),
+        createAnthropicStreamingProvider(getClient(), "claude-haiku-5-5"),
+      ]);
+      const events = await askEvents(user);
+      expect(events.at(-1)?.event).toEqual("done");
+      expect(bodies).toHaveLength(1);
+      const rows = await rowsFor(user.teamId, true);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].model).toEqual("claude-haiku-5-5");
+      expect(rows[0].costMicroUsd).toEqual(
+        String(
+          costMicroUsd("claude-haiku-5-5", {
+            inputTokens: rows[0].inputTokens,
+            outputTokens: rows[0].outputTokens,
+          })
+        )
+      );
+    });
+
+    it("no provider configured → failed reason unavailable, no model call, no usage row", async () => {
+      const { user } = await setup();
+      const bodies = upstream(() => anthropicEvents([cited]));
+      vi.spyOn(registry, "getProviders").mockReturnValue([]);
+      const events = await askEvents(user);
+      expect(events.at(-1)).toEqual({
+        event: "failed",
+        data: { reason: "unavailable", partial: false },
+      });
+      expect(bodies).toHaveLength(0);
+      expect(await rowsFor(user.teamId)).toHaveLength(0);
+      await expectSlotsFree(user.teamId);
+    });
+
+    it("all providers fail → failed reason unavailable", async () => {
+      const { user } = await setup();
+      const bodies = upstream(() => anthropicEvents([cited]));
+      vi.spyOn(registry, "getProviders").mockReturnValue([
+        failing("billing"),
+        failing("rate_limit"),
+        failing("overloaded"),
+        failing("network"),
+        failing("auth"),
+      ]);
+      const events = await askEvents(user);
+      expect(events.at(-1)).toEqual({
+        event: "failed",
+        data: { reason: "unavailable", partial: false },
+      });
+      expect(bodies).toHaveLength(0);
+      await expectSlotsFree(user.teamId);
+    });
+
+    it("bills zero when every provider rejected the request", async () => {
+      const { user } = await setup();
+      vi.spyOn(registry, "getProviders").mockReturnValue([failing("billing")]);
+      const events = await askEvents(user);
+      expect(events.at(-1)?.data.reason).toEqual("unavailable");
+      const rows = await rowsFor(user.teamId, true);
+      expect(
+        rows.map((r) => [
+          r.outcome,
+          r.inputTokens,
+          r.outputTokens,
+          r.costMicroUsd,
+        ])
+      ).toEqual([["error", 0, 0, "0"]]);
+    });
+
+    it("keeps the estimate when an attempt failed on the network", async () => {
+      const { user } = await setup();
+      vi.spyOn(registry, "getProviders").mockReturnValue([
+        failing("billing"),
+        failing("network"),
+      ]);
+      const events = await askEvents(user);
+      expect(events.at(-1)?.data.reason).toEqual("unavailable");
+      const rows = await rowsFor(user.teamId, true);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].inputTokens).toBeGreaterThan(0);
+      expect(BigInt(rows[0].costMicroUsd) > 0n).toEqual(true);
+    });
+
+    it("keeps the estimate for any other error", async () => {
+      const { user } = await setup();
+      vi.spyOn(registry, "getProviders").mockReturnValue([failing("other")]);
+      const events = await askEvents(user);
+      expect(events.at(-1)?.data.reason).toEqual("error");
+      const rows = await rowsFor(user.teamId, true);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].inputTokens).toBeGreaterThan(0);
+      expect(BigInt(rows[0].costMicroUsd) > 0n).toEqual(true);
+    });
+
+    it("keeps the generic error for a bad request", async () => {
+      const { user } = await setup();
+      vi.spyOn(registry, "getProviders").mockReturnValue([
+        failing("bad_request"),
+      ]);
+      const events = await askEvents(user);
+      expect(events.at(-1)?.data.reason).toEqual("error");
     });
   });
 

@@ -19,7 +19,6 @@ import {
   isHistoryEnabled,
 } from "../access";
 import { safeCitationTarget } from "../anchors";
-import { getClient } from "../anthropicClient";
 import {
   BlockSplitter,
   blockToMarkdown,
@@ -37,6 +36,7 @@ import {
   ZERO_USAGE,
   type AnswerMode,
   type FinishReason,
+  type StreamProgress,
   type Usage,
 } from "../contract";
 import {
@@ -50,7 +50,11 @@ import {
 } from "../conversation";
 import env from "../env";
 import { appendConversationTurn, getConversationForResume } from "../history";
-import { streamAnswer, type StreamProgress } from "../providers/anthropic";
+import {
+  AllProvidersFailedError,
+  streamWithFallback,
+} from "../providers/chain";
+import { getProviders } from "../providers/registry";
 import { redactSecrets } from "../redact";
 import { presentSourceDetails, type SourceDetails } from "../presenters/source";
 import { askScope, retrieveWithCounts, type AnswerSource } from "../retrieve";
@@ -556,10 +560,16 @@ router.post(
       if (clientGone.signal.aborted) {
         return;
       }
+      // Checked before anything is reserved, so nothing can leak.
+      const providers = getProviders();
+      if (providers.length === 0) {
+        await finish([], { failed: "unavailable" });
+        return;
+      }
       const base = {
         teamId: user.teamId,
         userId: user.id,
-        model: env.AI_ANSWERS_MODEL,
+        model: providers[0].model,
       };
       // Worst-case input for a call whose usage is unknown, history included.
       const estimate = estimateUsage(
@@ -641,6 +651,8 @@ router.post(
         recorded = true;
         usageId = await record({
           ...base,
+          // The model that served (or last tried) the call, priced as such.
+          model: progress.served?.model ?? base.model,
           ...entry,
           droppedSegments: dropped,
           durationMs: Date.now() - modelStartedAt,
@@ -674,7 +686,7 @@ router.post(
         limits.touch();
         try {
           sent = true;
-          for await (const event of streamAnswer(getClient(), {
+          for await (const event of streamWithFallback(providers, {
             question: query,
             sources,
             history,
@@ -708,8 +720,24 @@ router.post(
             aborted: signal.aborted,
           });
           await freeSlot();
-          await bill({ usage: streamedUsage(), outcome: "error" });
-          await finish([], { failed: signal.aborted ? aborted() : "error" });
+          // Zero is safe: these kinds are HTTP rejections, so no tokens were
+          // processed; a network failure may have been, so it keeps the estimate.
+          const rejected =
+            error instanceof AllProvidersFailedError &&
+            error.attempts.every(({ kind }) =>
+              ["billing", "auth", "rate_limit", "overloaded"].includes(kind)
+            );
+          await bill({
+            usage: rejected ? ZERO_USAGE : streamedUsage(),
+            outcome: "error",
+          });
+          await finish([], {
+            failed: signal.aborted
+              ? aborted()
+              : error instanceof AllProvidersFailedError
+                ? "unavailable"
+                : "error",
+          });
           return;
         }
 

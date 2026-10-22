@@ -144,6 +144,18 @@ describe("error cards", () => {
     expect(host.textContent?.includes("Try again")).toBe(retry);
   });
 
+  it("unavailable offers a search with the same words", () => {
+    const host = render({
+      ...base,
+      blocks: [],
+      status: "failed",
+      problem: "unavailable",
+    });
+    const link = host.querySelector("a");
+    expect(link?.textContent).toBe("Search instead");
+    expect(link?.getAttribute("href")).toBe("/search?q=Q%3F");
+  });
+
   it("explains compare_needs_two calmly, with no retry", () => {
     const host = render({
       ...base,
