@@ -30,6 +30,16 @@ class AIAnswersPluginEnvironment extends Environment {
     this.toOptionalString(environment.AI_ANSWERS_MODEL) ?? "claude-sonnet-5-5";
 
   /**
+   * Providers that write answers, as a comma list of `id:model` in failover
+   * order. Unset means Anthropic with `AI_ANSWERS_MODEL`.
+   */
+  @IsOptional()
+  @IsString()
+  public AI_ANSWERS_PROVIDERS = this.toOptionalString(
+    environment.AI_ANSWERS_PROVIDERS
+  );
+
+  /**
    * Monthly spend cap per workspace in USD (calendar month, UTC). Defaults to
    * 25. A value of 0 or anything that is not a positive number disables AI
    * answers, so a typo fails closed.
