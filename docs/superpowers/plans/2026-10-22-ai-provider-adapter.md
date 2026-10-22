@@ -188,7 +188,7 @@ Failure modes the spec implies but no single task's happy path covers, most like
 
 ### Task 5: "Search documents instead" on the unavailable notice
 
-> **Dropped (ruling 2026-10-22):** already implemented. `ProblemNotice.tsx:85-88` renders "Search instead" (`searchPath({ query })`) for the `unavailable` problem, tested at `Notices.test.tsx:95` and `:246`. No code needed; the steps below are kept for the record.
+> **Reduced to one test (ruling 2026-10-22):** the UI already exists. `ProblemNotice.tsx:85-88` renders "Search instead" (`searchPath({ query })`) for the `unavailable` problem; the existing tests at `Notices.test.tsx:95` and `:246` cover other notices, not this one. Only the test "unavailable offers a search with the same words" was added. The steps below are kept for the record.
 
 **Files:**
 - Modify: `app/scenes/AISearch/ProblemNotice.tsx` (`case "unavailable"` near line 182)
