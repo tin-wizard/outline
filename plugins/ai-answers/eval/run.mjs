@@ -1,18 +1,33 @@
 // Offline evaluation of grounded answers (plugins/ai-answers/eval/cases.json).
 //
 // Costs real money, so it is manual and never part of CI. It needs
-// ANTHROPIC_API_KEY in the environment and a LOCAL Postgres and Redis (it seeds
+// the API key of the provider under test (ANTHROPIC_API_KEY for anthropic,
+// GEMINI_API_KEY for google) in the environment and a LOCAL Postgres and Redis (it seeds
 // synthetic documents into the test database from .env.test). It refuses to run
 // against any non-local DATABASE_URL or REDIS_URL. Each run leaves its synthetic
 // teams and documents behind in that local .env.test database, like a test run.
 //
 // Usage, from the repo root:
 //   ANTHROPIC_API_KEY=... node plugins/ai-answers/eval/run.mjs \
-//     [--model claude-sonnet-5-5] [--runs 3] [--out plugins/ai-answers/eval/eval-results.json]
+//     [--provider google:gemini-3.8-flash | --model claude-sonnet-5-5] [--runs 3] \
+//     [--out plugins/ai-answers/eval/eval-results.json] \
+//     [--baseline path/to/baseline-results.json] [--max-dropped-delta 0.5]
+//
+// --provider sets AI_ANSWERS_PROVIDERS for the run, so the real provider
+// registry is exercised; --model means anthropic:<model>. With --baseline (an
+// earlier results file) the report ends with the gate verdict, which sets the
+// exit code. Latency and cost are reported and never fail the gate.
 import { spawnSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  DEFAULT_MAX_DROPPED_DELTA,
+  aggregateResults,
+  evalProviderSpec,
+  passesGate,
+  requiredKeyVariable,
+} from "./gate.mjs";
 import { isLocalUrl } from "./guard.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -25,8 +40,14 @@ const fail = (message) => {
   console.error(message);
   process.exit(1);
 };
-if (!process.env.ANTHROPIC_API_KEY) {
-  fail("ANTHROPIC_API_KEY is not set; the live eval needs it.");
+const selection = evalProviderSpec(process.argv, process.env);
+if (selection.error) {
+  fail(selection.error);
+}
+const providerId = selection.spec?.split(":")[0] ?? "anthropic";
+const keyVariable = requiredKeyVariable(providerId);
+if (!process.env[keyVariable]) {
+  fail(`${keyVariable} is not set; the live eval of ${providerId} needs it.`);
 }
 
 // Pin both URLs explicitly: the shell or a dotenv file must not decide where this writes.
@@ -60,8 +81,8 @@ const env = {
   AI_ANSWERS_EVAL_RUNS: arg("runs", "1"),
   AI_ANSWERS_EVAL_OUT: out,
 };
-if (arg("model")) {
-  env.AI_ANSWERS_MODEL = arg("model");
+if (selection.spec) {
+  env.AI_ANSWERS_PROVIDERS = selection.spec;
 }
 
 const run = spawnSync(
@@ -73,9 +94,9 @@ if (run.status !== 0 || !existsSync(out)) {
   fail("Eval run failed.");
 }
 
-const { model, results } = JSON.parse(readFileSync(out, "utf8"));
+const { provider, results } = JSON.parse(readFileSync(out, "utf8"));
 const pct = (n, d) => (d ? `${Math.round((100 * n) / d)}%` : "-");
-console.log(`\n== ${model}`);
+console.log(`\n== ${provider}`);
 for (const stratum of new Set(results.map((r) => r.stratum))) {
   const rs = results.filter((r) => r.stratum === stratum);
   console.log(
@@ -97,4 +118,30 @@ for (const r of results.filter((x) => !x.pass).slice(0, 10)) {
     `    FAIL ${r.case} run ${r.run}: ${r.error ?? JSON.stringify({ missing: r.missing, forbidden: r.forbidden, uncited: r.uncitedTitles, ungrounded: r.ungroundedSentences, invalid: r.invalidCitations, leaked: r.leaked, sentLeaks: r.sentLeaks })}`
   );
 }
+
+const aggregate = aggregateResults(provider, results);
+const rate = (x) => `${(100 * x).toFixed(1)}%`;
+console.log(
+  `\n  per provider: answered ${rate(aggregate.answeredRate)} | valid citations ${rate(aggregate.validCitationRate)} | dropped/answer ${aggregate.droppedPerAnswer.toFixed(2)} | abstain when not covered ${rate(aggregate.notCoveredAbstainRate)} | leaks ${aggregate.leakCount} | median latency ${Math.round(aggregate.medianLatencyMs)} ms | cost/answer ${Math.round(aggregate.costPerAnswerMicroUsd)} micro-USD | errors ${aggregate.errorCount}`
+);
 console.log(`\nwrote ${out}`);
+
+const baselinePath = arg("baseline");
+if (baselinePath) {
+  const base = JSON.parse(readFileSync(path.resolve(baselinePath), "utf8"));
+  const baseline = aggregateResults(
+    base.provider ?? base.model ?? "baseline",
+    base.results
+  );
+  const maxDroppedDelta = Number(
+    arg("max-dropped-delta", String(DEFAULT_MAX_DROPPED_DELTA))
+  );
+  const verdict = passesGate(aggregate, baseline, { maxDroppedDelta });
+  console.log(
+    `\ngate vs ${baseline.provider} (maxDroppedDelta ${maxDroppedDelta}): ${verdict.pass ? "PASS" : "FAIL"}`
+  );
+  for (const failure of verdict.failures) {
+    console.log(`  - ${failure}`);
+  }
+  process.exit(verdict.pass ? 0 : 1);
+}
