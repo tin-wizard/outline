@@ -337,6 +337,62 @@ describe("passesGate", () => {
   });
 });
 
+describe("passesGate answered-rate and empty-run rules", () => {
+  const never = (patch: Partial<ProviderEvalResult> = {}) => ({
+    ...baseline,
+    provider: "google:never",
+    answeredRate: 0,
+    validCitationRate: 1,
+    notCoveredAbstainRate: 1,
+    droppedPerAnswer: 0,
+    ...patch,
+  });
+
+  it("fails a candidate that abstains on everything", () => {
+    const verdict = passesGate(never(), baseline);
+    expect(verdict.pass).toBe(false);
+    expect(verdict.failures.some((f) => f.includes("answeredRate"))).toBe(true);
+    expect(
+      verdict.failures.some((f) =>
+        f.includes("no answerable case was answered")
+      )
+    ).toBe(true);
+  });
+
+  it("passes at exactly baseline.answeredRate * 0.5 and fails just below", () => {
+    expect(passesGate(never({ answeredRate: 0.45 }), baseline).pass).toBe(true);
+    const verdict = passesGate(never({ answeredRate: 0.44 }), baseline);
+    expect(verdict.pass).toBe(false);
+    expect(verdict.failures[0]).toContain("answeredRate");
+  });
+
+  it("honours a custom minAnsweredRatio", () => {
+    const c = never({ answeredRate: 0.5 });
+    expect(passesGate(c, baseline, { minAnsweredRatio: 0.9 }).pass).toBe(false);
+    expect(passesGate(c, baseline, { minAnsweredRatio: 0.5 }).pass).toBe(true);
+  });
+
+  it("cannot fail the rate rule when the baseline answered nothing", () => {
+    const none = { ...baseline, answeredRate: 0 };
+    expect(passesGate(never(), none).pass).toBe(true);
+  });
+
+  it("fails a result with no runs", () => {
+    const verdict = passesGate({ ...baseline, runs: 0 }, baseline);
+    expect(verdict.pass).toBe(false);
+    expect(verdict.failures).toEqual(["no runs to evaluate"]);
+  });
+
+  it("still never fails on latency or cost", () => {
+    expect(
+      passesGate(
+        candidate({ medianLatencyMs: 1e6, costPerAnswerMicroUsd: 1e9 }),
+        baseline
+      ).pass
+    ).toBe(true);
+  });
+});
+
 describe("aggregateResults", () => {
   const row = (patch: Record<string, unknown>) => ({
     answerable: true,

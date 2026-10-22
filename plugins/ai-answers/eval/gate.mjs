@@ -7,6 +7,12 @@
  */
 export const DEFAULT_MAX_DROPPED_DELTA = 0.5;
 
+/**
+ * Default minimum answered rate, as a fraction of the baseline's. An explicit
+ * judgement value, not derived from data: the owner has set no threshold.
+ */
+export const DEFAULT_MIN_ANSWERED_RATIO = 0.5;
+
 const EPSILON = 1e-9;
 
 /** The environment variable holding each known provider's API key. */
@@ -72,12 +78,28 @@ export function aggregateResults(provider, rows) {
  *
  * @param {import("./gate.d.mts").ProviderEvalResult} result the candidate.
  * @param {import("./gate.d.mts").ProviderEvalResult} baseline the reference run.
- * @param {{ maxDroppedDelta?: number }} [options] `maxDroppedDelta` is the allowed increase in dropped statements per answer.
+ * @param {{ maxDroppedDelta?: number, minAnsweredRatio?: number }} [options] `maxDroppedDelta` is the allowed increase in dropped statements per answer; `minAnsweredRatio` the least answered rate as a fraction of the baseline's.
  * @returns {import("./gate.d.mts").GateVerdict} the verdict and each failed criterion.
  */
 export function passesGate(result, baseline, options = {}) {
   const maxDroppedDelta = options.maxDroppedDelta ?? DEFAULT_MAX_DROPPED_DELTA;
+  const minAnsweredRatio =
+    options.minAnsweredRatio ?? DEFAULT_MIN_ANSWERED_RATIO;
   const failures = [];
+  if (result.runs === 0) {
+    failures.push("no runs to evaluate");
+  }
+  if (result.answeredRate === 0 && baseline.answeredRate > 0) {
+    failures.push("no answerable case was answered");
+  }
+  if (
+    result.answeredRate <
+    baseline.answeredRate * minAnsweredRatio - EPSILON
+  ) {
+    failures.push(
+      `answeredRate ${result.answeredRate} is below ${minAnsweredRatio * 100}% of the baseline ${baseline.answeredRate}`
+    );
+  }
   if (result.validCitationRate < baseline.validCitationRate - EPSILON) {
     failures.push(
       `validCitationRate ${result.validCitationRate} is below the baseline ${baseline.validCitationRate}`

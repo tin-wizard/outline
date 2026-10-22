@@ -46,6 +46,9 @@ export interface EvalRow {
 /** Default for `maxDroppedDelta`; a judgement value, not derived from data. */
 export const DEFAULT_MAX_DROPPED_DELTA: number;
 
+/** Default for `minAnsweredRatio`; a judgement value, not derived from data. */
+export const DEFAULT_MIN_ANSWERED_RATIO: number;
+
 export function aggregateResults(
   provider: string,
   rows: EvalRow[]
@@ -53,7 +56,7 @@ export function aggregateResults(
 export function passesGate(
   result: ProviderEvalResult,
   baseline: ProviderEvalResult,
-  options?: { maxDroppedDelta?: number }
+  options?: { maxDroppedDelta?: number; minAnsweredRatio?: number }
 ): GateVerdict;
 export function evalProviderSpec(
   argv: string[],

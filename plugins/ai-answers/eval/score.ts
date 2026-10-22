@@ -4,6 +4,7 @@ import { isTextSupported, normalise } from "../server/verify";
 export { isLocalUrl } from "./guard.mjs";
 export {
   DEFAULT_MAX_DROPPED_DELTA,
+  DEFAULT_MIN_ANSWERED_RATIO,
   aggregateResults,
   evalProviderSpec,
   passesGate,
