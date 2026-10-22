@@ -720,7 +720,17 @@ router.post(
             aborted: signal.aborted,
           });
           await freeSlot();
-          await bill({ usage: streamedUsage(), outcome: "error" });
+          // Zero is safe: these kinds are HTTP rejections, so no tokens were
+          // processed; a network failure may have been, so it keeps the estimate.
+          const rejected =
+            error instanceof AllProvidersFailedError &&
+            error.attempts.every(({ kind }) =>
+              ["billing", "auth", "rate_limit", "overloaded"].includes(kind)
+            );
+          await bill({
+            usage: rejected ? ZERO_USAGE : streamedUsage(),
+            outcome: "error",
+          });
           await finish([], {
             failed: signal.aborted
               ? aborted()

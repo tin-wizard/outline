@@ -857,6 +857,47 @@ describe("#ai.ask", () => {
       await expectSlotsFree(user.teamId);
     });
 
+    it("bills zero when every provider rejected the request", async () => {
+      const { user } = await setup();
+      vi.spyOn(registry, "getProviders").mockReturnValue([failing("billing")]);
+      const events = await askEvents(user);
+      expect(events.at(-1)?.data.reason).toEqual("unavailable");
+      const rows = await rowsFor(user.teamId, true);
+      expect(
+        rows.map((r) => [
+          r.outcome,
+          r.inputTokens,
+          r.outputTokens,
+          r.costMicroUsd,
+        ])
+      ).toEqual([["error", 0, 0, "0"]]);
+    });
+
+    it("keeps the estimate when an attempt failed on the network", async () => {
+      const { user } = await setup();
+      vi.spyOn(registry, "getProviders").mockReturnValue([
+        failing("billing"),
+        failing("network"),
+      ]);
+      const events = await askEvents(user);
+      expect(events.at(-1)?.data.reason).toEqual("unavailable");
+      const rows = await rowsFor(user.teamId, true);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].inputTokens).toBeGreaterThan(0);
+      expect(BigInt(rows[0].costMicroUsd) > 0n).toEqual(true);
+    });
+
+    it("keeps the estimate for any other error", async () => {
+      const { user } = await setup();
+      vi.spyOn(registry, "getProviders").mockReturnValue([failing("other")]);
+      const events = await askEvents(user);
+      expect(events.at(-1)?.data.reason).toEqual("error");
+      const rows = await rowsFor(user.teamId, true);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].inputTokens).toBeGreaterThan(0);
+      expect(BigInt(rows[0].costMicroUsd) > 0n).toEqual(true);
+    });
+
     it("keeps the generic error for a bad request", async () => {
       const { user } = await setup();
       vi.spyOn(registry, "getProviders").mockReturnValue([
