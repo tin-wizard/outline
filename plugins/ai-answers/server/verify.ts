@@ -74,7 +74,7 @@ export function normalise(text: string): string {
 const MIN_CONTENT_WORD_SUPPORT = 0.5;
 
 /** Longest cited range, in sections; wider ranges make the passage too loose. */
-const MAX_CITED_SECTIONS = 3;
+export const MAX_CITED_SECTIONS = 3;
 
 /** Shortest normalised quote accepted; shorter ones match almost anywhere. */
 const MIN_QUOTE_LENGTH = 8;
