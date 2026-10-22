@@ -148,7 +148,7 @@ Failure modes the spec implies but no single task's happy path covers, most like
     health?: ProviderHealth
   ): AsyncGenerator<ProviderStreamEvent>;
   ```
-  Behaviour: iterate providers in order, skipping those where `health.isOpen` (if all are open, try them all anyway). Set `request.progress.served = {provider: id, model}` when an attempt starts. Run each attempt under an `AbortSignal` that is `request.signal` combined with `FIRST_EVENT_TIMEOUT_MS` until the first event arrives (the timeout aborts only that attempt and counts as `network`). If an attempt throws before yielding: when `request.signal.aborted` rethrow immediately (no trip, no failover); otherwise `kind = provider.classify(error)`; `bad_request` and `other` rethrow immediately (a different provider would fail the same way); `billing|rate_limit|overloaded|network|auth` call `health.trip` and continue to the next provider. If an attempt throws after yielding, rethrow. With exactly one provider, rethrow the original error; with several and all failed, throw `AllProvidersFailedError`.
+  Behaviour: iterate providers in order, skipping those where `health.isOpen` (if all are open, try them all anyway). Set `request.progress.served = {provider: id, model}` when an attempt starts. Run each attempt under an `AbortSignal` that is `request.signal` combined with `FIRST_EVENT_TIMEOUT_MS` until the first event arrives (the timeout aborts only that attempt and counts as `network`). If an attempt throws before yielding: when `request.signal.aborted` rethrow immediately (no trip, no failover); otherwise `kind = provider.classify(error)`; `bad_request` and `other` rethrow immediately (a different provider would fail the same way); `billing|rate_limit|overloaded|network|auth` call `health.trip` (and `alertProviderDown` for `billing|auth`, Task 4) and continue to the next provider. If an attempt throws after yielding, rethrow. When every provider failed with those kinds, throw `AllProvidersFailedError` **even when only one provider is configured** (so today's single-provider credit outage reaches the user as `unavailable`, not the generic error); `bad_request`, `other` and post-event errors always rethrow the original error. The first-event timeout applies only while more than one provider remains untried (a lone provider keeps today's idle-limit behaviour).
 - Produces, `registry.ts`: `parseProviderSpec(spec: string | undefined, defaultModel: string): { id: string; model: string }[]` (comma list of `id:model`; default `anthropic:<defaultModel>`; unknown ids are dropped with `Logger.warn`), and `getProviders()` now builds from `env.AI_ANSWERS_PROVIDERS`; returns `[]` when none valid.
 - Produces, `env.ts`: `AI_ANSWERS_PROVIDERS` optional string, same style as `AI_ANSWERS_MODEL`. `AI_ANSWERS_ENABLED` is unchanged in this phase.
 
@@ -159,7 +159,7 @@ Failure modes the spec implies but no single task's happy path covers, most like
   4. "an aborted request is not failed over and not tripped": abort `request.signal` then A throws → rethrown, `trip` not called, B not called. (Review Focus 2)
   5. "tries open providers when all are open". (Review Focus 3)
   6. "a provider silent for FIRST_EVENT_TIMEOUT_MS is failed over" using fake timers.
-  7. "single provider rethrows the original error"; "several providers all failing throws AllProvidersFailedError with attempts in order".
+  7. "a lone provider failing with billing throws AllProvidersFailedError with one attempt"; "a lone provider failing with bad_request rethrows the original error"; "several providers all failing throws AllProvidersFailedError with attempts in order"; "a lone provider is not subject to FIRST_EVENT_TIMEOUT_MS".
 - [ ] **Step 2: Write the failing registry tests:** default spec → one anthropic provider with `AI_ANSWERS_MODEL`; `anthropic:claude-haiku-5-5,anthropic:claude-sonnet-5-5` → two; unknown id dropped; `""`/only-unknown → `[]` (Review Focus 5).
 - [ ] **Step 3: Run both files.** Expected: FAIL.
 - [ ] **Step 4: Implement** `health.ts`, `chain.ts`, `registry.ts`, `env.ts` and the `.env.sample` line `# AI_ANSWERS_PROVIDERS=anthropic:claude-haiku-5-5` with a comment that the order is the failover order.
@@ -169,7 +169,7 @@ Failure modes the spec implies but no single task's happy path covers, most like
 ### Task 4: Wire the chain into `ask.ts`, bill the served model, alert
 
 **Files:**
-- Modify: `plugins/ai-answers/server/api/ask.ts` (`~lines 562 and 677`), `plugins/ai-answers/server/providers/health.ts`
+- Modify: `plugins/ai-answers/server/api/ask.ts` (`~lines 562 and 677`), `plugins/ai-answers/server/providers/health.ts`, `plugins/ai-answers/server/providers/chain.ts` (call `alertProviderDown`)
 - Test: `plugins/ai-answers/server/api/ask.test.ts`, `plugins/ai-answers/server/providers/health.test.ts`
 
 **Interfaces:**
