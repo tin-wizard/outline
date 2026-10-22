@@ -50,6 +50,10 @@ import {
 } from "../conversation";
 import env from "../env";
 import { appendConversationTurn, getConversationForResume } from "../history";
+import {
+  AllProvidersFailedError,
+  streamWithFallback,
+} from "../providers/chain";
 import { getProviders } from "../providers/registry";
 import { redactSecrets } from "../redact";
 import { presentSourceDetails, type SourceDetails } from "../presenters/source";
@@ -556,10 +560,16 @@ router.post(
       if (clientGone.signal.aborted) {
         return;
       }
+      // Checked before anything is reserved, so nothing can leak.
+      const providers = getProviders();
+      if (providers.length === 0) {
+        await finish([], { failed: "unavailable" });
+        return;
+      }
       const base = {
         teamId: user.teamId,
         userId: user.id,
-        model: env.AI_ANSWERS_MODEL,
+        model: providers[0].model,
       };
       // Worst-case input for a call whose usage is unknown, history included.
       const estimate = estimateUsage(
@@ -641,6 +651,8 @@ router.post(
         recorded = true;
         usageId = await record({
           ...base,
+          // The model that served (or last tried) the call, priced as such.
+          model: progress.served?.model ?? base.model,
           ...entry,
           droppedSegments: dropped,
           durationMs: Date.now() - modelStartedAt,
@@ -674,7 +686,7 @@ router.post(
         limits.touch();
         try {
           sent = true;
-          for await (const event of getProviders()[0].stream({
+          for await (const event of streamWithFallback(providers, {
             question: query,
             sources,
             history,
@@ -709,7 +721,13 @@ router.post(
           });
           await freeSlot();
           await bill({ usage: streamedUsage(), outcome: "error" });
-          await finish([], { failed: signal.aborted ? aborted() : "error" });
+          await finish([], {
+            failed: signal.aborted
+              ? aborted()
+              : error instanceof AllProvidersFailedError
+                ? "unavailable"
+                : "error",
+          });
           return;
         }
 

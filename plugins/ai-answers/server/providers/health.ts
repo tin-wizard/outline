@@ -1,3 +1,5 @@
+import Logger from "@server/logging/Logger";
+import Redis from "@server/storage/redis";
 import type { ProviderErrorKind } from "../contract";
 
 /** Tracks which providers recently failed, so the chain can skip them. */
@@ -43,3 +45,36 @@ export const defaultHealth: ProviderHealth = {
     openUntil.set(id, Date.now() + COOLDOWN_MS[kind]);
   },
 };
+
+/**
+ * Logs an error the first time in an hour that a provider fails with `kind`,
+ * so an operator can top up credit or fix a key. Never throws.
+ *
+ * @param provider the provider id.
+ * @param kind why the provider failed.
+ * @returns when the alert was handled.
+ */
+export async function alertProviderDown(
+  provider: string,
+  kind: ProviderErrorKind
+): Promise<void> {
+  try {
+    const first = await Redis.defaultClient.set(
+      `ai-answers:provider-alert:${provider}:${kind}`,
+      "1",
+      "EX",
+      3600,
+      "NX"
+    );
+    if (first === "OK") {
+      // Only the provider id and kind: never a message, question or answer.
+      Logger.error(
+        "AI answers provider unavailable",
+        new Error("AI answers provider unavailable"),
+        { provider, kind }
+      );
+    }
+  } catch {
+    // Alerting must never affect answering.
+  }
+}

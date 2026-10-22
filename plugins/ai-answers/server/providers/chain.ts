@@ -5,7 +5,7 @@ import type {
   StreamRequest,
 } from "../contract";
 import type { ProviderHealth } from "./health";
-import { defaultHealth } from "./health";
+import { alertProviderDown, defaultHealth } from "./health";
 
 /** How long a provider may stay silent before failing over (judgement; no source gave a value). */
 export const FIRST_EVENT_TIMEOUT_MS = 8_000;
@@ -89,6 +89,9 @@ export async function* streamWithFallback(
         throw error;
       }
       health.trip(provider.id, kind);
+      if (kind === "billing" || kind === "auth") {
+        void alertProviderDown(provider.id, kind);
+      }
       attempts.push({ provider: provider.id, kind });
     } finally {
       clearTimeout(timer);
