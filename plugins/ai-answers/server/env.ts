@@ -14,6 +14,13 @@ class AIAnswersPluginEnvironment extends Environment {
   );
 
   /**
+   * Gemini API key, used only when `AI_ANSWERS_PROVIDERS` names `google`.
+   * Never public: the client needs no knowledge of the fallback supplier.
+   */
+  @IsOptional()
+  public GEMINI_API_KEY = this.toOptionalString(environment.GEMINI_API_KEY);
+
+  /**
    * Whether AI answers are available on this server. Derived from the API key
    * so the client can know without the key itself being exposed.
    */

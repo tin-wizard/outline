@@ -10,6 +10,10 @@ const PRICES: Record<string, Price> = {
   "claude-haiku-5-5": { input: 0.1, output: 0.5 },
   "claude-sonnet-5-5": { input: 2, output: 10 },
   "claude-opus-5-5": { input: 4, output: 20 },
+  // Standard price from 2027-01-01 (ai.google.dev/gemini-api/docs/pricing);
+  // the introductory $0.75/$3.75 to 2026-12-31 is deliberately not used.
+  // Output includes thinking tokens.
+  "gemini-3.8-flash": { input: 1.5, output: 7.5 },
 };
 
 /** Applied to any model not listed: the most expensive known price, never zero. */

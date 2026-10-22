@@ -241,8 +241,11 @@ function toCitations(citations: Anthropic.TextCitation[]): ProviderCitation[] {
 /**
  * Earlier turns as quoted data. Angle brackets are escaped so stored text can
  * never close a tag and pose as instructions.
+ *
+ * @param history the earlier turns, oldest first.
+ * @returns the quoted turns, or undefined when there are none.
  */
-function historyText(history: HistoryTurn[]): string | undefined {
+export function historyText(history: HistoryTurn[]): string | undefined {
   if (history.length === 0) {
     return undefined;
   }

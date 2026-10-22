@@ -22,6 +22,15 @@ describe("costMicroUsd", () => {
     expect(costMicroUsd("claude-opus-5-5", usage)).toEqual(24_000_000);
   });
 
+  it("prices Gemini 3.8 Flash at the standard $1.50 in / $7.50 out", () => {
+    expect(
+      costMicroUsd("gemini-3.8-flash", {
+        inputTokens: 1_000_000,
+        outputTokens: 1_000_000,
+      })
+    ).toEqual(9_000_000);
+  });
+
   it("rounds fractional micro-dollars up", () => {
     expect(
       costMicroUsd("claude-haiku-5-5", { inputTokens: 1, outputTokens: 0 })
