@@ -1,4 +1,5 @@
 import type Anthropic from "@anthropic-ai/sdk";
+import { APIConnectionError, APIError } from "@anthropic-ai/sdk";
 import {
   COMPARE_SYSTEM_PROMPT,
   MAX_OUTPUT_TOKENS,
@@ -23,7 +24,7 @@ export interface AnswerClient {
  *
  * @param client the Anthropic client.
  * @param model the model id to request.
- * @returns the provider; `classify` returns "other" until errors are classified.
+ * @returns the provider.
  */
 export function createAnthropicStreamingProvider(
   client: AnswerClient,
@@ -33,8 +34,57 @@ export function createAnthropicStreamingProvider(
     id: "anthropic",
     model,
     stream: (request) => streamAnswer(client, model, request),
-    classify: (): ProviderErrorKind => "other",
+    classify: classifyAnthropicError,
   };
+}
+
+/**
+ * Classifies an error thrown by the Anthropic SDK for failover. Billing is
+ * matched on the body's error type, code and message before status, because
+ * Anthropic reports an exhausted credit balance as a 400.
+ *
+ * @param error the thrown error.
+ * @returns the failure kind.
+ */
+export function classifyAnthropicError(error: Error): ProviderErrorKind {
+  if (error instanceof APIConnectionError) {
+    return "network";
+  }
+  if (!(error instanceof APIError)) {
+    const code = "code" in error ? error.code : undefined;
+    return code === "ECONNRESET" || error.message.includes("fetch failed")
+      ? "network"
+      : "other";
+  }
+  // `error.error` is the whole response body: { type: "error", error: {...} }.
+  const status = error.status;
+  const details = field(field(error.error, "error"), "details");
+  if (
+    status === 402 ||
+    error.type === "billing_error" ||
+    field(details, "error_code") === "enforced_spend_limit_reached" ||
+    (status === 400 && BILLING_MESSAGE.test(error.message))
+  ) {
+    return "billing";
+  }
+  if (status === 429 || error.type === "rate_limit_error") {
+    return "rate_limit";
+  }
+  // Without a status the error came as an SSE `error` event after a 200.
+  if (
+    (status !== undefined && OVERLOADED_STATUSES.includes(status)) ||
+    error.type === "overloaded_error" ||
+    (status === undefined && error.type === "api_error")
+  ) {
+    return "overloaded";
+  }
+  if (status === 401 || status === 403) {
+    return "auth";
+  }
+  if (status !== undefined && status >= 400 && status < 500) {
+    return "bad_request";
+  }
+  return "other";
 }
 
 /**
@@ -209,4 +259,18 @@ function historyText(history: HistoryTurn[]): string | undefined {
       ].join("\n")
     ),
   ].join("\n");
+}
+
+/** Messages Anthropic sends with a 400 when the account cannot pay. */
+const BILLING_MESSAGE =
+  /credit balance is too low|usage limit|spend(ing)? limit/i;
+
+/** Statuses Anthropic returns when it is down or overloaded. */
+const OVERLOADED_STATUSES = [500, 502, 503, 504, 529];
+
+/** A property of an untyped JSON value, or undefined. */
+function field(value: unknown, key: string): unknown {
+  return typeof value === "object" && value !== null && key in value
+    ? Object.getOwnPropertyDescriptor(value, key)?.value
+    : undefined;
 }
