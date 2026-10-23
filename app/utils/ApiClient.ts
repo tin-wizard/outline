@@ -1,5 +1,6 @@
 import retry from "fetch-retry";
 import { chunk, trim } from "es-toolkit/compat";
+import i18next from "i18next";
 import queryString from "query-string";
 import EDITOR_VERSION from "@shared/editor/version";
 import type { JSONObject } from "@shared/types";
@@ -8,6 +9,7 @@ import { version } from "../../package.json";
 import env from "~/env";
 import Logger from "./Logger";
 import { download } from "./download";
+import type { ApiError, ApiErrorDetails } from "./errors";
 import {
   AuthorizationError,
   BadGatewayError,
@@ -78,6 +80,79 @@ interface BatchSubResponse {
 
 /** Methods that may be collected into a single `/batch` request. */
 const batchableMethods = new Set<string>(BatchableApiMethods);
+
+/** Longest wait, in seconds, that a rate-limit message will name. */
+const maxNamedRetryAfter = 3600;
+
+/**
+ * Reads a `Retry-After` header given in seconds. HTTP dates and anything else
+ * that is not a whole, non-negative number of seconds are ignored.
+ *
+ * @param value the header value, if present.
+ * @returns the number of seconds, or undefined when unusable.
+ */
+function parseRetryAfter(value: string | null): number | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed || !/^\d+$/.test(trimmed)) {
+    return undefined;
+  }
+  const seconds = Number(trimmed);
+  return Number.isSafeInteger(seconds) ? seconds : undefined;
+}
+
+/**
+ * The message for a failure on the server's side, which never carries the
+ * server's own text.
+ *
+ * @returns the translated message.
+ */
+function serverFaultMessage(): string {
+  return i18next.t("Something went wrong on our side. Try again in a moment.");
+}
+
+/**
+ * The message for a rate-limited request, naming the wait when it is sensible.
+ *
+ * @param retryAfter seconds to wait, from `Retry-After`.
+ * @returns the translated message.
+ */
+function rateLimitMessage(retryAfter: number | undefined): string {
+  if (
+    retryAfter !== undefined &&
+    retryAfter > 0 &&
+    retryAfter <= maxNamedRetryAfter
+  ) {
+    return i18next.t("Too many requests. Try again in {{seconds}} seconds.", {
+      seconds: retryAfter,
+    });
+  }
+  return i18next.t("Too many requests. Try again in a moment.");
+}
+
+/**
+ * The message for a status without a dedicated error, or a client error the
+ * server gave no message for.
+ *
+ * @param status the response status code.
+ * @returns the translated message.
+ */
+function unmappedMessage(status: number): string {
+  if (status === 408) {
+    return i18next.t("That took too long. Try again.");
+  }
+  if (status === 409) {
+    return i18next.t("This changed since you opened it. Reload and try again.");
+  }
+  if (status === 413) {
+    return i18next.t("That file is too large.");
+  }
+  if (status >= 500) {
+    return serverFaultMessage();
+  }
+  return i18next.t("Something went wrong (code {{status}}). Try again.", {
+    status,
+  });
+}
 
 class ApiClient {
   baseUrl: string;
@@ -267,18 +342,10 @@ class ApiClient {
     }
 
     // The gateway or an upstream proxy failed before the app could respond; the
-    // raw body is captured for diagnosis.
+    // raw body is captured for diagnosis in the log only, never in the message.
     if (response.status === 502) {
       const text = await response.text();
-
-      // Gateways often respond with an empty body, or an HTML error page that is
-      // too long to read as a title, so the endpoint leads the message.
-      const detail = text.trim().slice(0, 200);
-      const err = new BadGatewayError(
-        detail
-          ? `Bad gateway response from ${path}: ${detail}`
-          : `Bad gateway response from ${path} with empty body`
-      );
+      const err = new BadGatewayError(serverFaultMessage(), { status: 502 });
 
       Logger.error(
         "BadGatewayError",
@@ -306,7 +373,15 @@ class ApiClient {
       // we're trying to parse an error so JSON may not be valid
     }
 
-    const err = await this.toError(response.status, error.error, error.message);
+    const err = await this.toError(
+      response.status,
+      error.error,
+      error.message,
+      {
+        retryAfter: parseRetryAfter(response.headers.get("Retry-After")),
+        data: error.data,
+      }
+    );
 
     // Log failures that aren't mapped to a specific error type.
     if (err.constructor === RequestError) {
@@ -323,34 +398,45 @@ class ApiClient {
    * Shared by top-level requests and batched sub-requests so both surface
    * identical errors and side effects.
    *
+   * Server faults (5xx) never carry the server's text in the message; it is
+   * logged instead. Client errors (4xx) keep the server's message when present.
+   *
    * @param status The response status code.
    * @param code The structured error code, if any.
    * @param message The human-readable error message, if any.
+   * @param extras Further facts about the failure, such as `Retry-After`.
    * @returns the error to throw or reject with.
    */
   private toError = async (
     status: number,
     code: string | undefined,
-    message: string | undefined
-  ): Promise<Error> => {
+    message: string | undefined,
+    extras: Pick<ApiErrorDetails, "retryAfter" | "data"> = {}
+  ): Promise<ApiError> => {
+    const details: ApiErrorDetails = { status, id: code, ...extras };
+    const clientMessage = message || unmappedMessage(status);
+
     if (status === 401) {
       if (!this.shareId) {
         await this.onUnauthorized?.("unauthorized");
       }
-      return new AuthorizationError();
+      return new AuthorizationError(
+        i18next.t("Your session has expired. Sign in again."),
+        details
+      );
     }
 
     if (status === 400 && code === "editor_update_required") {
       window.location.reload();
-      return new UpdateRequiredError(message);
+      return new UpdateRequiredError(clientMessage, details);
     }
 
     if (status === 400) {
-      return new BadRequestError(message);
+      return new BadRequestError(clientMessage, details);
     }
 
     if (status === 402) {
-      return new PaymentRequiredError(message);
+      return new PaymentRequiredError(clientMessage, details);
     }
 
     if (status === 403) {
@@ -360,38 +446,43 @@ class ApiClient {
 
       if (code === "csrf_error") {
         return new AuthorizationError(
-          "CSRF token invalid, please try reloading."
+          "CSRF token invalid, please try reloading.",
+          details
         );
       }
 
-      return new AuthorizationError(message);
+      return new AuthorizationError(clientMessage, details);
     }
 
     if (status === 404) {
-      return new NotFoundError(message);
+      return new NotFoundError(clientMessage, details);
     }
 
     if (status === 503) {
-      return new ServiceUnavailableError(message);
+      return new ServiceUnavailableError(
+        message || serverFaultMessage(),
+        details
+      );
     }
 
     if (status === 422) {
-      return new UnprocessableEntityError(message);
+      return new UnprocessableEntityError(clientMessage, details);
     }
 
     if (status === 429) {
       return new RateLimitExceededError(
-        `Too many requests, try again in a minute.`
+        rateLimitMessage(extras.retryAfter),
+        details
       );
     }
 
     // The client, or an intermediate proxy, closed the connection before the
     // response was received – there is nothing actionable to report.
     if (status === 499) {
-      return new ClientClosedRequestError(message);
+      return new ClientClosedRequestError(clientMessage, details);
     }
 
-    return new RequestError(`Error ${status}`);
+    return new RequestError(unmappedMessage(status), details);
   };
 
   /**
