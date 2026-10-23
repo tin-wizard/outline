@@ -99,8 +99,20 @@ export interface AskEvents {
   failed: {
     reason: AskFailure;
     partial: boolean;
-    /** For budget and quota: ISO time the limit resets. */
-    detail?: { resetsAt?: string };
+    detail?: {
+      /** For budget and quota: ISO time the limit resets. */
+      resetsAt?: string;
+      /** For unavailable: why; absent from older servers. */
+      cause?:
+        | "billing"
+        | "auth"
+        | "rate_limit"
+        | "overloaded"
+        | "network"
+        | "not_configured";
+      /** For unavailable: the id of the provider that failed, e.g. "anthropic". */
+      provider?: string;
+    };
   };
 }
 

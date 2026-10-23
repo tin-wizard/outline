@@ -732,6 +732,26 @@ describe("source details, timings, retrieval and failure detail", () => {
     ).toBeUndefined();
   });
 
+  it("keeps a known unavailable cause and provider and drops unknown ones", () => {
+    const failed = (detail: Record<string, unknown>): AskEvent => ({
+      event: "failed",
+      data: { partial: false, reason: "unavailable", detail } as never,
+    });
+    const known = run([failed({ cause: "billing", provider: "anthropic" })])
+      .turns[0];
+    expect(known.problem).toBe("unavailable");
+    expect(known.cause).toBe("billing");
+    expect(known.provider).toBe("anthropic");
+    const unknown = run([
+      failed({ cause: "<script>", provider: "bad provider!" }),
+    ]).turns[0];
+    expect(unknown.cause).toBeUndefined();
+    expect(unknown.provider).toBeUndefined();
+    expect(
+      run([failed({ cause: 7, provider: 7 })]).turns[0].cause
+    ).toBeUndefined();
+  });
+
   it("keeps a valid reset time and the scope_forbidden reason", () => {
     const failed = (data: Record<string, unknown>): AskEvent => ({
       event: "failed",

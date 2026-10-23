@@ -48,6 +48,8 @@ import type {
 import env from "../env";
 import { costMicroUsd } from "../pricing";
 import { createAnthropicStreamingProvider } from "../providers/anthropic";
+import { AllProvidersFailedError } from "../providers/chain";
+import * as health from "../providers/health";
 import * as registry from "../providers/registry";
 import * as usage from "../usage";
 import { acquireSlot, releaseSlot, SLOT_TTL_MS } from "../usage";
@@ -58,6 +60,7 @@ import {
   HEARTBEAT_MS,
   limitResetsAt,
   streamLimits,
+  unavailableDetail,
 } from "./ask";
 
 const server = getTestServer();
@@ -790,13 +793,17 @@ describe("#ai.ask", () => {
     });
 
     /** A provider that fails before its first event with `kind`. */
-    const failing = (kind: ProviderErrorKind): StreamingProvider => ({
-      // Unique per test: the in-process breaker outlives a test.
-      id: `failing-${randomUUID()}`,
+    const failing = (
+      kind: ProviderErrorKind,
+      // Unique per test by default: the in-process breaker outlives a test.
+      id = `failing-${randomUUID()}`,
+      message: string = kind
+    ): StreamingProvider => ({
+      id,
       model: "claude-opus-5-5",
       // oxlint-disable-next-line require-yield
       async *stream(): AsyncGenerator<ProviderStreamEvent> {
-        throw new Error(kind);
+        throw new Error(message);
       },
       classify: () => kind,
     });
@@ -831,8 +838,13 @@ describe("#ai.ask", () => {
       const events = await askEvents(user);
       expect(events.at(-1)).toEqual({
         event: "failed",
-        data: { reason: "unavailable", partial: false },
+        data: {
+          reason: "unavailable",
+          partial: false,
+          detail: { cause: "not_configured" },
+        },
       });
+      expect(Object.keys(events.at(-1)?.data.detail)).toEqual(["cause"]);
       expect(bodies).toHaveLength(0);
       expect(await rowsFor(user.teamId)).toHaveLength(0);
       await expectSlotsFree(user.teamId);
@@ -841,20 +853,72 @@ describe("#ai.ask", () => {
     it("all providers fail → failed reason unavailable", async () => {
       const { user } = await setup();
       const bodies = upstream(() => anthropicEvents([cited]));
-      vi.spyOn(registry, "getProviders").mockReturnValue([
+      const providers = [
         failing("billing"),
         failing("rate_limit"),
         failing("overloaded"),
         failing("network"),
         failing("auth"),
-      ]);
+      ];
+      vi.spyOn(registry, "getProviders").mockReturnValue(providers);
       const events = await askEvents(user);
       expect(events.at(-1)).toEqual({
         event: "failed",
-        data: { reason: "unavailable", partial: false },
+        data: {
+          reason: "unavailable",
+          partial: false,
+          detail: { cause: "billing", provider: providers[0].id },
+        },
       });
       expect(bodies).toHaveLength(0);
       await expectSlotsFree(user.teamId);
+    });
+
+    it.each(["billing", "auth", "rate_limit"] as const)(
+      "a %s failure tells the client the cause and the provider id",
+      async (kind) => {
+        const { user } = await setup();
+        // The real id; keep the shared breaker closed for later tests.
+        vi.spyOn(health.defaultHealth, "trip").mockImplementation(() => {});
+        vi.spyOn(registry, "getProviders").mockReturnValue([
+          failing(kind, "anthropic"),
+        ]);
+        const events = await askEvents(user);
+        expect(events.at(-1)).toEqual({
+          event: "failed",
+          data: {
+            reason: "unavailable",
+            partial: false,
+            detail: { cause: kind, provider: "anthropic" },
+          },
+        });
+      }
+    );
+
+    it("sends only the cause and provider id, never the vendor's error text", async () => {
+      const { user } = await setup();
+      const vendorText =
+        "Your credit balance is too low (sk-ant-secret, $0.00)";
+      vi.spyOn(registry, "getProviders").mockReturnValue([
+        failing("overloaded", undefined, vendorText),
+        failing("billing", undefined, vendorText),
+      ]);
+      const events = await askEvents(user);
+      const failed = events.at(-1);
+      expect(failed?.event).toEqual("failed");
+      expect(
+        Object.keys(failed?.data).every((key) =>
+          ["reason", "partial", "detail"].includes(key)
+        )
+      ).toEqual(true);
+      expect(
+        Object.keys(failed?.data.detail).every((key) =>
+          ["cause", "provider", "resetsAt"].includes(key)
+        )
+      ).toEqual(true);
+      expect(failed?.data.detail.cause).toEqual("billing");
+      expect(JSON.stringify(events)).not.toContain("credit balance");
+      expect(JSON.stringify(events)).not.toContain("sk-ant");
     });
 
     it("bills zero when every provider rejected the request", async () => {
@@ -905,6 +969,44 @@ describe("#ai.ask", () => {
       ]);
       const events = await askEvents(user);
       expect(events.at(-1)?.data.reason).toEqual("error");
+    });
+  });
+
+  describe("unavailableDetail", () => {
+    it("picks the most actionable cause and the provider that hit it", () => {
+      expect(
+        unavailableDetail(
+          new AllProvidersFailedError([
+            { provider: "google", kind: "rate_limit" },
+            { provider: "anthropic", kind: "billing" },
+          ])
+        )
+      ).toEqual({ cause: "billing", provider: "anthropic" });
+    });
+
+    it("ranks auth over rate limits, overload and network", () => {
+      expect(
+        unavailableDetail(
+          new AllProvidersFailedError([
+            { provider: "a", kind: "network" },
+            { provider: "b", kind: "overloaded" },
+            { provider: "c", kind: "rate_limit" },
+            { provider: "d", kind: "auth" },
+            { provider: "e", kind: "auth" },
+          ])
+        )
+      ).toEqual({ cause: "auth", provider: "d" });
+    });
+
+    it("never names a cause nobody hit", () => {
+      expect(
+        unavailableDetail(
+          new AllProvidersFailedError([
+            { provider: "a", kind: "network" },
+            { provider: "b", kind: "overloaded" },
+          ])
+        )
+      ).toEqual({ cause: "overloaded", provider: "b" });
     });
   });
 

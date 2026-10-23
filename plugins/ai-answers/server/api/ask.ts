@@ -76,10 +76,23 @@ export type AskFailure =
   | "compare_needs_two"
   | "error";
 
+/** Why AI answers are unavailable, for the person's explanation. */
+export type UnavailableCause =
+  | "billing"
+  | "auth"
+  | "rate_limit"
+  | "overloaded"
+  | "network"
+  | "not_configured";
+
 /** Extra facts about a failure; never names or ids of scoped content. */
 export interface AskFailureDetail {
   /** For `budget` and `quota`: ISO time the limit resets (UTC). */
   resetsAt?: string;
+  /** For `unavailable`: why. */
+  cause?: UnavailableCause;
+  /** For `unavailable`: the id of the provider that failed (e.g. "anthropic"); never a message. */
+  provider?: string;
 }
 
 /** Why a `notice` status was sent. */
@@ -153,6 +166,34 @@ export interface AskEvents {
 
 /** Comment line that keeps proxies and the socket idle timeout from closing a quiet stream. */
 export const HEARTBEAT_MS = 10_000;
+
+/** Provider failure causes, most actionable first. */
+const CAUSE_PRECEDENCE: UnavailableCause[] = [
+  "billing",
+  "auth",
+  "rate_limit",
+  "overloaded",
+  "network",
+];
+
+/**
+ * Explains why every provider failed: the most actionable cause any attempt
+ * hit, and the id of the first provider that hit it. Carries no error text.
+ *
+ * @param error the failure of the whole provider chain.
+ * @returns the cause and provider id, or nothing when no attempt has a known cause.
+ */
+export function unavailableDetail(
+  error: AllProvidersFailedError
+): AskFailureDetail {
+  for (const cause of CAUSE_PRECEDENCE) {
+    const attempt = error.attempts.find(({ kind }) => kind === cause);
+    if (attempt) {
+      return { cause, provider: attempt.provider };
+    }
+  }
+  return {};
+}
 
 /**
  * The configured total cap of a streamed answer, clamped so a bad value can
@@ -563,7 +604,10 @@ router.post(
       // Checked before anything is reserved, so nothing can leak.
       const providers = getProviders();
       if (providers.length === 0) {
-        await finish([], { failed: "unavailable" });
+        await finish([], {
+          failed: "unavailable",
+          detail: { cause: "not_configured" },
+        });
         return;
       }
       const base = {
@@ -731,13 +775,18 @@ router.post(
             usage: rejected ? ZERO_USAGE : streamedUsage(),
             outcome: "error",
           });
-          await finish([], {
-            failed: signal.aborted
-              ? aborted()
-              : error instanceof AllProvidersFailedError
-                ? "unavailable"
-                : "error",
-          });
+          if (signal.aborted) {
+            await finish([], { failed: aborted() });
+            return;
+          }
+          if (error instanceof AllProvidersFailedError) {
+            await finish([], {
+              failed: "unavailable",
+              detail: unavailableDetail(error),
+            });
+            return;
+          }
+          await finish([], { failed: "error" });
           return;
         }
 
