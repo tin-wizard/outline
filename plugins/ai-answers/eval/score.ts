@@ -2,6 +2,15 @@ import { randomBytes } from "node:crypto";
 import { isTextSupported, normalise } from "../server/verify";
 
 export { isLocalUrl } from "./guard.mjs";
+export {
+  DEFAULT_MAX_DROPPED_DELTA,
+  DEFAULT_MIN_ANSWERED_RATIO,
+  aggregateResults,
+  evalProviderSpec,
+  passesGate,
+  requiredKeyVariable,
+} from "./gate.mjs";
+export type { EvalRow, GateVerdict, ProviderEvalResult } from "./gate.mjs";
 
 /** What a case requires of an answer. */
 export interface CaseExpectation {

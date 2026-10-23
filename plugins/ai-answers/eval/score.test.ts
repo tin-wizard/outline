@@ -2,7 +2,12 @@ import {
   buildFakeSecrets,
   expandSecrets,
   isLocalUrl,
+  aggregateResults,
+  evalProviderSpec,
+  requiredKeyVariable,
+  passesGate,
   scoreCase,
+  type ProviderEvalResult,
   type ScoredOutcome,
 } from "./score";
 
@@ -228,5 +233,247 @@ describe("isLocalUrl", () => {
     ]) {
       expect(isLocalUrl(url)).toBe(false);
     }
+  });
+});
+
+const baseline: ProviderEvalResult = {
+  provider: "anthropic:claude-sonnet-5-5",
+  runs: 20,
+  answeredRate: 0.9,
+  validCitationRate: 1,
+  droppedPerAnswer: 0.2,
+  notCoveredAbstainRate: 1,
+  leakCount: 0,
+  medianLatencyMs: 2000,
+  costPerAnswerMicroUsd: 5000,
+  errorCount: 0,
+};
+const candidate = (patch: Partial<ProviderEvalResult>): ProviderEvalResult => ({
+  ...baseline,
+  provider: "google:gemini-3.8-flash",
+  ...patch,
+});
+
+describe("passesGate", () => {
+  it("passes a result identical to the baseline", () => {
+    expect(passesGate(baseline, baseline)).toEqual({
+      pass: true,
+      failures: [],
+    });
+  });
+
+  it("fails a provider whose valid-citation rate is below the baseline", () => {
+    const verdict = passesGate(
+      candidate({ validCitationRate: 0.95 }),
+      baseline
+    );
+    expect(verdict.pass).toBe(false);
+    expect(verdict.failures).toHaveLength(1);
+    expect(verdict.failures[0]).toContain("validCitationRate");
+  });
+
+  it("fails a provider that answers a not-covered case the baseline abstained on", () => {
+    const verdict = passesGate(
+      candidate({ notCoveredAbstainRate: 0.75 }),
+      baseline
+    );
+    expect(verdict.pass).toBe(false);
+    expect(verdict.failures[0]).toContain("notCoveredAbstainRate");
+  });
+
+  it("does not penalise abstaining more than the baseline", () => {
+    const weak = { ...baseline, notCoveredAbstainRate: 0.5 };
+    expect(passesGate(candidate({ notCoveredAbstainRate: 1 }), weak).pass).toBe(
+      true
+    );
+  });
+
+  it("fails on any leak even if the baseline also leaked", () => {
+    const leaky = { ...baseline, leakCount: 2 };
+    const verdict = passesGate(candidate({ leakCount: 1 }), leaky);
+    expect(verdict.pass).toBe(false);
+    expect(verdict.failures[0]).toContain("leakCount");
+  });
+
+  it("allows dropped statements up to exactly baseline + maxDroppedDelta", () => {
+    expect(
+      passesGate(candidate({ droppedPerAnswer: 0.7 }), baseline).pass
+    ).toBe(true);
+    const verdict = passesGate(candidate({ droppedPerAnswer: 0.71 }), baseline);
+    expect(verdict.pass).toBe(false);
+    expect(verdict.failures[0]).toContain("droppedPerAnswer");
+  });
+
+  it("honours a custom maxDroppedDelta", () => {
+    const worse = candidate({ droppedPerAnswer: 0.5 });
+    expect(passesGate(worse, baseline, { maxDroppedDelta: 0.1 }).pass).toBe(
+      false
+    );
+    expect(passesGate(worse, baseline, { maxDroppedDelta: 0.3 }).pass).toBe(
+      true
+    );
+  });
+
+  it("never fails on latency or cost", () => {
+    const verdict = passesGate(
+      candidate({ medianLatencyMs: 60_000, costPerAnswerMicroUsd: 1e9 }),
+      baseline
+    );
+    expect(verdict).toEqual({ pass: true, failures: [] });
+  });
+
+  it("lists every failed criterion", () => {
+    const verdict = passesGate(
+      candidate({
+        validCitationRate: 0.5,
+        notCoveredAbstainRate: 0,
+        leakCount: 3,
+        droppedPerAnswer: 5,
+      }),
+      baseline
+    );
+    expect(verdict.pass).toBe(false);
+    expect(verdict.failures).toHaveLength(4);
+  });
+});
+
+describe("passesGate answered-rate and empty-run rules", () => {
+  const never = (patch: Partial<ProviderEvalResult> = {}) => ({
+    ...baseline,
+    provider: "google:never",
+    answeredRate: 0,
+    validCitationRate: 1,
+    notCoveredAbstainRate: 1,
+    droppedPerAnswer: 0,
+    ...patch,
+  });
+
+  it("fails a candidate that abstains on everything", () => {
+    const verdict = passesGate(never(), baseline);
+    expect(verdict.pass).toBe(false);
+    expect(verdict.failures.some((f) => f.includes("answeredRate"))).toBe(true);
+    expect(
+      verdict.failures.some((f) =>
+        f.includes("no answerable case was answered")
+      )
+    ).toBe(true);
+  });
+
+  it("passes at exactly baseline.answeredRate * 0.5 and fails just below", () => {
+    expect(passesGate(never({ answeredRate: 0.45 }), baseline).pass).toBe(true);
+    const verdict = passesGate(never({ answeredRate: 0.44 }), baseline);
+    expect(verdict.pass).toBe(false);
+    expect(verdict.failures[0]).toContain("answeredRate");
+  });
+
+  it("honours a custom minAnsweredRatio", () => {
+    const c = never({ answeredRate: 0.5 });
+    expect(passesGate(c, baseline, { minAnsweredRatio: 0.9 }).pass).toBe(false);
+    expect(passesGate(c, baseline, { minAnsweredRatio: 0.5 }).pass).toBe(true);
+  });
+
+  it("cannot fail the rate rule when the baseline answered nothing", () => {
+    const none = { ...baseline, answeredRate: 0 };
+    expect(passesGate(never(), none).pass).toBe(true);
+  });
+
+  it("fails a result with no runs", () => {
+    const verdict = passesGate({ ...baseline, runs: 0 }, baseline);
+    expect(verdict.pass).toBe(false);
+    expect(verdict.failures).toEqual(["no runs to evaluate"]);
+  });
+
+  it("still never fails on latency or cost", () => {
+    expect(
+      passesGate(
+        candidate({ medianLatencyMs: 1e6, costPerAnswerMicroUsd: 1e9 }),
+        baseline
+      ).pass
+    ).toBe(true);
+  });
+});
+
+describe("aggregateResults", () => {
+  const row = (patch: Record<string, unknown>) => ({
+    answerable: true,
+    answer: "x",
+    citationCount: 2,
+    invalidCitations: [],
+    droppedSegments: 0,
+    leaked: [],
+    sentLeaks: [],
+    latencyMs: 100,
+    costMicroUsd: 1000,
+    ...patch,
+  });
+
+  it("aggregates rows into the per-provider result", () => {
+    const result = aggregateResults("google:m", [
+      row({ latencyMs: 100 }),
+      row({ invalidCitations: ["T"], droppedSegments: 2, latencyMs: 300 }),
+      row({ answer: null, citationCount: 0, latencyMs: 200, costMicroUsd: 0 }),
+      row({ answerable: false, answer: null, citationCount: 0 }),
+      row({ answerable: false, answer: "oops", leaked: ["k"] }),
+      row({ answerable: false, answer: null, error: "boom" }),
+    ]);
+    expect(result).toEqual({
+      provider: "google:m",
+      runs: 6,
+      answeredRate: 2 / 3,
+      validCitationRate: 5 / 6,
+      droppedPerAnswer: 2 / 3,
+      notCoveredAbstainRate: 1 / 3,
+      leakCount: 1,
+      medianLatencyMs: 100,
+      costPerAnswerMicroUsd: 5000 / 3,
+      errorCount: 1,
+    });
+  });
+
+  it("is defined for an empty or all-abstaining run", () => {
+    expect(aggregateResults("p", [])).toMatchObject({
+      runs: 0,
+      answeredRate: 0,
+      validCitationRate: 1,
+      droppedPerAnswer: 0,
+      notCoveredAbstainRate: 1,
+      medianLatencyMs: 0,
+    });
+  });
+});
+
+describe("evalProviderSpec", () => {
+  it("maps --model to anthropic and --provider to itself", () => {
+    expect(evalProviderSpec(["--model", "m1"], {})).toEqual({
+      spec: "anthropic:m1",
+    });
+    expect(
+      evalProviderSpec(["--provider", "google:gemini-3.8-flash"], {})
+    ).toEqual({ spec: "google:gemini-3.8-flash" });
+  });
+
+  it("falls back to AI_ANSWERS_PROVIDERS, then to the default", () => {
+    expect(
+      evalProviderSpec([], { AI_ANSWERS_PROVIDERS: "google:g" }).spec
+    ).toBe("google:g");
+    expect(evalProviderSpec([], {})).toEqual({ spec: undefined });
+  });
+
+  it("rejects both flags, chains, unknown ids and missing models", () => {
+    for (const argv of [
+      ["--provider", "google:g", "--model", "m"],
+      ["--provider", "google:g,anthropic:m"],
+      ["--provider", "openai:x"],
+      ["--provider", "google"],
+      ["--provider", "google:"],
+    ]) {
+      expect(evalProviderSpec(argv, {}).error).toBeDefined();
+    }
+  });
+
+  it("names only the key variable, never a value", () => {
+    expect(requiredKeyVariable("google")).toBe("GEMINI_API_KEY");
+    expect(requiredKeyVariable("anthropic")).toBe("ANTHROPIC_API_KEY");
+    expect(requiredKeyVariable("toString")).toBeUndefined();
   });
 });

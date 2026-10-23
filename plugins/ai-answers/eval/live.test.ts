@@ -1,5 +1,4 @@
 import { writeFileSync } from "node:fs";
-import Anthropic from "@anthropic-ai/sdk";
 import { server as mswServer } from "@server/test/msw";
 import {
   buildCollection,
@@ -8,12 +7,14 @@ import {
   buildUser,
 } from "@server/test/factories";
 import { BlockSplitter, blockToMarkdown, type Block } from "../server/blocks";
-import type { FinishReason, Usage } from "../server/contract";
+import type {
+  FinishReason,
+  StreamingProvider,
+  Usage,
+} from "../server/contract";
 import env from "../server/env";
-import {
-  createAnthropicStreamingProvider,
-  type AnswerClient,
-} from "../server/providers/anthropic";
+import { costMicroUsd } from "../server/pricing";
+import { getProviders, parseProviderSpec } from "../server/providers/registry";
 import { retrieveSources, type AnswerSource } from "../server/retrieve";
 import { AnswerVerifier } from "../server/verify";
 import cases from "./cases.json";
@@ -21,24 +22,33 @@ import {
   buildFakeSecrets,
   expandSecrets,
   isLocalUrl,
+  requiredKeyVariable,
   scoreCase,
   type CaseExpectation,
 } from "./score";
 
 /**
- * Live evaluation against the real Anthropic API. Never runs in the normal
- * suite: `run.mjs` enables it, and only with an API key and a local database.
+ * Live evaluation against a real provider API. Never runs in the normal
+ * suite: `run.mjs` enables it, and only with the provider's API key and a
+ * local database. The provider comes from `AI_ANSWERS_PROVIDERS` (a single
+ * `id:model`; unset means Anthropic with `AI_ANSWERS_MODEL`).
  */
+const selected = parseProviderSpec(
+  env.AI_ANSWERS_PROVIDERS,
+  env.AI_ANSWERS_MODEL
+);
+const keyVariable = requiredKeyVariable(selected[0]?.id ?? "");
 const enabled =
   process.env.AI_ANSWERS_EVAL_LIVE === "1" &&
-  Boolean(process.env.ANTHROPIC_API_KEY);
+  selected.length === 1 &&
+  Boolean(keyVariable && process.env[keyVariable]);
 
 /**
  * Runs one `ai.ask` turn without HTTP, metering or storage: the same stream,
  * block splitter and verifier the endpoint uses.
  */
 async function askOnce(
-  client: AnswerClient,
+  provider: StreamingProvider,
   question: string,
   sources: AnswerSource[]
 ) {
@@ -60,10 +70,7 @@ async function askOnce(
       }
     }
   };
-  for await (const event of createAnthropicStreamingProvider(
-    client,
-    env.AI_ANSWERS_MODEL
-  ).stream({
+  for await (const event of provider.stream({
     question,
     sources,
     history: [],
@@ -133,11 +140,8 @@ describe.skipIf(!enabled)("ai-answers live eval", () => {
         });
       }
 
-      const client = new Anthropic({
-        apiKey: process.env.ANTHROPIC_API_KEY,
-        timeout: 60_000,
-        maxRetries: 1,
-      });
+      const [provider] = getProviders();
+      const label = `${provider.id}:${provider.model}`;
       const results = [];
       for (const c of cases.cases) {
         const expectation: CaseExpectation = {
@@ -148,7 +152,7 @@ describe.skipIf(!enabled)("ai-answers live eval", () => {
           const started = Date.now();
           try {
             const sources = await retrieveSources(user, { query: c.question });
-            const outcome = await askOnce(client, c.question, sources);
+            const outcome = await askOnce(provider, c.question, sources);
             const score = scoreCase(expectation, {
               answer: outcome.answer,
               citations: outcome.citations,
@@ -161,10 +165,15 @@ describe.skipIf(!enabled)("ai-answers live eval", () => {
               case: c.id,
               stratum: c.stratum,
               run,
+              answerable: c.expect.answerable,
               ...score,
               answer: outcome.answer,
+              citationCount: outcome.citations.length,
               droppedSegments: outcome.droppedSegments,
               usage: outcome.usage,
+              costMicroUsd: outcome.usage
+                ? costMicroUsd(provider.model, outcome.usage)
+                : 0,
               latencyMs: Date.now() - started,
             });
           } catch (err) {
@@ -172,6 +181,7 @@ describe.skipIf(!enabled)("ai-answers live eval", () => {
               case: c.id,
               stratum: c.stratum,
               run,
+              answerable: c.expect.answerable,
               pass: false,
               error: err instanceof Error ? err.message : String(err),
               latencyMs: Date.now() - started,
@@ -183,11 +193,7 @@ describe.skipIf(!enabled)("ai-answers live eval", () => {
       if (out) {
         writeFileSync(
           out,
-          JSON.stringify(
-            { model: process.env.AI_ANSWERS_MODEL ?? "default", results },
-            null,
-            1
-          )
+          JSON.stringify({ provider: label, results }, null, 1)
         );
       }
       expect(results.length).toBeGreaterThan(0);
