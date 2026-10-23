@@ -1,5 +1,5 @@
 import { observer } from "mobx-react";
-import { TableOfContentsIcon, EditIcon } from "outline-icons";
+import { TableOfContentsIcon, EditIcon, PrintIcon } from "outline-icons";
 import { useState, useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
@@ -101,6 +101,10 @@ function DocumentHeader({
       done: true,
     });
   }, [onSave]);
+
+  const handlePrint = useCallback(() => {
+    setTimeout(window.print, 0);
+  }, []);
 
   const handleToggle = useCallback(() => {
     ui.set({ tocVisible: !ui.tocVisible });
@@ -286,6 +290,18 @@ function DocumentHeader({
               >
                 {document.collectionId ? t("Publish") : `${t("Publish")}…`}
               </Button>
+            </Action>
+          )}
+          {!isMobile && !isDeleted && !!window.print && (
+            <Action>
+              <Tooltip content={t("Print")} placement="bottom">
+                <Button
+                  icon={<PrintIcon />}
+                  onClick={handlePrint}
+                  aria-label={t("Print")}
+                  neutral
+                />
+              </Tooltip>
             </Action>
           )}
           <Action>
