@@ -40,7 +40,6 @@ import {
   matchCollectionEdit,
   updateCollectionPath,
 } from "~/utils/routeHelpers";
-import Error404 from "../Errors/Error404";
 import Actions from "./components/Actions";
 import DropToImport from "./components/DropToImport";
 import Empty from "./components/Empty";
@@ -50,6 +49,7 @@ import Notices from "./components/Notices";
 import Overview from "./components/Overview";
 import { CollectionMeta } from "./components/CollectionMeta";
 import { Header } from "./components/Header";
+import { LoadError } from "./components/LoadError";
 import usePersistedState from "~/hooks/usePersistedState";
 import useCurrentUser from "~/hooks/useCurrentUser";
 import { ProsemirrorDataHelper } from "@shared/utils/ProsemirrorDataHelper";
@@ -105,16 +105,20 @@ const CollectionScene = observer(function CollectionScene_() {
     return () => ui.setActiveCollection(undefined);
   }, [ui, collection]);
 
-  useEffect(() => {
-    async function fetchData() {
-      try {
-        setError(undefined);
-        await collections.fetch(id);
-      } catch (err) {
-        setError(toError(err));
-      }
+  const fetchData = async () => {
+    try {
+      setError(undefined);
+      await collections.fetch(id);
+    } catch (err) {
+      setError(toError(err));
     }
+  };
 
+  const handleRetry = () => {
+    void fetchData();
+  };
+
+  useEffect(() => {
     void fetchData();
     // Fetched once on mount, the slug in `id` also changes when the collection
     // is renamed which must not trigger a refetch.
@@ -134,7 +138,7 @@ const CollectionScene = observer(function CollectionScene_() {
   useCommandBarActions([editCollection], [ui.activeCollectionId ?? "none"]);
 
   if (!collection && error) {
-    return <Error404 />;
+    return <LoadError error={error} onRetry={handleRetry} />;
   }
   if (!collection) {
     return <Loading />;

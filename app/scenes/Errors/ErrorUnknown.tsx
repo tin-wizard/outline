@@ -8,7 +8,12 @@ import { navigateToHome } from "~/actions/definitions/navigation";
 import { HStack } from "~/components/primitives/HStack";
 import { VStack } from "~/components/primitives/VStack";
 
-const ErrorUnknown = () => {
+type Props = {
+  /** When set, a "Try again" button calls it to load the page again. */
+  onRetry?: () => void;
+};
+
+const ErrorUnknown = ({ onRetry }: Props) => {
   const { t } = useTranslation();
 
   return (
@@ -23,6 +28,7 @@ const ErrorUnknown = () => {
           </Trans>
         </Empty>
         <HStack>
+          {onRetry ? <Button onClick={onRetry}>{t("Try again")}</Button> : null}
           <Button action={navigateToHome} neutral hideIcon>
             {t("Home")}
           </Button>
