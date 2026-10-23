@@ -7,6 +7,7 @@ import { ThemeProvider } from "styled-components";
 import theme from "@shared/styles/theme";
 import { AnswerTurn } from "./AnswerTurn";
 import type { Turn } from "./model";
+import { unavailableCopy } from "./ProblemNotice";
 
 vi.mock("~/components/Button", () => ({
   default: ({
@@ -20,6 +21,11 @@ vi.mock("~/components/Button", () => ({
       {children}
     </button>
   ),
+}));
+
+let mockIsAdmin = false;
+vi.mock("~/hooks/useCurrentUser", () => ({
+  default: () => ({ isAdmin: mockIsAdmin }),
 }));
 
 const cite = (n: number, url = "/doc/a-abc#h-x", quote?: string) => ({
@@ -154,6 +160,140 @@ describe("error cards", () => {
     const link = host.querySelector("a");
     expect(link?.textContent).toBe("Search instead");
     expect(link?.getAttribute("href")).toBe("/search?q=Q%3F");
+  });
+
+  const failedTurn = (extra: Partial<Turn>): Turn => ({
+    ...base,
+    blocks: [],
+    status: "failed",
+    problem: "unavailable",
+    ...extra,
+  });
+
+  it("shows members what is happening, without vendor names", () => {
+    mockIsAdmin = false;
+    const host = render(
+      failedTurn({ cause: "billing", provider: "anthropic" })
+    );
+    expect(host.textContent).toContain(
+      "AI answers are paused because the AI credit has run out."
+    );
+    expect(host.textContent).not.toContain("Anthropic");
+    expect(host.textContent).not.toContain("Plans & Billing");
+    expect(host.querySelector("a")?.textContent).toBe("Search instead");
+  });
+
+  it("shows admins the provider and how to fix it", () => {
+    mockIsAdmin = true;
+    const host = render(
+      failedTurn({ cause: "billing", provider: "anthropic" })
+    );
+    mockIsAdmin = false;
+    expect(host.textContent).toContain("The Anthropic credit has run out.");
+    expect(host.textContent).toContain("Plans & Billing");
+    expect(host.querySelector("a")?.textContent).toBe("Search instead");
+  });
+
+  it("a turn with no cause keeps the generic copy and the search link", () => {
+    for (const admin of [false, true]) {
+      mockIsAdmin = admin;
+      const host = render(failedTurn({}));
+      expect(host.textContent).toContain(
+        "AI answers are temporarily unavailable."
+      );
+      expect(host.querySelector("a")?.getAttribute("href")).toBe(
+        "/search?q=Q%3F"
+      );
+    }
+    mockIsAdmin = false;
+  });
+
+  it("names an unknown provider as the AI provider", () => {
+    mockIsAdmin = true;
+    const host = render(failedTurn({ cause: "auth", provider: "mystery" }));
+    mockIsAdmin = false;
+    expect(host.textContent).toContain("The AI provider API key was rejected.");
+  });
+
+  describe("unavailableCopy", () => {
+    const t = (key: string, options?: Record<string, unknown>) =>
+      key.replace(/\{\{ ?(\w+) ?\}\}/g, (_, name) => String(options?.[name]));
+    const generic = { title: "AI answers are temporarily unavailable." };
+    const busy = (cause: string) => ({
+      title: "The AI service is busy right now.",
+      body: `Try again in a minute. (Google Gemini reported: ${cause})`,
+    });
+
+    it.each([
+      [
+        "billing",
+        {
+          title: "AI answers are paused because the AI credit has run out.",
+          body: "An admin has been notified. Search still works for every document.",
+        },
+        {
+          title: "The Google Gemini credit has run out.",
+          body: "Add credit in the Google Gemini console (Plans & Billing) and AI answers will resume.",
+        },
+      ],
+      [
+        "auth",
+        {
+          title: "AI answers are temporarily unavailable.",
+          body: "An admin has been notified.",
+        },
+        {
+          title: "The Google Gemini API key was rejected.",
+          body: "Check the API key in the server settings.",
+        },
+      ],
+      [
+        "rate_limit",
+        {
+          title: "The AI service is busy right now.",
+          body: "Try again in a minute.",
+        },
+        busy("rate limit"),
+      ],
+      [
+        "overloaded",
+        {
+          title: "The AI service is busy right now.",
+          body: "Try again in a minute.",
+        },
+        busy("overloaded"),
+      ],
+      [
+        "network",
+        {
+          title: "The AI service is busy right now.",
+          body: "Try again in a minute.",
+        },
+        busy("could not be reached"),
+      ],
+      [
+        "not_configured",
+        { title: "AI answers are not set up on this server." },
+        {
+          title: "No AI provider is configured.",
+          body: "Check the AI provider settings and API key on the server.",
+        },
+      ],
+      ["bogus", generic, generic],
+      [undefined, generic, generic],
+    ])("%s", (cause, member, admin) => {
+      expect(unavailableCopy(t, cause, "google", false)).toEqual(member);
+      expect(unavailableCopy(t, cause, "google", true)).toEqual(admin);
+    });
+
+    it("maps provider display names", () => {
+      expect(unavailableCopy(t, "billing", "anthropic", true).title).toBe(
+        "The Anthropic credit has run out."
+      );
+      expect(unavailableCopy(t, "billing", undefined, true).title).toBe(
+        "The AI provider credit has run out."
+      );
+    });
   });
 
   it("explains compare_needs_two calmly, with no retry", () => {
