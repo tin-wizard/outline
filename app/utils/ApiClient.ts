@@ -130,8 +130,32 @@ function rateLimitMessage(retryAfter: number | undefined): string {
 }
 
 /**
- * The message for a status without a dedicated error, or a client error the
- * server gave no message for.
+ * The default message for a client error the server gave no message for.
+ *
+ * @param status the response status code.
+ * @returns the translated message.
+ */
+function clientErrorMessage(status: number): string {
+  if (status === 400 || status === 422) {
+    return i18next.t("That request wasn't valid.");
+  }
+  if (status === 402) {
+    return i18next.t("This isn't available on your plan.");
+  }
+  if (status === 403) {
+    return i18next.t("You don't have permission to do that.");
+  }
+  if (status === 404) {
+    return i18next.t("That couldn't be found.");
+  }
+  if (status === 499) {
+    return i18next.t("The request was cancelled.");
+  }
+  return unmappedMessage(status);
+}
+
+/**
+ * The message for a status without a dedicated error.
  *
  * @param status the response status code.
  * @returns the translated message.
@@ -414,14 +438,17 @@ class ApiClient {
     extras: Pick<ApiErrorDetails, "retryAfter" | "data"> = {}
   ): Promise<ApiError> => {
     const details: ApiErrorDetails = { status, id: code, ...extras };
-    const clientMessage = message || unmappedMessage(status);
+    const clientMessage = message || clientErrorMessage(status);
 
     if (status === 401) {
       if (!this.shareId) {
         await this.onUnauthorized?.("unauthorized");
       }
+      // A visitor on a public share link never had a session to expire.
       return new AuthorizationError(
-        i18next.t("Your session has expired. Sign in again."),
+        this.shareId
+          ? i18next.t("You don't have access to this.")
+          : i18next.t("Your session has expired. Sign in again."),
         details
       );
     }

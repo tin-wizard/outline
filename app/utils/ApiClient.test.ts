@@ -166,6 +166,38 @@ describe("ApiClient error mapping", () => {
     expect(err).toMatchObject({ status, message: "Server says no" });
   });
 
+  it.each([
+    [400, BadRequestError, "That request wasn't valid."],
+    [402, PaymentRequiredError, "This isn't available on your plan."],
+    [403, AuthorizationError, "You don't have permission to do that."],
+    [404, NotFoundError, "That couldn't be found."],
+    [422, UnprocessableEntityError, "That request wasn't valid."],
+    [499, ClientClosedRequestError, "The request was cancelled."],
+  ])(
+    "gives a %i without a server message a plain default",
+    async (status, Class, message) => {
+      respondWith({ status });
+      const err = await failure();
+      expect(err).toBeInstanceOf(Class);
+      expect(err).toMatchObject({ status, message });
+    }
+  );
+
+  it("tells a share-link visitor they lack access on a 401", async () => {
+    client.setShareId("share-1");
+    try {
+      respondWithJson(401, { error: "authentication_required" });
+      const err = await failure();
+      expect(err).toBeInstanceOf(AuthorizationError);
+      expect(err).toMatchObject({
+        status: 401,
+        message: "You don't have access to this.",
+      });
+    } finally {
+      client.setShareId(undefined);
+    }
+  });
+
   it("reads Retry-After for a 429", async () => {
     respondWithJson(
       429,
