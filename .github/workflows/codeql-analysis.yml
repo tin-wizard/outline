@@ -1,11 +1,17 @@
 name: "CodeQL"
 
 on:
-  push:
-    branches: [main]
+  # Scans pull requests that touch code or dependencies, and weekly; not on
+  # every merge to main. Not a required check, so a path filter is safe here.
   pull_request:
-    # The branches below must be a subset of the branches above
     branches: [main]
+    paths:
+      - "server/**"
+      - "shared/**"
+      - "app/**"
+      - "plugins/**"
+      - "package.json"
+      - "yarn.lock"
   schedule:
     - cron: "28 15 * * 2"
 
