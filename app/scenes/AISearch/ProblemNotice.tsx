@@ -84,7 +84,7 @@ export function unavailableCopy(
               "AI answers are paused because the AI credit has run out."
             ),
             body: t(
-              "An admin has been notified. Search still works for every document."
+              "Please let an admin know. Search still works for every document."
             ),
           };
     case "auth":
@@ -95,25 +95,27 @@ export function unavailableCopy(
             }),
             body: t("Check the API key in the server settings."),
           }
-        : { ...generic, body: t("An admin has been notified.") };
+        : { ...generic, body: t("Please let an admin know.") };
     case "rate_limit":
     case "overloaded":
     case "network": {
+      const providerName = name === "AI provider" ? t("the AI provider") : name;
       const reason =
         cause === "rate_limit"
-          ? t("rate limit")
+          ? t("({{ provider }} reported: rate limit)", {
+              provider: providerName,
+            })
           : cause === "overloaded"
-            ? t("overloaded")
-            : t("could not be reached");
+            ? t("({{ provider }} reported: overloaded)", {
+                provider: providerName,
+              })
+            : t("({{ provider }} reported: could not be reached)", {
+                provider: providerName,
+              });
       const body = t("Try again in a minute.");
       return {
         title: t("The AI service is busy right now."),
-        body: isAdmin
-          ? `${body} ${t("({{ provider }} reported: {{ reason }})", {
-              provider: name === "AI provider" ? t("the AI provider") : name,
-              reason,
-            })}`
-          : body,
+        body: isAdmin ? `${body} ${reason}` : body,
       };
     }
     case "not_configured":

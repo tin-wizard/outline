@@ -229,7 +229,7 @@ describe("error cards", () => {
         "billing",
         {
           title: "AI answers are paused because the AI credit has run out.",
-          body: "An admin has been notified. Search still works for every document.",
+          body: "Please let an admin know. Search still works for every document.",
         },
         {
           title: "The Google Gemini credit has run out.",
@@ -240,7 +240,7 @@ describe("error cards", () => {
         "auth",
         {
           title: "AI answers are temporarily unavailable.",
-          body: "An admin has been notified.",
+          body: "Please let an admin know.",
         },
         {
           title: "The Google Gemini API key was rejected.",
@@ -284,6 +284,21 @@ describe("error cards", () => {
     ])("%s", (cause, member, admin) => {
       expect(unavailableCopy(t, cause, "google", false)).toEqual(member);
       expect(unavailableCopy(t, cause, "google", true)).toEqual(admin);
+    });
+
+    it("never claims an admin was notified", () => {
+      for (const cause of [
+        "billing",
+        "auth",
+        "rate_limit",
+        "overloaded",
+        "network",
+        "not_configured",
+        undefined,
+      ]) {
+        const copy = unavailableCopy(t, cause, "anthropic", false);
+        expect(`${copy.title} ${copy.body ?? ""}`).not.toContain("notified");
+      }
     });
 
     it("maps provider display names", () => {
