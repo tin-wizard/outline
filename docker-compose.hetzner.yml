@@ -42,7 +42,7 @@ services:
         max-file: "3"
 
   outline:
-    image: ghcr.io/tindevelopers/outline:${OUTLINE_TAG:-latest}
+    image: ghcr.io/tin-wizard/outline:${OUTLINE_TAG:-latest}
     restart: unless-stopped
     # The image's entrypoint applies pending database migrations before the
     # server starts, so a rollback to an older tag needs no migration of its
@@ -125,7 +125,7 @@ services:
     image: nickfedor/watchtower:latest
     restart: unless-stopped
     volumes:
-      # ghcr.io/tindevelopers/outline is a public package: no registry
+      # ghcr.io/tin-wizard/outline is a public package: no registry
       # credentials exist on this host (confirmed no /root/.docker/config.json)
       # and none are needed for watchtower to pull it either.
       - /var/run/docker.sock:/var/run/docker.sock:ro
