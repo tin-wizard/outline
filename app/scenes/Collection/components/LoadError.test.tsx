@@ -1,6 +1,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  AuthorizationError,
   BadGatewayError,
   NotFoundError,
   OfflineError,
@@ -8,6 +9,18 @@ import {
 } from "~/utils/errors";
 import { LoadError } from "./LoadError";
 
+vi.mock("~/components/PageTitle", () => ({ default: () => null }));
+vi.mock("~/components/CenteredContent", () => ({
+  default: ({ children }: { children?: React.ReactNode }) => (
+    <div>{children}</div>
+  ),
+}));
+vi.mock("~/actions/definitions/navigation", () => ({ navigateToHome: {} }));
+vi.mock("~/components/Button", () => ({
+  default: ({ children }: { children?: React.ReactNode }) => (
+    <button type="button">{children}</button>
+  ),
+}));
 vi.mock("~/scenes/Errors/Error404", () => ({
   default: () => <div data-testid="404">might have been deleted</div>,
 }));
@@ -72,6 +85,32 @@ describe("collection LoadError", () => {
     const button = host.querySelector('[data-testid="offline"]');
     act(() => (button as HTMLElement).click());
     expect(onRetry).toHaveBeenCalledTimes(1);
+    unmount();
+  });
+
+  it("explains a 403 with no retry", () => {
+    const { host, unmount } = setup(
+      new AuthorizationError("x", { status: 403 })
+    );
+    expect(host.textContent).toContain(
+      "You don't have access to this collection."
+    );
+    expect(host.textContent).toContain(
+      "Ask an admin or the collection's owner for access."
+    );
+    expect(host.textContent).not.toContain("Try again");
+    expect(host.textContent).not.toContain("Something went wrong");
+    expect(host.textContent).not.toContain("might have been deleted");
+    unmount();
+  });
+
+  // A 401 means the session ended; it is not a permission problem.
+  it("sends a 401 to the generic page with retry", () => {
+    const { host, unmount } = setup(
+      new AuthorizationError("x", { status: 401 })
+    );
+    expect(host.querySelector('[data-testid="unknown"]')).not.toBeNull();
+    expect(host.textContent).not.toContain("don't have access");
     unmount();
   });
 });
