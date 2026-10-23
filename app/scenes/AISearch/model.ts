@@ -103,6 +103,10 @@ export interface Turn {
   retryAfter?: number;
   /** ISO time a budget or quota limit resets, when the server said. */
   resetsAt?: string;
+  /** For an unavailable turn: why, when the server said. */
+  cause?: UnavailableCause;
+  /** For an unavailable turn: id of the provider that failed, e.g. "anthropic". */
+  provider?: string;
   /** Server-measured duration of the answer; absent on older turns. */
   timings?: { totalMs: number };
   /** Candidates fetched (capped) and documents used; absent on older turns. */
@@ -341,6 +345,28 @@ const HEX_COLOR = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
 function cleanName(value: unknown): string | undefined {
   const text = typeof value === "string" ? value.trim() : "";
   return text && text.length <= MAX_NAME_LENGTH ? text : undefined;
+}
+
+const UNAVAILABLE_CAUSES = [
+  "billing",
+  "auth",
+  "rate_limit",
+  "overloaded",
+  "network",
+  "not_configured",
+] as const;
+
+/** Why AI answers were unavailable, as the server reports it. */
+export type UnavailableCause = (typeof UNAVAILABLE_CAUSES)[number];
+
+function cleanCause(value: unknown): UnavailableCause | undefined {
+  return UNAVAILABLE_CAUSES.find((cause) => cause === value);
+}
+
+function cleanProvider(value: unknown): string | undefined {
+  return typeof value === "string" && /^[a-z0-9_-]{1,40}$/i.test(value)
+    ? value
+    : undefined;
 }
 
 function cleanDate(value: unknown): string | undefined {
@@ -602,6 +628,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
               ? event.data.reason
               : "error",
             resetsAt: cleanDate(event.data.detail?.resetsAt),
+            cause: cleanCause(event.data.detail?.cause),
+            provider: cleanProvider(event.data.detail?.provider),
           });
         default:
           return state;
