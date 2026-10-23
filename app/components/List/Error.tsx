@@ -4,6 +4,7 @@ import styled from "styled-components";
 import { s } from "@shared/styles";
 import Empty from "~/components/Empty";
 import useEventListener from "~/hooks/useEventListener";
+import { describeError } from "~/utils/describeError";
 import { OfflineError } from "~/utils/errors";
 import ButtonLink from "../ButtonLink";
 import Flex from "../Flex";
@@ -17,6 +18,8 @@ export default function LoadingError({ error, retry, ...rest }: Props) {
   const { t } = useTranslation();
   useEventListener("online", retry);
 
+  const { title, hint } = describeError(t, error);
+
   const message =
     error instanceof OfflineError ? (
       <>
@@ -24,7 +27,7 @@ export default function LoadingError({ error, retry, ...rest }: Props) {
       </>
     ) : (
       <>
-        <WarningIcon /> {t("Sorry, an error occurred.")}
+        <WarningIcon /> {hint ? `${title} ${hint}` : title}
       </>
     );
 

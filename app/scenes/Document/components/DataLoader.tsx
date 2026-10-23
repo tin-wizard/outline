@@ -7,11 +7,7 @@ import { ProsemirrorDataHelper } from "@shared/utils/ProsemirrorDataHelper";
 import { RevisionHelper } from "@shared/utils/RevisionHelper";
 import type Document from "~/models/Document";
 import type Revision from "~/models/Revision";
-import Error402 from "~/scenes/Errors/Error402";
-import Error403 from "~/scenes/Errors/Error403";
 import Error404 from "~/scenes/Errors/Error404";
-import ErrorOffline from "~/scenes/Errors/ErrorOffline";
-import ErrorUnknown from "~/scenes/Errors/ErrorUnknown";
 import { useDocumentContext } from "~/components/DocumentContext";
 import { useSplitView } from "~/components/SplitView/context";
 import useCurrentTeam from "~/hooks/useCurrentTeam";
@@ -21,12 +17,7 @@ import useQuery from "~/hooks/useQuery";
 import useStores from "~/hooks/useStores";
 import type { Properties } from "~/types";
 import Logger from "~/utils/Logger";
-import {
-  AuthorizationError,
-  NotFoundError,
-  OfflineError,
-  PaymentRequiredError,
-} from "~/utils/errors";
+import { NotFoundError } from "~/utils/errors";
 import history from "~/utils/history";
 import {
   matchDocumentEdit,
@@ -34,6 +25,7 @@ import {
   updateDocumentPath,
 } from "~/utils/routeHelpers";
 import useDocumentSidebar from "../hooks/useDocumentSidebar";
+import { DocumentLoadError } from "./DocumentLoadError";
 import Loading from "./Loading";
 import MarkAsViewed from "./MarkAsViewed";
 
@@ -73,6 +65,11 @@ function DataLoader({ match, children }: Props) {
   const user = useCurrentUser();
   const { setDocument } = useDocumentContext();
   const [error, setError] = React.useState<Error | null>(null);
+  const [retryCount, setRetryCount] = React.useState(0);
+  const handleRetry = React.useCallback(() => {
+    setError(null);
+    setRetryCount((count) => count + 1);
+  }, []);
   const { revisionId, documentSlug } = match.params;
 
   // Allows loading by /doc/slug-<urlId> or /doc/<id>
@@ -117,7 +114,7 @@ function DataLoader({ match, children }: Props) {
       }
     }
     void fetchDocument();
-  }, [ui, documents, missingPolicy, documentSlug]);
+  }, [ui, documents, missingPolicy, documentSlug, retryCount]);
 
   const fetchRevisionById = React.useCallback(
     async (id: string, onError: (err: Error) => void) => {
@@ -141,7 +138,7 @@ function DataLoader({ match, children }: Props) {
     if (revisionId) {
       void fetchRevisionById(revisionId, setError);
     }
-  }, [fetchRevisionById, revisionId]);
+  }, [fetchRevisionById, revisionId, retryCount]);
 
   const compareTo = query.get("compareTo");
 
@@ -272,16 +269,12 @@ function DataLoader({ match, children }: Props) {
   }, [document, query, ui]);
 
   if (error) {
-    return error instanceof OfflineError ? (
-      <ErrorOffline />
-    ) : error instanceof PaymentRequiredError ? (
-      <Error402 />
-    ) : error instanceof AuthorizationError ? (
-      <Error403 documentId={documentSlug} />
-    ) : error instanceof NotFoundError ? (
-      <Error404 />
-    ) : (
-      <ErrorUnknown />
+    return (
+      <DocumentLoadError
+        error={error}
+        documentSlug={documentSlug}
+        onRetry={handleRetry}
+      />
     );
   }
 

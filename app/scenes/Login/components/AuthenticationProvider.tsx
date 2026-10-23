@@ -1,13 +1,16 @@
-import { EmailIcon } from "outline-icons";
+import { EmailIcon, WarningIcon } from "outline-icons";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import styled from "styled-components";
 import { Client } from "@shared/types";
 import ButtonLarge from "~/components/ButtonLarge";
 import InputLarge from "~/components/InputLarge";
+import Notice from "~/components/Notice";
 import PluginIcon from "~/components/PluginIcon";
 import { client } from "~/utils/ApiClient";
 import Desktop from "~/utils/Desktop";
+import { describeError } from "~/utils/describeError";
+import type { ErrorDescription } from "~/utils/describeError";
 import { getRedirectUrl } from "~/utils/urls";
 import { PasskeyAuthenticationProvider } from "./PasskeyAuthenticationProvider";
 
@@ -27,12 +30,14 @@ function AuthenticationProvider(props: Props) {
   const [authState, setAuthState] = React.useState<AuthState>("initial");
   const [isSubmitting, setSubmitting] = React.useState(false);
   const [email, setEmail] = React.useState("");
+  const [failure, setFailure] = React.useState<ErrorDescription | undefined>();
   const { isCreate, id, name, authUrl, onEmailSuccess, preferOTP, ...rest } =
     props;
   const clientType = Desktop.isElectron() ? Client.Desktop : Client.Web;
 
   const handleChangeEmail = (event: React.ChangeEvent<HTMLInputElement>) => {
     setEmail(event.target.value);
+    setFailure(undefined);
   };
 
   const handleSubmitEmail = async (
@@ -42,6 +47,7 @@ function AuthenticationProvider(props: Props) {
 
     if (authState === "email" && email) {
       setSubmitting(true);
+      setFailure(undefined);
 
       try {
         const response = await client.post(event.currentTarget.action, {
@@ -56,8 +62,9 @@ function AuthenticationProvider(props: Props) {
           setSubmitting(false);
           onEmailSuccess?.(email);
         }
-      } catch (_err) {
+      } catch (err) {
         setSubmitting(false);
+        setFailure(describeError(t, err));
       }
     } else {
       setAuthState("email");
@@ -77,6 +84,16 @@ function AuthenticationProvider(props: Props) {
 
     return (
       <Wrapper>
+        {failure && (
+          <div role="alert">
+            <Notice
+              icon={<WarningIcon />}
+              description={failure.hint ? <>{failure.hint}</> : undefined}
+            >
+              {failure.title}
+            </Notice>
+          </div>
+        )}
         <Form method="POST" action="/auth/email" onSubmit={handleSubmitEmail}>
           {authState === "email" ? (
             <>

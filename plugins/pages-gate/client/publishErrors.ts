@@ -56,10 +56,10 @@ export function classifyPublishFailure(
   if (name === "RateLimitExceededError") {
     return { kind: "rate_limited" };
   }
-  // The client reports unmapped statuses, such as 409, as "Error <status>",
+  // The client reports unmapped statuses, such as 409, with a generic message,
   // dropping the reason. Only a rotation can be told "nothing to rotate";
   // a publish 409 means the live entry page could not be read.
-  if (name === "RequestError" && message === "Error 409") {
+  if (name === "RequestError" && readStatus(err) === 409) {
     return {
       kind:
         attempt.action === "rotate" ? "nothing_to_rotate" : "state_conflict",
@@ -91,6 +91,13 @@ export function classifyPublishFailure(
  */
 export function isStaleCleanupWarning(warning: string): boolean {
   return /remain in storage/i.test(warning);
+}
+
+function readStatus(value: unknown): number | undefined {
+  if (typeof value !== "object" || value === null || !("status" in value)) {
+    return undefined;
+  }
+  return typeof value.status === "number" ? value.status : undefined;
 }
 
 function readString(value: unknown, key: "name" | "message"): string {

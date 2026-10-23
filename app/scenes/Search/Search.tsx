@@ -36,6 +36,7 @@ import { preventDefault } from "~/utils/events";
 import { searchPath } from "~/utils/routeHelpers";
 import { decodeURIComponentSafe, isTruthyQueryValue } from "~/utils/urls";
 import { AskAIButton } from "./components/AskAIButton";
+import { SearchError } from "./components/SearchError";
 import CollectionFilter from "./components/CollectionFilter";
 import DateFilter from "./components/DateFilter";
 import { DocumentFilter } from "./components/DocumentFilter";
@@ -206,9 +207,25 @@ function Search() {
     return () => Promise.resolve([] as SearchResult[]);
   }, [query, titleFilter, requestParams, searches, documents, isSearchable]);
 
-  const { data, next, end, error, loading } = usePaginatedRequest(requestFn, {
-    limit: Pagination.defaultLimit,
-  });
+  // A new function identity makes the paginated request start over, which is
+  // how a failed search is run again without re-adding it to recent searches.
+  const [retryCount, setRetryCount] = React.useState(0);
+  const retryableRequestFn = React.useMemo(
+    () => (params?: PaginationParams) => requestFn(params),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [requestFn, retryCount]
+  );
+  const handleRetry = React.useCallback(
+    () => setRetryCount((count) => count + 1),
+    []
+  );
+
+  const { data, next, end, error, loading } = usePaginatedRequest(
+    retryableRequestFn,
+    {
+      limit: Pagination.defaultLimit,
+    }
+  );
 
   // Only updatable documents are selectable, matching the per-item checkboxes.
   const itemIds = React.useMemo(
@@ -408,15 +425,7 @@ function Search() {
           <>
             {error ? (
               <Fade>
-                <Centered column>
-                  <Text as="h1">{t("Something went wrong")}</Text>
-                  <Text as="p" type="secondary">
-                    {t(
-                      "Please try again or contact support if the problem persists"
-                    )}
-                    .
-                  </Text>
-                </Centered>
+                <SearchError error={error} onRetry={handleRetry} />
               </Fade>
             ) : showEmpty ? (
               <Fade>

@@ -13,7 +13,13 @@ import {
   isStaleCleanupWarning,
 } from "./publishErrors";
 
-const err = (name: string, message: string) => ({ name, message });
+const err = (name: string, message: string, status?: number) => ({
+  name,
+  message,
+  status,
+});
+const conflictMessage =
+  "This changed since you opened it. Reload and try again.";
 const publish: PublishAttempt = {
   action: "publish",
   sentSources: false,
@@ -59,7 +65,7 @@ describe("classifyPublishFailure", () => {
 
   it("maps a 409 and rate limiting", () => {
     expect(
-      classifyPublishFailure(err("RequestError", "Error 409"), publish)
+      classifyPublishFailure(err("RequestError", conflictMessage, 409), publish)
     ).toEqual({ kind: "state_conflict" });
     expect(
       classifyPublishFailure(err("RateLimitExceededError", "slow"), publish)
@@ -124,7 +130,7 @@ describe("tie to the server's real errors", () => {
   });
 
   it("tells a rotation 409 from a publish 409", () => {
-    const conflict = err("RequestError", "Error 409");
+    const conflict = err("RequestError", conflictMessage, 409);
     expect(classifyPublishFailure(conflict, rotate)).toEqual({
       kind: "nothing_to_rotate",
     });
