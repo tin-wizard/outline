@@ -49,6 +49,8 @@ type UnauthorizedHandler = (reason: UnauthorizedReason) => void | Promise<void>;
 
 interface FetchOptions {
   download?: boolean;
+  /** Resolves with the response body as a Blob instead of parsing it as JSON. */
+  blob?: boolean;
   retry?: boolean;
   credentials?: "omit" | "same-origin" | "include";
   headers?: Record<string, string>;
@@ -260,6 +262,8 @@ class ApiClient {
       ).split("filename=")[1];
       download(blob, trim(fileName, '"'));
       return undefined as T;
+    } else if (options.blob && success) {
+      return (await response.blob()) as T;
     } else if (success && response.status === 204) {
       return undefined as T;
     } else if (success) {

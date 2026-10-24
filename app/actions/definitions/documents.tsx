@@ -56,6 +56,7 @@ import { Week } from "@shared/utils/time";
 import type UserMembership from "~/models/UserMembership";
 import Document from "~/models/Document";
 import { client } from "~/utils/ApiClient";
+import { canPrintAsPdf, printAsPdf } from "~/utils/printPdf";
 import DocumentDelete from "~/scenes/DocumentDelete";
 import { ProsemirrorHelper } from "~/models/helpers/ProsemirrorHelper";
 import DocumentPermanentDelete from "~/scenes/DocumentPermanentDelete";
@@ -1199,7 +1200,24 @@ export const printDocument = createAction({
   icon: <PrintIcon />,
   iconInContextMenu: false,
   visible: ({ activeDocumentId }) => !!(activeDocumentId && window.print),
-  perform: () => {
+  perform: async ({ t, activeDocumentId, stores }) => {
+    const document = activeDocumentId
+      ? stores.documents.get(activeDocumentId)
+      : undefined;
+
+    // Printing the page as it is on screen looks like a web page, so a PDF laid
+    // out like a document is printed instead where it can be made.
+    if (
+      document &&
+      canPrintAsPdf() &&
+      stores.policies.abilities(document.id).download
+    ) {
+      await printAsPdf(() => document.fetchPdf(), {
+        preparing: `${t("Preparing to print")}…`,
+      });
+      return;
+    }
+
     setTimeout(window.print, 0);
   },
 });

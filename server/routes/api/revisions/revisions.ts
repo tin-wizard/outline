@@ -138,7 +138,7 @@ router.post(
   auth(),
   validate(T.RevisionsExportSchema),
   async (ctx: APIContext<T.RevisionsExportReq>) => {
-    const { id } = ctx.input.body;
+    const { id, pageSize } = ctx.input.body;
     const { user } = ctx.state.auth;
     const accept = ctx.request.headers["accept"];
 
@@ -175,7 +175,8 @@ router.post(
 
       const pdf = await DocumentPdfExporter.exportDocument(
         revision,
-        document.teamId
+        document.teamId,
+        { pageSize }
       );
       ctx.set("Content-Type", ExportContentType.Pdf);
       ctx.set(

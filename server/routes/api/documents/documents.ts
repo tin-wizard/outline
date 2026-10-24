@@ -944,7 +944,7 @@ router.post(
   auth(),
   validate(T.DocumentsExportSchema),
   async (ctx: APIContext<T.DocumentsExportReq>) => {
-    const { id, signedUrls, includeChildDocuments } = ctx.input.body;
+    const { id, signedUrls, includeChildDocuments, pageSize } = ctx.input.body;
     const { user } = ctx.state.auth;
     const accept = ctx.request.headers["accept"];
 
@@ -983,7 +983,8 @@ router.post(
 
       const pdf = await DocumentPdfExporter.exportDocument(
         document,
-        document.teamId
+        document.teamId,
+        { pageSize }
       );
       ctx.set("Content-Type", ExportContentType.Pdf);
       ctx.set(

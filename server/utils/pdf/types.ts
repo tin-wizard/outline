@@ -1,5 +1,6 @@
-/** Paper sizes that documents can be exported to. */
-export type PdfPageSize = "Letter" | "A4";
+import type { PdfPageSize } from "@shared/types";
+
+export type { PdfPageSize };
 
 /** A single titled section of a printed document. */
 export interface PrintChapter {
