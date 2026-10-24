@@ -799,15 +799,21 @@ export const downloadDocumentAsPDF = createAction({
       stores.policies.abilities(activeDocumentId).download &&
       env.PDF_EXPORT_ENABLED
     ),
-  perform: async ({ activeDocumentId, stores }) => {
+  perform: async ({ t, activeDocumentId, stores }) => {
     if (!activeDocumentId) {
       return;
     }
 
-    const document = stores.documents.get(activeDocumentId);
-    await document?.download({
-      contentType: ExportContentType.Pdf,
-    });
+    const id = toast.loading(`${t("Exporting")}…`);
+    try {
+      const document = stores.documents.get(activeDocumentId);
+      await document?.download({
+        contentType: ExportContentType.Pdf,
+        includeChildDocuments: false,
+      });
+    } finally {
+      toast.dismiss(id);
+    }
   },
 });
 

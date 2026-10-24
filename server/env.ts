@@ -401,6 +401,25 @@ export class Environment {
     environment.ENABLE_UPDATES ?? environment.TELEMETRY ?? "true"
   );
 
+  /**
+   * Whether documents can be exported to PDF. PDF export renders documents in
+   * a headless Chromium browser, which must be available to the server.
+   */
+  @Public
+  @IsBoolean()
+  public PDF_EXPORT_ENABLED = this.toBoolean(
+    environment.PDF_EXPORT_ENABLED ?? "true"
+  );
+
+  /**
+   * Path to the Chromium executable used for PDF export. When unset the
+   * browser installed by Playwright is used.
+   */
+  @IsOptional()
+  public PDF_EXPORT_CHROMIUM_PATH = this.toOptionalString(
+    environment.PDF_EXPORT_CHROMIUM_PATH
+  );
+
   // Third-party services
 
   /**
