@@ -18,12 +18,13 @@ import type {
 import {
   type DocumentPreference,
   type DocumentPreferences,
-  type ExportContentType,
+  ExportContentType,
   FileOperationFormat,
   NavigationNodeType,
   NotificationEventType,
 } from "@shared/types";
 import { DocumentPreferenceDefaults } from "@shared/constants";
+import { defaultPageSize } from "@shared/utils/pageSize";
 import Storage from "@shared/utils/Storage";
 import { isRTL } from "@shared/utils/rtl";
 import slugify from "@shared/utils/slugify";
@@ -750,6 +751,9 @@ export default class Document extends ArchivableModel implements Searchable {
       {
         id: this.id,
         includeChildDocuments,
+        ...(contentType === ExportContentType.Pdf
+          ? { pageSize: defaultPageSize(navigator.language) }
+          : {}),
       },
       {
         ...(includeChildDocuments ? {} : { download: true }),
@@ -766,4 +770,26 @@ export default class Document extends ArchivableModel implements Searchable {
 
     return response;
   };
+
+  /**
+   * Renders the document, without its nested documents, to a PDF laid out for
+   * printing.
+   *
+   * @returns the PDF file.
+   */
+  fetchPdf = () =>
+    client.post<Blob>(
+      `/documents.export`,
+      {
+        id: this.id,
+        includeChildDocuments: false,
+        pageSize: defaultPageSize(navigator.language),
+      },
+      {
+        blob: true,
+        headers: {
+          accept: ExportContentType.Pdf,
+        },
+      }
+    );
 }

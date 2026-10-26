@@ -197,6 +197,7 @@
     "patch-package": "^8.0.1",
     "pg": "^8.20.0",
     "pg-tsquery": "^8.4.2",
+    "playwright-core": "1.63.0",
     "pluralize": "^8.0.0",
     "png-chunks-extract": "^1.0.0",
     "polished": "^4.3.1",

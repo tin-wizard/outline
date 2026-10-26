@@ -56,6 +56,7 @@ import { Week } from "@shared/utils/time";
 import type UserMembership from "~/models/UserMembership";
 import Document from "~/models/Document";
 import { client } from "~/utils/ApiClient";
+import { canPrintAsPdf, printAsPdf } from "~/utils/printPdf";
 import DocumentDelete from "~/scenes/DocumentDelete";
 import { ProsemirrorHelper } from "~/models/helpers/ProsemirrorHelper";
 import DocumentPermanentDelete from "~/scenes/DocumentPermanentDelete";
@@ -799,15 +800,21 @@ export const downloadDocumentAsPDF = createAction({
       stores.policies.abilities(activeDocumentId).download &&
       env.PDF_EXPORT_ENABLED
     ),
-  perform: async ({ activeDocumentId, stores }) => {
+  perform: async ({ t, activeDocumentId, stores }) => {
     if (!activeDocumentId) {
       return;
     }
 
-    const document = stores.documents.get(activeDocumentId);
-    await document?.download({
-      contentType: ExportContentType.Pdf,
-    });
+    const id = toast.loading(`${t("Exporting")}…`);
+    try {
+      const document = stores.documents.get(activeDocumentId);
+      await document?.download({
+        contentType: ExportContentType.Pdf,
+        includeChildDocuments: false,
+      });
+    } finally {
+      toast.dismiss(id);
+    }
   },
 });
 
@@ -1193,7 +1200,24 @@ export const printDocument = createAction({
   icon: <PrintIcon />,
   iconInContextMenu: false,
   visible: ({ activeDocumentId }) => !!(activeDocumentId && window.print),
-  perform: () => {
+  perform: async ({ t, activeDocumentId, stores }) => {
+    const document = activeDocumentId
+      ? stores.documents.get(activeDocumentId)
+      : undefined;
+
+    // Printing the page as it is on screen looks like a web page, so a PDF laid
+    // out like a document is printed instead where it can be made.
+    if (
+      document &&
+      canPrintAsPdf() &&
+      stores.policies.abilities(document.id).download
+    ) {
+      await printAsPdf(() => document.fetchPdf(), {
+        preparing: `${t("Preparing to print")}…`,
+      });
+      return;
+    }
+
     setTimeout(window.print, 0);
   },
 });

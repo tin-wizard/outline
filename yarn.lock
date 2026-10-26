@@ -15765,6 +15765,7 @@ __metadata:
     patch-package: "npm:^8.0.1"
     pg: "npm:^8.20.0"
     pg-tsquery: "npm:^8.4.2"
+    playwright-core: "npm:1.63.0"
     pluralize: "npm:^8.0.0"
     png-chunks-extract: "npm:^1.0.0"
     polished: "npm:^4.3.1"
@@ -16713,6 +16714,15 @@ __metadata:
   dependencies:
     find-up: "npm:^3.0.0"
   checksum: 10c0/ecb60e1f8e1f611c0bdf1a0b6a474d6dfb51185567dc6f29cdef37c8d480ecba5362e006606bb290519bbb6f49526c403fabea93c3090c20368d98bb90c999ab
+  languageName: node
+  linkType: hard
+
+"playwright-core@npm:1.63.0":
+  version: 1.63.0
+  resolution: "playwright-core@npm:1.63.0"
+  bin:
+    playwright-core: cli.js
+  checksum: 10c0/39c1ebae4029ca2e9371e00a5588d962038e24b6e0bdb7d0d27374dde04838f349b83ae0c8b3b648653d0935cba7fb9011f1201adaab9dd0db7801ad6c75e9aa
   languageName: node
   linkType: hard
 

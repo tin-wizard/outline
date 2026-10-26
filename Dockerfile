@@ -40,9 +40,11 @@ COPY --from=base --chown=nodejs:nodejs $APP_PATH/.sequelizerc ./.sequelizerc
 COPY --from=base --chown=nodejs:nodejs $APP_PATH/node_modules ./node_modules
 COPY --from=base --chown=nodejs:nodejs $APP_PATH/package.json ./package.json
 # Install wget to healthcheck the server
+# Install Chromium and fonts used to render PDF exports
 RUN  apt-get update \
-    && apt-get install -y wget \
+    && apt-get install -y wget chromium fonts-liberation fonts-noto-core fonts-noto-color-emoji \
     && rm -rf /var/lib/apt/lists/*
+ENV PDF_EXPORT_CHROMIUM_PATH=/usr/bin/chromium
 
 ENV FILE_STORAGE_LOCAL_ROOT_DIR=/var/lib/outline/data
 RUN mkdir -p "$FILE_STORAGE_LOCAL_ROOT_DIR" && \

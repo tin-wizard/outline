@@ -1,9 +1,10 @@
 import { computed, observable } from "mobx";
 import {
   type AuthenticationType,
-  type ExportContentType,
+  ExportContentType,
   type ProsemirrorData,
 } from "@shared/types";
+import { defaultPageSize } from "@shared/utils/pageSize";
 import { isRTL } from "@shared/utils/rtl";
 import Document from "./Document";
 import User from "./User";
@@ -122,11 +123,34 @@ class Revision extends ParanoidModel {
       `/revisions.export`,
       {
         id: this.id,
+        ...(contentType === ExportContentType.Pdf
+          ? { pageSize: defaultPageSize(navigator.language) }
+          : {}),
       },
       {
         download: true,
         headers: {
           accept: contentType,
+        },
+      }
+    );
+
+  /**
+   * Renders the revision to a PDF laid out for printing.
+   *
+   * @returns the PDF file.
+   */
+  fetchPdf = () =>
+    client.post<Blob>(
+      `/revisions.export`,
+      {
+        id: this.id,
+        pageSize: defaultPageSize(navigator.language),
+      },
+      {
+        blob: true,
+        headers: {
+          accept: ExportContentType.Pdf,
         },
       }
     );

@@ -267,6 +267,8 @@ export const DocumentsExportSchema = BaseSchema.extend({
   body: BaseIdSchema.extend({
     signedUrls: z.number().optional(),
     includeChildDocuments: z.boolean().prefault(false),
+    /** Paper size when exporting to PDF, defaults to US Letter. */
+    pageSize: z.enum(["Letter", "A4"]).optional(),
   }),
 });
 

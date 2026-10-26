@@ -6,6 +6,7 @@ import mime from "mime-types";
 import { ExportContentType, UserRole } from "@shared/types";
 import { RevisionHelper } from "@shared/utils/RevisionHelper";
 import slugify from "@shared/utils/slugify";
+import env from "@server/env";
 import { ValidationError, IncorrectEditionError } from "@server/errors";
 import auth from "@server/middlewares/authentication";
 import { rateLimiter } from "@server/middlewares/rateLimiter";
@@ -20,6 +21,7 @@ import { authorize } from "@server/policies";
 import { presentPolicies, presentRevision } from "@server/presenters";
 import type { APIContext } from "@server/types";
 import { RateLimiterStrategy } from "@server/utils/RateLimiter";
+import DocumentPdfExporter from "@server/utils/pdf/DocumentPdfExporter";
 import { streamZipResponse } from "@server/utils/koa";
 import pagination from "../middlewares/pagination";
 import * as T from "./schema";
@@ -136,7 +138,7 @@ router.post(
   auth(),
   validate(T.RevisionsExportSchema),
   async (ctx: APIContext<T.RevisionsExportReq>) => {
-    const { id } = ctx.input.body;
+    const { id, pageSize } = ctx.input.body;
     const { user } = ctx.state.auth;
     const accept = ctx.request.headers["accept"];
 
@@ -167,9 +169,24 @@ router.post(
         includeMermaid: true,
       });
     } else if (accept?.includes("application/pdf")) {
-      throw IncorrectEditionError(
-        "PDF export is not available in the community edition"
+      if (!env.PDF_EXPORT_ENABLED) {
+        throw IncorrectEditionError("PDF export is not enabled");
+      }
+
+      const pdf = await DocumentPdfExporter.exportDocument(
+        revision,
+        document.teamId,
+        { pageSize }
       );
+      ctx.set("Content-Type", ExportContentType.Pdf);
+      ctx.set(
+        "Content-Disposition",
+        contentDisposition(`${slugify(revision.title)}.pdf`, {
+          type: "attachment",
+        })
+      );
+      ctx.body = pdf;
+      return;
     } else if (isTextBundle || accept?.includes("text/markdown")) {
       contentType = "text/markdown";
       content = await DocumentHelper.toMarkdown(revision, {

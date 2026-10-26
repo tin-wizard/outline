@@ -68,6 +68,9 @@ export enum ExportContentType {
   Pdf = "application/pdf",
 }
 
+/** Paper sizes that documents can be exported to as PDF. */
+export type PdfPageSize = "Letter" | "A4";
+
 export enum FileOperationFormat {
   JSON = "json",
   MarkdownZip = "outline-markdown",

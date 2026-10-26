@@ -62,6 +62,8 @@ export type RevisionsDeleteReq = z.infer<typeof RevisionsDeleteSchema>;
 export const RevisionsExportSchema = BaseSchema.extend({
   body: z.object({
     id: z.uuid(),
+    /** Paper size when exporting to PDF, defaults to US Letter. */
+    pageSize: z.enum(["Letter", "A4"]).optional(),
   }),
 });
 

@@ -34,6 +34,7 @@ import documentPermanentDeleter from "@server/commands/documentPermanentDeleter"
 import documentRestorer from "@server/commands/documentRestorer";
 import documentUpdater from "@server/commands/documentUpdater";
 import env from "@server/env";
+import DocumentPdfExporter from "@server/utils/pdf/DocumentPdfExporter";
 import {
   InvalidRequestError,
   AuthenticationError,
@@ -943,7 +944,7 @@ router.post(
   auth(),
   validate(T.DocumentsExportSchema),
   async (ctx: APIContext<T.DocumentsExportReq>) => {
-    const { id, signedUrls, includeChildDocuments } = ctx.input.body;
+    const { id, signedUrls, includeChildDocuments, pageSize } = ctx.input.body;
     const { user } = ctx.state.auth;
     const accept = ctx.request.headers["accept"];
 
@@ -971,9 +972,29 @@ router.post(
             : null;
 
     if (format === FileOperationFormat.PDF) {
-      throw IncorrectEditionError(
-        "PDF export is not available in the community edition"
+      if (!env.PDF_EXPORT_ENABLED) {
+        throw IncorrectEditionError("PDF export is not enabled");
+      }
+      if (includeChildDocuments) {
+        throw InvalidRequestError(
+          "Exporting nested documents to PDF is not supported yet"
+        );
+      }
+
+      const pdf = await DocumentPdfExporter.exportDocument(
+        document,
+        document.teamId,
+        { pageSize }
       );
+      ctx.set("Content-Type", ExportContentType.Pdf);
+      ctx.set(
+        "Content-Disposition",
+        contentDisposition(`${slugify(document.titleWithDefault)}.pdf`, {
+          type: "attachment",
+        })
+      );
+      ctx.body = pdf;
+      return;
     }
 
     if (includeChildDocuments) {
