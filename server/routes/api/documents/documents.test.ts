@@ -24,7 +24,6 @@ import {
   UserMembership,
   SearchQuery,
   Event,
-  FileOperation,
   GroupMembership,
   Relationship,
 } from "@server/models";
@@ -652,6 +651,7 @@ describe("#documents.export", () => {
   });
 
   it("should not export a PDF when it is disabled", async () => {
+    const enabled = env.PDF_EXPORT_ENABLED;
     env.PDF_EXPORT_ENABLED = false;
     try {
       const user = await buildUser();
@@ -669,7 +669,7 @@ describe("#documents.export", () => {
       });
       expect(res.status).toEqual(402);
     } finally {
-      env.PDF_EXPORT_ENABLED = true;
+      env.PDF_EXPORT_ENABLED = enabled;
     }
   });
 

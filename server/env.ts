@@ -403,12 +403,13 @@ export class Environment {
 
   /**
    * Whether documents can be exported to PDF. PDF export renders documents in
-   * a headless Chromium browser, which must be available to the server.
+   * a headless Chromium browser, which must be available to the server. Off
+   * by default, so Print falls back to the browser's own page print.
    */
   @Public
   @IsBoolean()
   public PDF_EXPORT_ENABLED = this.toBoolean(
-    environment.PDF_EXPORT_ENABLED ?? "true"
+    environment.PDF_EXPORT_ENABLED ?? "false"
   );
 
   /**
