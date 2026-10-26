@@ -13,6 +13,7 @@ import {
   ImportIcon,
   PinIcon,
   SearchIcon,
+  SparklesIcon,
   UnsubscribeIcon,
   SubscribeIcon,
   MoveIcon,
@@ -43,7 +44,7 @@ import {
 } from "outline-icons";
 import { toast } from "sonner";
 import Icon from "@shared/components/Icon";
-import type { NavigationNode } from "@shared/types";
+import { TeamPreference, type NavigationNode } from "@shared/types";
 import {
   DocumentPreference,
   ExportContentType,
@@ -55,6 +56,7 @@ import { Week } from "@shared/utils/time";
 import type UserMembership from "~/models/UserMembership";
 import Document from "~/models/Document";
 import { client } from "~/utils/ApiClient";
+import { canPrintAsPdf, printAsPdf } from "~/utils/printPdf";
 import DocumentDelete from "~/scenes/DocumentDelete";
 import { ProsemirrorHelper } from "~/models/helpers/ProsemirrorHelper";
 import DocumentPermanentDelete from "~/scenes/DocumentPermanentDelete";
@@ -95,6 +97,7 @@ import {
   newNestedDocumentPath,
   newSiblingDocumentPath,
   searchPath,
+  aiPath,
   documentPath,
   urlify,
   desktopify,
@@ -113,6 +116,7 @@ import type {
 } from "~/types";
 import lazyWithRetry from "~/utils/lazyWithRetry";
 import env from "~/env";
+import { canUseAIAnswers } from "~/hooks/useAIAnswersEnabled";
 import { isMac, isWindows } from "@shared/utils/browser";
 import isCloudHosted from "~/utils/isCloudHosted";
 import DocumentMove from "~/components/DocumentExplorer/DocumentMove";
@@ -796,15 +800,21 @@ export const downloadDocumentAsPDF = createAction({
       stores.policies.abilities(activeDocumentId).download &&
       env.PDF_EXPORT_ENABLED
     ),
-  perform: async ({ activeDocumentId, stores }) => {
+  perform: async ({ t, activeDocumentId, stores }) => {
     if (!activeDocumentId) {
       return;
     }
 
-    const document = stores.documents.get(activeDocumentId);
-    await document?.download({
-      contentType: ExportContentType.Pdf,
-    });
+    const id = toast.loading(`${t("Exporting")}…`);
+    try {
+      const document = stores.documents.get(activeDocumentId);
+      await document?.download({
+        contentType: ExportContentType.Pdf,
+        includeChildDocuments: false,
+      });
+    } finally {
+      toast.dismiss(id);
+    }
   },
 });
 
@@ -1146,6 +1156,43 @@ export const searchInDocument = createInternalLinkAction({
   },
 });
 
+export const askAIAboutDocument = createInternalLinkAction({
+  name: ({ t }) => t("Ask AI about this document"),
+  analyticsName: "Ask AI about document",
+  section: ActiveDocumentSection,
+  icon: <SparklesIcon />,
+  visible: ({ stores, activeDocumentId }) => {
+    if (
+      !activeDocumentId ||
+      !stores.documents.get(activeDocumentId)?.isActive
+    ) {
+      return false;
+    }
+    const { user, team } = stores.auth;
+    return canUseAIAnswers({
+      available: env.AI_ANSWERS_ENABLED === true,
+      preference: !!team?.getPreference(TeamPreference.AIAnswers),
+      isGuest: !!user?.isGuest,
+      isViewer: !!user?.isViewer,
+    });
+  },
+  to: ({ activeDocumentId, sidebarContext }) => {
+    if (!activeDocumentId) {
+      return "";
+    }
+
+    const [pathname, search] = aiPath({ documentId: activeDocumentId }).split(
+      "?"
+    );
+
+    return {
+      pathname,
+      search,
+      state: { sidebarContext },
+    };
+  },
+});
+
 export const printDocument = createAction({
   name: ({ t, isMenu }) => (isMenu ? t("Print") : t("Print document")),
   analyticsName: "Print document",
@@ -1153,7 +1200,24 @@ export const printDocument = createAction({
   icon: <PrintIcon />,
   iconInContextMenu: false,
   visible: ({ activeDocumentId }) => !!(activeDocumentId && window.print),
-  perform: () => {
+  perform: async ({ t, activeDocumentId, stores }) => {
+    const document = activeDocumentId
+      ? stores.documents.get(activeDocumentId)
+      : undefined;
+
+    // Printing the page as it is on screen looks like a web page, so a PDF laid
+    // out like a document is printed instead where it can be made.
+    if (
+      document &&
+      canPrintAsPdf() &&
+      stores.policies.abilities(document.id).download
+    ) {
+      await printAsPdf(() => document.fetchPdf(), {
+        preparing: `${t("Preparing to print")}…`,
+      });
+      return;
+    }
+
     setTimeout(window.print, 0);
   },
 });

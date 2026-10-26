@@ -1,6 +1,7 @@
 import path from "node:path";
 import { glob } from "glob";
 import type Router from "koa-router";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { isArray, sortBy } from "es-toolkit/compat";
 import type BaseEmail from "@server/emails/templates/BaseEmail";
 import env from "@server/env";
@@ -43,6 +44,7 @@ export enum Hook {
   UnfurlProvider = "unfurl",
   Uninstall = "uninstall",
   GroupSyncProvider = "groupSyncProvider",
+  MCPTools = "mcpTools",
 }
 
 /**
@@ -62,6 +64,7 @@ type PluginValueMap = {
   [Hook.Uninstall]: UninstallSignature;
   [Hook.UnfurlProvider]: { unfurl: UnfurlSignature; cacheExpiry: number };
   [Hook.GroupSyncProvider]: { id: string; provider: GroupSyncProvider };
+  [Hook.MCPTools]: (server: McpServer, scopes: string[]) => void;
 };
 
 export type Plugin<T extends Hook> = {

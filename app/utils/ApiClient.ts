@@ -49,10 +49,14 @@ type UnauthorizedHandler = (reason: UnauthorizedReason) => void | Promise<void>;
 
 interface FetchOptions {
   download?: boolean;
+  /** Resolves with the response body as a Blob instead of parsing it as JSON. */
+  blob?: boolean;
   retry?: boolean;
   credentials?: "omit" | "same-origin" | "include";
   headers?: Record<string, string>;
   baseUrl?: string;
+  /** Aborts the underlying request; such requests are not retried or deduplicated. */
+  signal?: AbortSignal;
 }
 
 /** A request captured during a batch, awaiting dispatch in a `/batch` call. */
@@ -224,7 +228,7 @@ class ApiClient {
 
     try {
       response = await (
-        options?.retry === false
+        options?.retry === false || options?.signal
           ? fetchWithFreshCsrfToken
           : retry(fetchWithFreshCsrfToken)
       )(urlToFetch, {
@@ -234,8 +238,13 @@ class ApiClient {
         redirect: "follow",
         credentials: "same-origin",
         cache: "no-cache",
+        signal: options?.signal,
       });
-    } catch (_err) {
+    } catch (err) {
+      // An aborted request is not a network problem; let the caller see it.
+      if (options?.signal?.aborted) {
+        throw err;
+      }
       if (window.navigator.onLine) {
         throw new NetworkError("A network error occurred, try again?");
       } else {
@@ -253,6 +262,8 @@ class ApiClient {
       ).split("filename=")[1];
       download(blob, trim(fileName, '"'));
       return undefined as T;
+    } else if (options.blob && success) {
+      return (await response.blob()) as T;
     } else if (success && response.status === 204) {
       return undefined as T;
     } else if (success) {
@@ -492,7 +503,9 @@ class ApiClient {
     data?: JSONObject | FormData,
     options?: FetchOptions
   ): Promise<T> => {
-    if (data instanceof FormData) {
+    // Sharing a request between callers would let one caller's abort cancel
+    // the other's, so those are never deduplicated.
+    if (data instanceof FormData || options?.signal) {
       return this.fetch<T>(path, method, data, options);
     }
 

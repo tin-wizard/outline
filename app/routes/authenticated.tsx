@@ -20,6 +20,7 @@ import {
   archivePath,
   draftsPath,
   homePath,
+  aiPath,
   searchPath,
   settingsPath,
   matchDocumentSlug as documentSlug,
@@ -135,6 +136,11 @@ function AuthenticatedRoutes() {
               <Route
                 path={`/doc/${documentSlug}`}
                 component={Scenes.Document.Component}
+              />
+              <Route
+                exact
+                path={`${aiPath()}/:conversationId?`}
+                component={Scenes.AISearch.Component}
               />
               <Route
                 exact

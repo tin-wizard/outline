@@ -4,6 +4,16 @@ describe("AuthenticationHelper", () => {
   const canAccess = AuthenticationHelper.canAccess;
 
   describe("canAccess", () => {
+    it("maps AI conversation reads to read and changes to write", () => {
+      const read = ["aiConversations:read"];
+      expect(canAccess("/api/aiConversations.list", read)).toBe(true);
+      expect(canAccess("/api/aiConversations.info", read)).toBe(true);
+      expect(canAccess("/api/aiConversations.update", read)).toBe(false);
+      expect(canAccess("/api/aiConversations.delete", read)).toBe(false);
+      const write = ["aiConversations:write"];
+      expect(canAccess("/api/aiConversations.delete", write)).toBe(true);
+    });
+
     it("should grant full access with wildcard scope", async () => {
       const scopes = ["*"];
 

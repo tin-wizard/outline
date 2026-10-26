@@ -15,6 +15,7 @@ import { TextHelper } from "@shared/utils/TextHelper";
 import { DocumentValidation } from "@shared/validations";
 import { createContext } from "@server/context";
 import { parser } from "@server/editor";
+import env from "@server/env";
 import type { Group, User } from "@server/models";
 import {
   Document,
@@ -647,6 +648,29 @@ describe("#documents.export", () => {
     });
     const body = await res.text();
     expect(body).toEqual(await DocumentHelper.toMarkdown(document));
+  });
+
+  it("should not export a PDF when it is disabled", async () => {
+    const enabled = env.PDF_EXPORT_ENABLED;
+    env.PDF_EXPORT_ENABLED = false;
+    try {
+      const user = await buildUser();
+      const document = await buildDocument({
+        userId: user.id,
+        teamId: user.teamId,
+      });
+      const res = await server.post("/api/documents.export", user, {
+        body: {
+          id: document.id,
+        },
+        headers: {
+          accept: "application/pdf",
+        },
+      });
+      expect(res.status).toEqual(402);
+    } finally {
+      env.PDF_EXPORT_ENABLED = enabled;
+    }
   });
 
   it("should return archived document", async () => {

@@ -2,6 +2,7 @@ import {
   headingOf,
   selectSections,
   splitIntoSections,
+  toKeywordAndQuery,
   toKeywordQuery,
   toKeywords,
 } from "./text";
@@ -22,9 +23,11 @@ describe("toKeywords", () => {
     expect(toKeywords("!!! ??? ***")).toEqual([]);
   });
 
-  it("deduplicates and caps at eight", () => {
+  it("deduplicates and caps at ten", () => {
     expect(
-      toKeywords("alpha alpha beta gamma delta epsilon zeta eta theta iota")
+      toKeywords(
+        "alpha alpha beta gamma delta epsilon zeta eta theta iota kappa lambda"
+      )
     ).toEqual([
       "alpha",
       "beta",
@@ -34,6 +37,8 @@ describe("toKeywords", () => {
       "zeta",
       "eta",
       "theta",
+      "iota",
+      "kappa",
     ]);
   });
 
@@ -46,6 +51,41 @@ describe("toKeywords", () => {
     expect(toKeywords("休暇 ポリシー")).toEqual(["休暇", "ポリシー"]);
   });
 
+  it("splits slug and path tokens and keeps the compound", () => {
+    expect(toKeywords("mvanhorn/cli-printing-press")).toEqual([
+      "mvanhorn",
+      "cli",
+      "printing",
+      "press",
+      "mvanhorn/cli-printing-press",
+    ]);
+    expect(toKeywords("where is the release_notes file?")).toEqual([
+      "release",
+      "notes",
+      "release_notes",
+      "file",
+    ]);
+  });
+
+  it("keeps a dotted version as a compound", () => {
+    expect(toKeywords("upgrade to v3.5")).toContain("v3.5");
+  });
+
+  it("keeps upper-case two-letter terms", () => {
+    expect(toKeywords("What is our AI and HR policy, QA?")).toEqual([
+      "ai",
+      "hr",
+      "policy",
+      "qa",
+    ]);
+  });
+
+  it("drops lower-case two-letter terms unless quoted", () => {
+    expect(toKeywords("ai policy")).toEqual(["policy"]);
+    expect(toKeywords('the "ai" policy')).toEqual(["ai", "policy"]);
+    expect(toKeywords("WHAT IS AI")).toEqual(["ai"]);
+  });
+
   it("keeps non-English words", () => {
     expect(toKeywords("¿Cuál es la política de vacaciones?")).toContain(
       "vacaciones"
@@ -56,6 +96,14 @@ describe("toKeywords", () => {
 describe("toKeywordQuery", () => {
   it("joins with or", () => {
     expect(toKeywordQuery(["holiday", "policy"])).toEqual("holiday or policy");
+  });
+});
+
+describe("toKeywordAndQuery", () => {
+  it("joins with spaces and leaves compounds out", () => {
+    expect(
+      toKeywordAndQuery(toKeywords("mvanhorn/cli-printing-press docs"))
+    ).toEqual("mvanhorn cli printing press docs");
   });
 });
 

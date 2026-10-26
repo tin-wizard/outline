@@ -1,3 +1,9 @@
+export { default as AIAnswerUsage } from "./AIAnswerUsage";
+
+export { default as AIConversation } from "./AIConversation";
+
+export { default as AIConversationTurn } from "./AIConversationTurn";
+
 export { default as ApiKey } from "./ApiKey";
 
 export { default as Attachment } from "./Attachment";

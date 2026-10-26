@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { EmptyResultError } from "sequelize";
 import { type McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import documentCreator, {
@@ -8,7 +9,13 @@ import documentCreator, {
 import documentMover from "@server/commands/documentMover";
 import documentRestorer from "@server/commands/documentRestorer";
 import documentUpdater from "@server/commands/documentUpdater";
-import { Collection, Document, SearchQuery, Template } from "@server/models";
+import {
+  Collection,
+  Document,
+  SearchQuery,
+  Template,
+  type User,
+} from "@server/models";
 import { SearchQuerySource } from "@server/models/SearchQuery";
 import { combineFilters } from "@server/models/helpers/Filters";
 import DocumentImportTask from "@server/queues/tasks/DocumentImportTask";
@@ -38,6 +45,11 @@ import { ValidationError } from "@server/errors";
 import { TextEditMode } from "@shared/types";
 import type { Filter } from "@shared/helpers/FilterHelper";
 import SearchProviderManager from "@server/utils/SearchProviderManager";
+import {
+  aiExcludedCollectionIds,
+  dropAIExcluded,
+  isAIExcluded,
+} from "@server/utils/aiExclusion";
 
 /**
  * Presents a document for a tool response. Adds MCP-specific fields
@@ -57,6 +69,31 @@ export function presentDocument(
   } = {}
 ) {
   return presentDocumentBase(undefined, document, options);
+}
+
+/**
+ * Presents the result of a document write. Documents in a collection excluded
+ * from AI are reported by id only: their title, url (which embeds the title)
+ * and breadcrumb are never echoed back to the AI client.
+ *
+ * @param document - the written document.
+ * @param user - the acting user.
+ * @returns the tool response.
+ */
+async function presentWriteResult(document: Document, user: User) {
+  if (await isAIExcluded(user, document.collectionId)) {
+    return success({ success: true, id: document.id });
+  }
+  const breadcrumb = await getDocumentBreadcrumb(document, user);
+  return success({
+    success: true,
+    ...pathToUrl(user.team, {
+      id: document.id,
+      title: document.title,
+      url: document.url,
+    }),
+    ...(breadcrumb !== undefined && { breadcrumb }),
+  });
 }
 
 /**
@@ -127,8 +164,11 @@ export function documentTools(server: McpServer, scopes: string[]) {
                 includeDocumentStructure: true,
               });
               authorize(user, "readDocument", collection);
+              if (collection.aiExcluded) {
+                return success([]);
+              }
 
-              if (collection?.documentStructure) {
+              if (collection.documentStructure) {
                 indexMap = buildSiblingIndexMap(collection.documentStructure);
               }
             }
@@ -150,6 +190,12 @@ export function documentTools(server: McpServer, scopes: string[]) {
                   exactMatch &&
                   collectionId &&
                   exactMatch.collectionId !== collectionId
+                ) {
+                  exactMatch = null;
+                }
+                if (
+                  exactMatch &&
+                  (await isAIExcluded(user, exactMatch.collectionId))
                 ) {
                   exactMatch = null;
                 }
@@ -193,8 +239,19 @@ export function documentTools(server: McpServer, scopes: string[]) {
                 });
               }
 
+              // shortcut: excluded documents are dropped after paging, so a page
+              // can be shorter than the limit; filter in the provider if that matters.
+              const excluded = await aiExcludedCollectionIds(
+                user,
+                results.map((result) => result.document.collectionId)
+              );
               const filteredResults = results.filter(
-                (result) => result.document.id !== exactMatch?.id
+                (result) =>
+                  result.document.id !== exactMatch?.id &&
+                  !(
+                    result.document.collectionId &&
+                    excluded.has(result.document.collectionId)
+                  )
               );
               const matchedDocuments = [
                 ...(exactMatch ? [exactMatch] : []),
@@ -277,7 +334,10 @@ export function documentTools(server: McpServer, scopes: string[]) {
               limit: effectiveLimit,
             });
 
-            const documents = results.map((result) => result.document);
+            const documents = await dropAIExcluded(
+              user,
+              results.map((result) => result.document)
+            );
 
             const [breadcrumbs, shareUrls] = await Promise.all([
               getBreadcrumbsForDocuments(documents, user),
@@ -346,6 +406,9 @@ export function documentTools(server: McpServer, scopes: string[]) {
               rejectOnEmpty: true,
             });
             authorize(user, "readDocument", collection);
+            if (collection.aiExcluded) {
+              return success([]);
+            }
 
             const documentStructure =
               await collection.getCachedDocumentStructure();
@@ -437,6 +500,10 @@ export function documentTools(server: McpServer, scopes: string[]) {
             template = await Template.findByPk(templateId, {
               userId: user.id,
             });
+            // Same as a missing template, so excluded content is not copied out.
+            if (template && (await isAIExcluded(user, template.collectionId))) {
+              template = null;
+            }
             authorize(user, "read", template);
           }
 
@@ -486,16 +553,7 @@ export function documentTools(server: McpServer, scopes: string[]) {
                   });
                 });
 
-          const breadcrumb = await getDocumentBreadcrumb(document, user);
-          return success({
-            success: true,
-            ...pathToUrl(user.team, {
-              id: document.id,
-              title: document.title,
-              url: document.url,
-            }),
-            ...(breadcrumb !== undefined && { breadcrumb }),
-          });
+          return presentWriteResult(document, user);
         } catch (message) {
           return error(message);
         }
@@ -593,17 +651,8 @@ export function documentTools(server: McpServer, scopes: string[]) {
             return document;
           });
 
-          // Resolved after commit so the breadcrumb reflects the new location.
-          const breadcrumb = await getDocumentBreadcrumb(document, user);
-          return success({
-            success: true,
-            ...pathToUrl(user.team, {
-              id: document.id,
-              title: document.title,
-              url: document.url,
-            }),
-            ...(breadcrumb !== undefined && { breadcrumb }),
-          });
+          // Resolved after commit so the result reflects the new location.
+          return presentWriteResult(document, user);
         } catch (message) {
           return error(message);
         }
@@ -684,6 +733,17 @@ export function documentTools(server: McpServer, scopes: string[]) {
             rejectOnEmpty: true,
           });
 
+          // A patch echoes the content and its findText probes it, so an
+          // excluded document answers exactly like a missing one.
+          if (
+            input.editMode === TextEditMode.Patch &&
+            (await isAIExcluded(user, document.collectionId))
+          ) {
+            throw new EmptyResultError(
+              `Document doesn't exist with id: ${input.id}`
+            );
+          }
+
           let updated;
 
           if (input.publish === false) {
@@ -722,16 +782,7 @@ export function documentTools(server: McpServer, scopes: string[]) {
           // content is echoed back for the caller to verify what was applied.
           // Other modes have nothing to report beyond the write succeeding.
           if (input.editMode !== TextEditMode.Patch) {
-            const breadcrumb = await getDocumentBreadcrumb(updated, user);
-            return success({
-              success: true,
-              ...pathToUrl(user.team, {
-                id: updated.id,
-                title: updated.title,
-                url: updated.url,
-              }),
-              ...(breadcrumb !== undefined && { breadcrumb }),
-            });
+            return presentWriteResult(updated, user);
           }
 
           const [{ text, ...attributes }, breadcrumb, shareUrl] =
@@ -867,17 +918,8 @@ export function documentTools(server: McpServer, scopes: string[]) {
             return document;
           });
 
-          // Resolved after commit so the breadcrumb reflects the new location.
-          const breadcrumb = await getDocumentBreadcrumb(document, user);
-          return success({
-            success: true,
-            ...pathToUrl(user.team, {
-              id: document.id,
-              title: document.title,
-              url: document.url,
-            }),
-            ...(breadcrumb !== undefined && { breadcrumb }),
-          });
+          // Resolved after commit so the result reflects the new location.
+          return presentWriteResult(document, user);
         } catch (message) {
           return error(message);
         }

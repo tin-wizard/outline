@@ -14,6 +14,7 @@ import CodeBlock from "@shared/editor/nodes/CodeBlock";
 import CodeFence from "@shared/editor/nodes/CodeFence";
 import Mention from "@shared/editor/nodes/Mention";
 import mentionRules from "./rules/mentions";
+import pagesEmbeds from "./rules/pagesEmbeds";
 
 populateEmojiData(data as EmojiMartData);
 
@@ -44,7 +45,7 @@ for (const extension of extensionManager.extensions) {
 
 export const parser = extensionManager.parser({
   schema,
-  plugins: [...extensionManager.rulePlugins, mentionRules],
+  plugins: [...extensionManager.rulePlugins, mentionRules, pagesEmbeds],
 });
 
 export const serializer = extensionManager.serializer();

@@ -99,6 +99,9 @@ export const TeamPreferenceDefaults: TeamPreferences = {
   [TeamPreference.EmailDisplay]: EmailDisplay.Members,
   [TeamPreference.MCP]: true,
   [TeamPreference.AIAnswers]: false,
+  // Off until an admin opts in: turning AI answers on stores nothing by itself.
+  [TeamPreference.AIConversationHistory]: false,
+  [TeamPreference.AICompare]: false,
   [TeamPreference.DisabledEmbeds]: [],
 };
 

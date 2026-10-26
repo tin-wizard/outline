@@ -1,5 +1,14 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { CLIENT_TIMEOUT_MS } from "./contract";
 import env from "./env";
+
+export { CLIENT_TIMEOUT_MS };
+
+/**
+ * No retries: a call is billed and metered exactly once, and a slot's TTL
+ * always outlasts the call.
+ */
+export const CLIENT_MAX_RETRIES = 0;
 
 let client: Anthropic | undefined;
 
@@ -11,8 +20,8 @@ let client: Anthropic | undefined;
 export function getClient(): Anthropic {
   client ??= new Anthropic({
     apiKey: env.ANTHROPIC_API_KEY,
-    timeout: 30_000,
-    maxRetries: 1,
+    timeout: CLIENT_TIMEOUT_MS,
+    maxRetries: CLIENT_MAX_RETRIES,
   });
   return client;
 }

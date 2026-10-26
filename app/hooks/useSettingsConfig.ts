@@ -3,7 +3,6 @@ import {
   ProfileIcon,
   PadlockIcon,
   CodeIcon,
-  UserIcon,
   GroupIcon,
   GlobeIcon,
   ShieldIcon,
@@ -17,6 +16,8 @@ import {
   InternetIcon,
   SmileyIcon,
   BrowserIcon,
+  CollectionIcon,
+  UserIcon,
 } from "outline-icons";
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
@@ -50,6 +51,8 @@ const Templates = lazy(() => import("~/scenes/Settings/Templates"));
 const CustomEmojis = lazy(() => import("~/scenes/Settings/CustomEmojis"));
 const Embeds = lazy(() => import("~/scenes/Settings/Embeds"));
 const Ops = lazy(() => import("~/scenes/Settings/Ops"));
+const OpsUsers = lazy(() => import("~/scenes/Settings/OpsUsers"));
+const OpsCollections = lazy(() => import("~/scenes/Settings/OpsCollections"));
 
 export type ConfigItem = {
   name: string;
@@ -266,6 +269,24 @@ const useSettingsConfig = () => {
         enabled: Boolean(user.isPlatformAdmin),
         group: t("Platform"),
         icon: ShieldIcon,
+      },
+      {
+        name: t("User management"),
+        path: settingsPath("ops", "users"),
+        component: OpsUsers.Component,
+        preload: OpsUsers.preload,
+        enabled: Boolean(user.isPlatformAdmin),
+        group: t("Platform"),
+        icon: UserIcon,
+      },
+      {
+        name: t("Collections"),
+        path: settingsPath("ops", "collections"),
+        component: OpsCollections.Component,
+        preload: OpsCollections.preload,
+        enabled: Boolean(user.isPlatformAdmin),
+        group: t("Platform"),
+        icon: CollectionIcon,
       },
     ];
 

@@ -26,3 +26,42 @@ export const requestContext = new AsyncLocalStorage<{
   tenant?: TenantContext;
   transaction?: Transaction;
 }>();
+
+/**
+ * Commits the current request's tenant-scoped transaction early and detaches
+ * it from the request context, returning its pooled connection before slow
+ * non-database work (such as a model call). Later reads in the request run on
+ * the pool outside any transaction, so row-level security is not forced for
+ * them: callers must not read tenant data after calling this.
+ *
+ * @returns true if a transaction was committed, false if there was none.
+ * @throws if the commit fails; the transaction is still detached.
+ */
+export async function releaseRequestTransaction(): Promise<boolean> {
+  const store = requestContext.getStore();
+  const transaction = store?.transaction;
+  if (!store || !transaction) {
+    return false;
+  }
+  // Detach first so nothing routes through it, even if the commit fails.
+  store.transaction = undefined;
+  releasedTransactions.add(transaction);
+  await transaction.commit();
+  return true;
+}
+
+/**
+ * Returns whether a request transaction was already committed early by
+ * releaseRequestTransaction, so the auth() middleware that created it must not
+ * commit or roll it back again.
+ *
+ * @param transaction the transaction created by an auth() middleware.
+ * @returns true if the transaction was released early.
+ */
+export function isTransactionReleased(transaction: Transaction): boolean {
+  return releasedTransactions.has(transaction);
+}
+
+// Tracked per transaction rather than by comparing store.transaction, which a
+// nested auth() (api.batch sub-requests) overwrites.
+const releasedTransactions = new WeakSet<Transaction>();

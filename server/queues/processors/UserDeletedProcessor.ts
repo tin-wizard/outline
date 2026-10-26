@@ -1,4 +1,7 @@
+import { Op } from "sequelize";
 import {
+  AIAnswerUsage,
+  AIConversation,
   ApiKey,
   GroupUser,
   OAuthAuthentication,
@@ -60,6 +63,26 @@ export default class UserDeletedProcessor extends BaseProcessor {
         },
         transaction,
       });
+      // Hard delete; turns go with it (foreign key cascade).
+      await AIConversation.destroy({
+        where: {
+          userId: event.userId,
+          teamId: event.teamId,
+        },
+        transaction,
+      });
+      // Usage rows stay (billing metadata); only the free-text comment goes.
+      await AIAnswerUsage.update(
+        { feedbackComment: null },
+        {
+          where: {
+            userId: event.userId,
+            teamId: event.teamId,
+            feedbackComment: { [Op.ne]: null },
+          },
+          transaction,
+        }
+      );
       await WebhookSubscription.update(
         { enabled: false },
         {

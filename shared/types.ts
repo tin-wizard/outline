@@ -68,6 +68,9 @@ export enum ExportContentType {
   Pdf = "application/pdf",
 }
 
+/** Paper sizes that documents can be exported to as PDF. */
+export type PdfPageSize = "Letter" | "A4";
+
 export enum FileOperationFormat {
   JSON = "json",
   MarkdownZip = "outline-markdown",
@@ -506,6 +509,10 @@ export enum TeamPreference {
   MCP = "mcp",
   /** Whether members can ask questions and receive AI generated answers. */
   AIAnswers = "aiAnswers",
+  /** Whether AI answers are kept as a per-user conversation history. */
+  AIConversationHistory = "aiConversationHistory",
+  /** Whether members can compare documents side by side in AI answers. */
+  AICompare = "aiCompare",
   /** List of disabled embed provider titles. */
   DisabledEmbeds = "disabledEmbeds",
 }
@@ -525,6 +532,8 @@ export type TeamPreferences = {
   [TeamPreference.EmailDisplay]?: EmailDisplay;
   [TeamPreference.MCP]?: boolean;
   [TeamPreference.AIAnswers]?: boolean;
+  [TeamPreference.AIConversationHistory]?: boolean;
+  [TeamPreference.AICompare]?: boolean;
   [TeamPreference.DisabledEmbeds]?: string[];
 };
 

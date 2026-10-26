@@ -2,10 +2,15 @@ import { escape } from "es-toolkit/compat";
 import type { Node } from "prosemirror-model";
 import slugify from "slugify";
 
-// Slugify, escape, and remove periods from headings so that they are
-// compatible with both url hashes AND dom ID's (querySelector does not like
-// ID's that begin with a number or a period, for example).
-function safeSlugify(text: string) {
+/**
+ * Slugifies, escapes and removes periods from heading text so that it is
+ * compatible with both url hashes AND dom ID's (querySelector does not like
+ * ID's that begin with a number or a period, for example).
+ *
+ * @param text the heading text.
+ * @returns the anchor of the first heading with this text.
+ */
+export function safeSlugify(text: string) {
   return `h-${escape(
     slugify(text, {
       remove: /[!"#$%&'.()*+,/:;<=>?@[\]\\^_`{|}~]/g,

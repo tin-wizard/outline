@@ -1,25 +1,27 @@
 import { observer } from "mobx-react";
-import { SearchIcon, HomeIcon, SidebarIcon } from "outline-icons";
+import { SearchIcon, HomeIcon, SidebarIcon, SparklesIcon } from "outline-icons";
 import { useEffect, useState, useCallback, useRef } from "react";
 import {
   DragActiveProvider,
   SidebarScrollProvider,
 } from "./components/DragActiveContext";
 import { useTranslation } from "react-i18next";
-import { useHistory } from "react-router-dom";
+import { useHistory, useRouteMatch } from "react-router-dom";
 import styled from "styled-components";
 import { SidebarSection, UserPreference } from "@shared/types";
 import { metaDisplay } from "@shared/utils/keyboard";
 import Scrollable from "~/components/Scrollable";
 import { navigateToImport } from "~/actions/definitions/navigation";
 import { inviteUser } from "~/actions/definitions/users";
+import useAIAnswersEnabled from "~/hooks/useAIAnswersEnabled";
+import useAIHistoryEnabled from "~/hooks/useAIHistoryEnabled";
 import useCurrentTeam from "~/hooks/useCurrentTeam";
 import useCurrentUser from "~/hooks/useCurrentUser";
 import usePolicy from "~/hooks/usePolicy";
 import useStores from "~/hooks/useStores";
 import TeamMenu from "~/menus/TeamMenu";
 import * as Scenes from "~/routes/scenes";
-import { homePath, searchPath } from "~/utils/routeHelpers";
+import { aiPath, homePath, searchPath } from "~/utils/routeHelpers";
 import TeamLogo from "../TeamLogo";
 import Tooltip from "../Tooltip";
 import Sidebar from "./Sidebar";
@@ -32,6 +34,14 @@ import { DraftsLink } from "./components/DraftsLink";
 import DragPlaceholder from "./components/DragPlaceholder";
 import { DismissableSidebarAction } from "./components/DismissableSidebarAction";
 import HistoryNavigation from "./components/HistoryNavigation";
+import { AIChats } from "./components/AIChats/AIChats";
+import {
+  ChatsLibraryTabs,
+  sidebarPanelId,
+  sidebarTabId,
+  useSidebarView,
+} from "./components/AIChats/ChatsLibraryTabs";
+import { useNewChatShortcut } from "./components/AIChats/useNewChatShortcut";
 import Section from "./components/Section";
 import SharedWithMe from "./components/SharedWithMe";
 import SidebarButton from "./components/SidebarButton";
@@ -47,6 +57,17 @@ function AppSidebar() {
   const team = useCurrentTeam();
   const user = useCurrentUser();
   const can = usePolicy(team);
+  const aiEnabled = useAIAnswersEnabled();
+  // Chats are listed while using AI Search; the rest of the sidebar is unchanged.
+  const onAIRoute = !!useRouteMatch(aiPath());
+  const historyEnabled = useAIHistoryEnabled();
+  // With history off, saved chats stay listed (delete only) until removed.
+  const showAIChats = aiEnabled && onAIRoute;
+  // With history on, a Chats | Library switch picks what fills the sidebar.
+  const tabbed = showAIChats && historyEnabled;
+  const [view, setView] = useSidebarView();
+  useNewChatShortcut(tabbed);
+  const showChats = showAIChats && (!tabbed || view === "chats");
   const history = useHistory();
   const isMobile = useMobile();
 
@@ -85,6 +106,34 @@ function AppSidebar() {
     [SidebarSection.SharedWithMe]: <SharedWithMe />,
     [SidebarSection.Collections]: <Collections />,
   };
+
+  // Everything below the AI chats; rendered unwrapped outside the switch so
+  // other routes keep the sidebar exactly as it was.
+  const library = (
+    <>
+      {sectionOrder.map((section) => (
+        <DraggableSection key={section} section={section}>
+          {sectionContent[section]}
+        </DraggableSection>
+      ))}
+      {can.createDocument && (
+        <Section auto>
+          <ArchiveLink />
+        </Section>
+      )}
+      <Section>
+        {can.createDocument && <TrashLink />}
+        <DismissableSidebarAction
+          id="sidebar-import-hidden"
+          action={navigateToImport}
+        />
+        <DismissableSidebarAction
+          id="sidebar-invite-hidden"
+          action={inviteUser}
+        />
+      </Section>
+    </>
+  );
 
   return (
     <Sidebar hidden={!ui.readyToShow}>
@@ -136,32 +185,46 @@ function AppSidebar() {
               onClick={handleSearchClick}
               onClickIntent={Scenes.Search.preload}
             />
+            {aiEnabled && (
+              <SidebarLink
+                to={aiPath()}
+                icon={<SparklesIcon />}
+                label={t("AI Search")}
+                exact={false}
+                onClickIntent={Scenes.AISearch.preload}
+              />
+            )}
             {can.createDocument && <DraftsLink />}
           </Section>
         </Overflow>
+        {tabbed && <ChatsLibraryTabs view={view} onChange={setView} />}
         <Scrollable flex shadow ref={scrollRef}>
           <SidebarScrollProvider value={scrollArea}>
-            {sectionOrder.map((section) => (
-              <DraggableSection key={section} section={section}>
-                {sectionContent[section]}
-              </DraggableSection>
-            ))}
-            {can.createDocument && (
-              <Section auto>
-                <ArchiveLink />
+            {showChats && (
+              <Section
+                {...(tabbed && {
+                  role: "tabpanel",
+                  id: sidebarPanelId("chats"),
+                  "aria-labelledby": sidebarTabId("chats"),
+                })}
+              >
+                <AIChats deleteOnly={!historyEnabled} />
               </Section>
             )}
-            <Section>
-              {can.createDocument && <TrashLink />}
-              <DismissableSidebarAction
-                id="sidebar-import-hidden"
-                action={navigateToImport}
-              />
-              <DismissableSidebarAction
-                id="sidebar-invite-hidden"
-                action={inviteUser}
-              />
-            </Section>
+            {tabbed ? (
+              // Kept mounted while hidden: Starred and SharedWithMe load the
+              // stores that readyToShow waits for, or the sidebar stays blank.
+              <div
+                role="tabpanel"
+                id={sidebarPanelId("library")}
+                aria-labelledby={sidebarTabId("library")}
+                hidden={view !== "library"}
+              >
+                {library}
+              </div>
+            ) : (
+              library
+            )}
           </SidebarScrollProvider>
         </Scrollable>
       </DragActiveProvider>

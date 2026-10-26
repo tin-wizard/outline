@@ -22,6 +22,7 @@ import Switch from "~/components/Switch";
 import Text from "~/components/Text";
 import useBoolean from "~/hooks/useBoolean";
 import useCurrentTeam from "~/hooks/useCurrentTeam";
+import useCurrentUser from "~/hooks/useCurrentUser";
 import useStores from "~/hooks/useStores";
 import { EmptySelectValue } from "~/types";
 import { HStack } from "../primitives/HStack";
@@ -36,6 +37,7 @@ export type FormData = {
   sharing: boolean;
   permission: CollectionPermission | undefined;
   commenting?: boolean | null;
+  aiExcluded?: boolean;
   templateManagement: CollectionPermission;
 };
 
@@ -70,6 +72,7 @@ export const CollectionForm = observer(function CollectionForm_({
   collection?: Collection;
 }) {
   const team = useCurrentTeam();
+  const user = useCurrentUser();
   const { t } = useTranslation();
   const dialog = useDialogContext();
 
@@ -116,6 +119,8 @@ export const CollectionForm = observer(function CollectionForm_({
       sharing: collection?.sharing ?? true,
       permission: collection?.permission,
       commenting: collection?.commenting ?? true,
+      // Left undefined when unknown so it is omitted from the saved payload.
+      aiExcluded: collection?.aiExcluded,
       templateManagement:
         collection?.templateManagement ?? CollectionPermission.Admin,
       color: iconColor,
@@ -216,6 +221,24 @@ export const CollectionForm = observer(function CollectionForm_({
               id="commenting"
               label={t("Commenting")}
               note={t("Allow commenting on documents within this collection.")}
+              checked={!!field.value}
+              onChange={field.onChange}
+            />
+          )}
+        />
+      )}
+
+      {user.isAdmin && (
+        <Controller
+          control={control}
+          name="aiExcluded"
+          render={({ field }) => (
+            <Switch
+              id="aiExcluded"
+              label={t("Exclude from AI answers")}
+              note={t(
+                "Documents within this collection are never used by AI answers or exposed to AI clients such as MCP. Normal search is unaffected."
+              )}
               checked={!!field.value}
               onChange={field.onChange}
             />

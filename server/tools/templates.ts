@@ -5,6 +5,7 @@ import type { WhereOptions } from "sequelize";
 import { Collection, Template } from "@server/models";
 import { DocumentHelper } from "@server/models/helpers/DocumentHelper";
 import { authorize } from "@server/policies";
+import { aiExcludedCollectionIds } from "@server/utils/aiExclusion";
 import AuthenticationHelper from "@shared/helpers/AuthenticationHelper";
 import {
   error,
@@ -107,12 +108,24 @@ export function templateTools(server: McpServer, scopes: string[]) {
                 userId: user.id,
               });
               authorize(user, "read", collection);
+              if (collection.aiExcluded) {
+                return success([]);
+              }
               where[Op.and].push({ collectionId });
             } else {
+              const collectionIds = await user.collectionIds();
+              const excluded = await aiExcludedCollectionIds(
+                user,
+                collectionIds
+              );
               where[Op.and].push({
                 [Op.or]: [
                   { collectionId: { [Op.eq]: null } },
-                  { collectionId: await user.collectionIds() },
+                  {
+                    collectionId: collectionIds.filter(
+                      (id) => !excluded.has(id)
+                    ),
+                  },
                 ],
               });
             }

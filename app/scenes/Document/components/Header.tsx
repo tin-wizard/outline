@@ -1,5 +1,5 @@
 import { observer } from "mobx-react";
-import { TableOfContentsIcon, EditIcon } from "outline-icons";
+import { TableOfContentsIcon, EditIcon, PrintIcon } from "outline-icons";
 import { useState, useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
@@ -36,6 +36,7 @@ import TemplatesMenu from "~/menus/TemplatesMenu";
 import type Document from "~/models/Document";
 import type Revision from "~/models/Revision";
 import type Template from "~/models/Template";
+import { canPrintAsPdf, printAsPdf } from "~/utils/printPdf";
 import { documentEditPath } from "~/utils/routeHelpers";
 import { ChangesNavigation } from "./ChangesNavigation";
 import ObservingBanner from "./ObservingBanner";
@@ -107,6 +108,18 @@ function DocumentHeader({
   }, [ui]);
 
   const can = usePolicy(document);
+
+  const handlePrint = useCallback(() => {
+    // Printing the page as it is on screen looks like a web page, so a PDF laid
+    // out like a document is printed instead where it can be made.
+    if (canPrintAsPdf() && can.download) {
+      void printAsPdf(() => document.fetchPdf(), {
+        preparing: `${t("Preparing to print")}…`,
+      });
+      return;
+    }
+    setTimeout(window.print, 0);
+  }, [can.download, document, t]);
   const { isDeleted } = document;
   const canToggleEmbeds = team?.documentEmbeds;
   const showContents = ui.tocVisible === true;
@@ -286,6 +299,18 @@ function DocumentHeader({
               >
                 {document.collectionId ? t("Publish") : `${t("Publish")}…`}
               </Button>
+            </Action>
+          )}
+          {!isMobile && !isDeleted && !!window.print && (
+            <Action>
+              <Tooltip content={t("Print")} placement="bottom">
+                <Button
+                  icon={<PrintIcon />}
+                  onClick={handlePrint}
+                  aria-label={t("Print")}
+                  neutral
+                />
+              </Tooltip>
             </Action>
           )}
           <Action>

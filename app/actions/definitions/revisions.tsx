@@ -23,6 +23,7 @@ import {
 import { RevisionSection } from "~/actions/sections";
 import env from "~/env";
 import history from "~/utils/history";
+import { canPrintAsPdf, printAsPdf } from "~/utils/printPdf";
 import {
   documentHistoryPath,
   matchDocumentHistory,
@@ -230,7 +231,21 @@ export const printRevisionActionFactory = (revisionId: string) =>
     // revision currently being viewed.
     visible: (context) =>
       !!window.print && isViewingRevision(context, revisionId),
-    perform: () => {
+    perform: async ({ t, activeDocumentId }) => {
+      const revision = stores.revisions.get(revisionId);
+
+      if (
+        revision &&
+        activeDocumentId &&
+        canPrintAsPdf() &&
+        stores.policies.abilities(activeDocumentId).download
+      ) {
+        await printAsPdf(() => revision.fetchPdf(), {
+          preparing: `${t("Preparing to print")}…`,
+        });
+        return;
+      }
+
       setTimeout(window.print, 0);
     },
   });
